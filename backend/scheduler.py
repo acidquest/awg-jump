@@ -2,7 +2,7 @@
 APScheduler — фоновые задачи:
   - GeoIP обновление по cron
   - AWG health-check каждые 60с
-  - Node health-check каждые NODE_HEALTH_CHECK_INTERVAL с (заглушка до этапа 6)
+  - Node health-check + failover каждые NODE_HEALTH_CHECK_INTERVAL с
 """
 import logging
 
@@ -13,6 +13,9 @@ from apscheduler.triggers.interval import IntervalTrigger
 from backend.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Счётчики неудач для failover (node_id → count)
+_health_fail_counts: dict[int, int] = {}
 
 scheduler = AsyncIOScheduler()
 
@@ -63,14 +66,59 @@ async def _awg_health_check() -> None:
         logger.error("[scheduler] AWG health-check error: %s", e)
 
 
-# ── Node health-check (заглушка для этапа 6) ─────────────────────────────
+# ── Node health-check + failover ─────────────────────────────────────────
 
 async def _node_health_check() -> None:
     """
-    Проверка доступности upstream нод и failover.
-    Полная реализация — в этапе 6 (node_deployer.py).
+    Проверяет доступность всех нод со статусом online/degraded.
+    При превышении NODE_FAILOVER_THRESHOLD неудач → failover.
     """
-    pass
+    from sqlalchemy import select
+    from backend.database import AsyncSessionLocal
+    from backend.models.upstream_node import NodeStatus, UpstreamNode
+    from backend.services.node_deployer import deployer
+
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(UpstreamNode).where(
+                    UpstreamNode.status.in_([NodeStatus.online, NodeStatus.degraded])
+                )
+            )
+            nodes = result.scalars().all()
+            node_list = [(n.id, n.name) for n in nodes]
+
+        for node_id, node_name in node_list:
+            try:
+                health = await deployer.check_health(node_id)
+                if health["alive"]:
+                    _health_fail_counts[node_id] = 0
+                else:
+                    _health_fail_counts[node_id] = _health_fail_counts.get(node_id, 0) + 1
+                    count = _health_fail_counts[node_id]
+                    logger.warning(
+                        "[node_health] Node %d (%s) unhealthy, fail count=%d/%d",
+                        node_id, node_name, count, settings.node_failover_threshold,
+                    )
+                    if count >= settings.node_failover_threshold:
+                        # Проверить — активная ли нода (failover только для активной)
+                        async with AsyncSessionLocal() as session:
+                            node = await session.get(UpstreamNode, node_id)
+                            is_active = node.is_active if node else False
+
+                        if is_active:
+                            logger.warning(
+                                "[node_health] Threshold reached for active node %d, initiating failover",
+                                node_id,
+                            )
+                            switched = await deployer.failover(node_id)
+                            if switched:
+                                _health_fail_counts[node_id] = 0
+            except Exception as exc:
+                logger.error("[node_health] Error checking node %d: %s", node_id, exc)
+
+    except Exception as exc:
+        logger.error("[node_health] Health check task error: %s", exc)
 
 
 # ── Инициализация ─────────────────────────────────────────────────────────
