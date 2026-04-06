@@ -1,0 +1,50 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Документация
+README.md
+CLAUDE.md
+
+# Данные и секреты (монтируются как volume, не копируются в образ)
+data/
+.env
+.env.*
+!.env.example
+
+# Нода (копируется в образ как /app/node/ для SSH деплоя — нужна)
+# node/  ← НЕ исключаем, entrypoint деплоит её через SSH
+
+# Тесты
+backend/tests/
+pytest.ini
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Frontend исходники (собираются в отдельном stage)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Python кэш
+__pycache__/
+*.py[cod]
+*.pyo
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Редакторы и IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

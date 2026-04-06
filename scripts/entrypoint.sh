@@ -72,6 +72,12 @@ async def init_defaults():
             )
             session.add(awg0)
             print("[init] Created default interface: awg0")
+        elif awg0.listen_port != settings.awg0_listen_port:
+            # Обновить порт если изменился в .env (иначе docker-compose mapping и AWG расходятся)
+            awg0.listen_port = settings.awg0_listen_port
+            awg0.updated_at = datetime.now(timezone.utc)
+            session.add(awg0)
+            print(f"[init] Updated awg0 listen_port → {settings.awg0_listen_port}")
 
         # Проверить наличие awg1
         result = await session.execute(select(Interface).where(Interface.name == "awg1"))
