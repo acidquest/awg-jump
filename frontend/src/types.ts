@@ -1,0 +1,129 @@
+export interface Interface {
+  id: number
+  name: string
+  mode: 'server' | 'client'
+  public_key: string
+  listen_port: number | null
+  address: string
+  dns: string | null
+  endpoint: string | null
+  allowed_ips: string | null
+  persistent_keepalive: number | null
+  enabled: boolean
+  running: boolean
+  obf_jc: number | null
+  obf_jmin: number | null
+  obf_jmax: number | null
+  obf_s1: number | null
+  obf_s2: number | null
+  obf_s3: number | null
+  obf_s4: number | null
+  obf_h1: number | null
+  obf_h2: number | null
+  obf_h3: number | null
+  obf_h4: number | null
+  obf_generated_at: string | null
+}
+
+export interface Peer {
+  id: number
+  interface_id: number
+  name: string
+  public_key: string
+  preshared_key: string | null
+  allowed_ips: string
+  tunnel_address: string | null
+  persistent_keepalive: number | null
+  enabled: boolean
+  last_handshake: string | null
+  rx_bytes: number | null
+  tx_bytes: number | null
+  created_at: string | null
+}
+
+export type NodeStatus = 'pending' | 'deploying' | 'online' | 'degraded' | 'offline' | 'error'
+
+export interface Node {
+  id: number
+  name: string
+  host: string
+  ssh_port: number
+  awg_port: number
+  awg_address: string | null
+  public_key: string | null
+  status: NodeStatus
+  is_active: boolean
+  priority: number
+  last_seen: string | null
+  last_deploy: string | null
+  rx_bytes: number | null
+  tx_bytes: number | null
+  latency_ms: number | null
+  created_at: string | null
+}
+
+export interface DeployLog {
+  id: number
+  node_id: number
+  started_at: string | null
+  finished_at: string | null
+  status: 'running' | 'success' | 'failed'
+  log_output: string | null
+}
+
+export interface NodeDetail extends Node {
+  last_deploy_log: DeployLog | null
+}
+
+export interface NodeStats {
+  node_id: number
+  status: string
+  is_active: boolean
+  latency_ms: number | null
+  rx_bytes: number | null
+  tx_bytes: number | null
+  last_seen: string | null
+  last_deploy: string | null
+  deploy_logs: DeployLog[]
+}
+
+export interface GeoipSource {
+  id: number
+  name: string
+  url: string
+  country_code: string
+  ipset_name: string
+  last_updated: string | null
+  prefix_count: number | null
+  enabled: boolean
+}
+
+export interface SystemStatus {
+  uptime_seconds: number
+  interfaces: Array<{
+    name: string
+    mode: string
+    address: string
+    enabled: boolean
+    running: boolean
+    public_key: string
+    peers_count: number
+  }>
+  geoip: Array<{
+    country_code: string
+    ipset_name: string
+    prefix_count: number
+    last_updated: string | null
+    cache_fresh: boolean
+  }>
+  ipsets: Array<{ name: string; count: number }>
+  routing: Record<string, unknown>
+  active_node: {
+    id: number
+    name: string
+    host: string
+    status: string
+    latency_ms: number | null
+    last_seen: string | null
+  } | null
+}

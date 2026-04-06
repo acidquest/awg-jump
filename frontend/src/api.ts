@@ -1,0 +1,96 @@
+import axios from 'axios'
+
+const api = axios.create({ baseURL: '/api' })
+
+// Attach token from localStorage
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+// Redirect to login on 401
+api.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    if (err.response?.status === 401) {
+      localStorage.removeItem('token')
+      window.location.href = '/login'
+    }
+    return Promise.reject(err)
+  }
+)
+
+export default api
+
+// ── Auth ─────────────────────────────────────────────────────────────────
+export const login = (username: string, password: string) =>
+  api.post<{ access_token: string }>('/auth/login', { username, password })
+
+export const logout = () => api.post('/auth/logout')
+
+// ── System ────────────────────────────────────────────────────────────────
+export const getSystemStatus = () => api.get('/system/status')
+export const restartRouting = () => api.post('/system/restart-routing')
+export const getLogs = (service = 'uvicorn', lines = 200) =>
+  api.get('/system/logs', { params: { service, lines } })
+
+// ── Interfaces ────────────────────────────────────────────────────────────
+export const getInterfaces = () => api.get('/interfaces')
+export const updateInterface = (id: number, data: Record<string, unknown>) =>
+  api.put(`/interfaces/${id}`, data)
+export const applyInterface = (id: number) => api.post(`/interfaces/${id}/apply`)
+export const stopInterface = (id: number) => api.post(`/interfaces/${id}/stop`)
+export const regenObfuscation = (id: number) =>
+  api.post(`/interfaces/${id}/regenerate-obfuscation`)
+
+// ── Peers ─────────────────────────────────────────────────────────────────
+export const getPeers = (interfaceId?: number) =>
+  api.get('/peers', { params: interfaceId ? { interface_id: interfaceId } : {} })
+export const createPeer = (data: Record<string, unknown>) => api.post('/peers', data)
+export const updatePeer = (id: number, data: Record<string, unknown>) =>
+  api.put(`/peers/${id}`, data)
+export const deletePeer = (id: number) => api.delete(`/peers/${id}`)
+export const togglePeer = (id: number) => api.post(`/peers/${id}/toggle`)
+export const getPeerConfig = (id: number, endpoint?: string) =>
+  api.get(`/peers/${id}/config`, {
+    params: endpoint ? { server_endpoint: endpoint } : {},
+    responseType: 'text',
+  })
+export const getPeerQr = (id: number, endpoint?: string) =>
+  `/api/peers/${id}/qr${endpoint ? `?server_endpoint=${encodeURIComponent(endpoint)}` : ''}`
+
+// ── Nodes ─────────────────────────────────────────────────────────────────
+export const getNodes = () => api.get('/nodes')
+export const createNode = (data: Record<string, unknown>) => api.post('/nodes', data)
+export const updateNode = (id: number, data: Record<string, unknown>) =>
+  api.put(`/nodes/${id}`, data)
+export const deleteNode = (id: number, creds?: Record<string, unknown>) =>
+  api.delete(`/nodes/${id}`, { data: creds })
+export const deployNode = (data: Record<string, unknown>) => api.post('/nodes/deploy', data)
+export const redeployNode = (id: number, data: Record<string, unknown>) =>
+  api.post(`/nodes/${id}/redeploy`, data)
+export const activateNode = (id: number) => api.post(`/nodes/${id}/activate`)
+export const checkNode = (id: number) => api.post(`/nodes/${id}/check`)
+export const getNodeStats = (id: number) => api.get(`/nodes/${id}/stats`)
+
+// ── GeoIP ─────────────────────────────────────────────────────────────────
+export const getGeoipStatus = () => api.get('/geoip/status')
+export const getGeoipSources = () => api.get('/geoip/sources')
+export const triggerGeoipUpdate = () => api.post('/geoip/update')
+
+// ── Routing ───────────────────────────────────────────────────────────────
+export const getRoutingStatus = () => api.get('/routing/status')
+export const applyRouting = () => api.post('/routing/apply')
+export const resetRouting = () => api.post('/routing/reset')
+
+// ── Backup ────────────────────────────────────────────────────────────────
+export const downloadBackup = () =>
+  api.get('/backup/export', { responseType: 'blob' })
+export const uploadBackup = (file: File) => {
+  const form = new FormData()
+  form.append('file', file)
+  return api.post('/backup/import', form)
+}
