@@ -1,0 +1,82 @@
+networks:
+  awg-net:
+    driver: bridge
+    internal: false
+
+volumes:
+  awg-data:
+
+services:
+  # ── Основной jump-сервер ────────────────────────────────────────────────
+  awg-jump:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: awg-jump
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    sysctls:
+      - net.ipv4.ip_forward=1
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
+    networks:
+      - awg-net
+    ports:
+      - "${AWG0_LISTEN_PORT:-51820}:${AWG0_LISTEN_PORT:-51820}/udp"
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ── Nginx reverse proxy + TLS termination ───────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: awg-nginx
+    restart: unless-stopped
+    depends_on:
+      awg-jump:
+        condition: service_healthy
+    env_file:
+      - .env
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/generate-cert.sh:/docker-entrypoint.d/10-generate-cert.sh:ro
+      - ./data/certs:/etc/nginx/certs
+    networks:
+      - awg-net
+    ports:
+      - "${NGINX_HTTPS_PORT:-443}:443"
+      - "80:80"
+
+  # ── Локальная тестовая upstream нода (опционально) ──────────────────────
+  awg-node:
+    build:
+      context: ./node
+      dockerfile: Dockerfile
+    container_name: awg-node-test
+    restart: unless-stopped
+    profiles:
+      - node
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    sysctls:
+      - net.ipv4.ip_forward=1
+    environment:
+      AWG_LISTEN_PORT: ${NODE_AWG_PORT:-51821}
+      AWG_PRIVATE_KEY: ${NODE_TEST_PRIVATE_KEY:-}
+      AWG_ADDRESS: ${NODE_TEST_ADDRESS:-10.20.0.3/32}
+      AWG_PEER_PUBLIC_KEY: ${AWG1_PUBLIC_KEY:-}
+      AWG_PEER_ALLOWED_IPS: ${AWG1_ADDRESS:-10.20.0.2/32}
+    networks:
+      - awg-net
+    ports:
+      - "${NODE_AWG_PORT:-51821}:${NODE_AWG_PORT:-51821}/udp"
