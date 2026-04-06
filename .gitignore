@@ -5,7 +5,8 @@ data/
 *.db
 *.db-shm
 *.db-wal
-
+.codex
+CLAUDE.md
 # Python
 __pycache__/
 */__pycache__/
