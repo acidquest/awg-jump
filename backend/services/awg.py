@@ -1,0 +1,431 @@
+"""
+AWG сервис — управление AmneziaWG интерфейсами.
+
+Демон amneziawg-go запускается как дочерний процесс.
+PIDs хранятся в памяти (module-level singleton).
+"""
+import asyncio
+import io
+import os
+import random
+import secrets
+import subprocess
+import tempfile
+from datetime import datetime, timezone
+from typing import Optional
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.models.interface import Interface, InterfaceMode
+from backend.models.peer import Peer
+
+
+# ── Singleton — PID таблица запущенных демонов ───────────────────────────
+_awg_processes: dict[str, subprocess.Popen] = {}
+
+
+# ── Генерация ключей ─────────────────────────────────────────────────────
+
+def generate_keypair() -> tuple[str, str]:
+    """Возвращает (private_key, public_key) в base64 формате WireGuard."""
+    priv = subprocess.check_output(["wg", "genkey"]).decode().strip()
+    pub = subprocess.check_output(
+        ["wg", "pubkey"], input=priv.encode()
+    ).decode().strip()
+    return priv, pub
+
+
+def generate_preshared_key() -> str:
+    return subprocess.check_output(["wg", "genpsk"]).decode().strip()
+
+
+# ── Генерация параметров обфускации ──────────────────────────────────────
+
+def generate_obfuscation_params() -> dict:
+    """
+    Генерирует независимый набор параметров обфускации для одного туннеля.
+    Следует правилам из CLAUDE.md (секция «Параметры обфускации AmneziaWG»).
+    """
+    jc = random.randint(4, 12)
+    jmin = random.randint(40, 80)
+    jmax = min(jmin + random.randint(10, 50), 1279)  # строго < 1280
+
+    s1 = random.randint(15, 150)
+    s2 = random.randint(15, 150)
+    s3 = random.randint(15, 150)
+    s4 = random.randint(15, 150)
+
+    reserved = {0, 1, 2, 3, 4}
+    headers: set[int] = set()
+    while len(headers) < 4:
+        val = secrets.randbits(32)
+        if val not in reserved and val not in headers:
+            headers.add(val)
+    h1, h2, h3, h4 = list(headers)
+
+    return {
+        "jc": jc, "jmin": jmin, "jmax": jmax,
+        "s1": s1, "s2": s2, "s3": s3, "s4": s4,
+        "h1": h1, "h2": h2, "h3": h3, "h4": h4,
+    }
+
+
+async def ensure_obfuscation_params(iface: Interface, session: AsyncSession) -> None:
+    """Генерирует и сохраняет параметры обфускации если они ещё не заданы."""
+    if iface.obf_h1 is None:
+        params = generate_obfuscation_params()
+        iface.obf_jc = params["jc"]
+        iface.obf_jmin = params["jmin"]
+        iface.obf_jmax = params["jmax"]
+        iface.obf_s1 = params["s1"]
+        iface.obf_s2 = params["s2"]
+        iface.obf_s3 = params["s3"]
+        iface.obf_s4 = params["s4"]
+        iface.obf_h1 = params["h1"]
+        iface.obf_h2 = params["h2"]
+        iface.obf_h3 = params["h3"]
+        iface.obf_h4 = params["h4"]
+        iface.obf_generated_at = datetime.now(timezone.utc)
+        session.add(iface)
+        await session.flush()
+
+
+# ── Генерация конфигов ───────────────────────────────────────────────────
+
+def _obf_server_lines(iface: Interface) -> str:
+    """
+    Строки обфускации для серверной стороны туннеля.
+    Только симметричные параметры: S1-S4, H1-H4.
+    Jc/Jmin/Jmax НЕ включаются (клиент несёт junk, сервер — нет).
+    """
+    if iface.obf_h1 is None:
+        return ""
+    lines = []
+    for key, val in [
+        ("S1", iface.obf_s1), ("S2", iface.obf_s2),
+        ("S3", iface.obf_s3), ("S4", iface.obf_s4),
+        ("H1", iface.obf_h1), ("H2", iface.obf_h2),
+        ("H3", iface.obf_h3), ("H4", iface.obf_h4),
+    ]:
+        if val is not None:
+            lines.append(f"{key} = {val}")
+    return "\n".join(lines)
+
+
+def _obf_client_lines(iface: Interface) -> str:
+    """
+    Строки обфускации для клиентской стороны туннеля.
+    Все параметры: Jc, Jmin, Jmax + S1-S4, H1-H4.
+    """
+    if iface.obf_h1 is None:
+        return ""
+    lines = []
+    for key, val in [
+        ("Jc", iface.obf_jc), ("Jmin", iface.obf_jmin), ("Jmax", iface.obf_jmax),
+        ("S1", iface.obf_s1), ("S2", iface.obf_s2),
+        ("S3", iface.obf_s3), ("S4", iface.obf_s4),
+        ("H1", iface.obf_h1), ("H2", iface.obf_h2),
+        ("H3", iface.obf_h3), ("H4", iface.obf_h4),
+    ]:
+        if val is not None:
+            lines.append(f"{key} = {val}")
+    return "\n".join(lines)
+
+
+def generate_interface_config(iface: Interface, peers: list[Peer]) -> str:
+    """
+    Генерирует wg-формат конфиг для интерфейса.
+
+    awg0 (сервер): [Interface] с S*/H*, [Peer] для каждого клиента.
+    awg1 (клиент): [Interface] с Jc/Jmin/Jmax+S*/H*, один [Peer] upstream.
+    """
+    lines = ["[Interface]"]
+    lines.append(f"PrivateKey = {iface.private_key}")
+
+    if iface.mode == InterfaceMode.server:
+        lines.append(f"ListenPort = {iface.listen_port}")
+        # Сервер: только симметричные параметры (без Junk)
+        obf = _obf_server_lines(iface)
+        if obf:
+            lines.append(obf)
+    else:
+        # Клиент (awg1): все параметры включая Junk
+        obf = _obf_client_lines(iface)
+        if obf:
+            lines.append(obf)
+
+    lines.append("")
+
+    for peer in peers:
+        if not peer.enabled:
+            continue
+        lines.append("[Peer]")
+        lines.append(f"PublicKey = {peer.public_key}")
+        if peer.preshared_key:
+            lines.append(f"PresharedKey = {peer.preshared_key}")
+        lines.append(f"AllowedIPs = {peer.allowed_ips}")
+        if peer.persistent_keepalive:
+            lines.append(f"PersistentKeepalive = {peer.persistent_keepalive}")
+        # Для клиентского интерфейса (awg1): endpoint upstream ноды
+        if iface.mode == InterfaceMode.client and iface.endpoint:
+            lines.append(f"Endpoint = {iface.endpoint}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def generate_client_config(peer: Peer, server: Interface, server_endpoint: str) -> str:
+    """
+    Генерирует конфиг для скачивания клиентом (пиром awg0).
+
+    [Interface] клиента:
+      - PrivateKey = peer.private_key
+      - Address = peer.tunnel_address
+      - DNS = server.dns
+      - Jc/Jmin/Jmax + S*/H* из awg0 (клиент несёт все параметры)
+
+    [Peer] = сервер:
+      - PublicKey = server.public_key
+      - Endpoint = server_endpoint
+      - AllowedIPs = 0.0.0.0/0
+    """
+    lines = ["[Interface]"]
+    if peer.private_key:
+        lines.append(f"PrivateKey = {peer.private_key}")
+    else:
+        lines.append("# PrivateKey = <generated on client>")
+    if peer.tunnel_address:
+        lines.append(f"Address = {peer.tunnel_address}")
+    if server.dns:
+        lines.append(f"DNS = {server.dns}")
+
+    # Клиент несёт все параметры обфускации (Jc + S*/H*)
+    obf = _obf_client_lines(server)
+    if obf:
+        lines.append(obf)
+
+    lines.append("")
+    lines.append("[Peer]")
+    lines.append(f"PublicKey = {server.public_key}")
+    if peer.preshared_key:
+        lines.append(f"PresharedKey = {peer.preshared_key}")
+    lines.append(f"Endpoint = {server_endpoint}")
+    lines.append(f"AllowedIPs = {peer.allowed_ips or '0.0.0.0/0'}")
+    if peer.persistent_keepalive:
+        lines.append(f"PersistentKeepalive = {peer.persistent_keepalive}")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def generate_qr_bytes(config_str: str) -> bytes:
+    """Генерирует PNG-изображение QR-кода для конфига."""
+    import qrcode  # type: ignore
+
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=10,
+        border=4,
+    )
+    qr.add_data(config_str)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+# ── Управление демоном ───────────────────────────────────────────────────
+
+async def _wait_for_socket(ifname: str, timeout: float = 5.0) -> bool:
+    """Ждёт появления UNIX-сокета amneziawg-go."""
+    sock_path = f"/var/run/wireguard/{ifname}.sock"
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        if os.path.exists(sock_path):
+            return True
+        await asyncio.sleep(0.2)
+    return False
+
+
+def _run_cmd(args: list[str], input_data: Optional[bytes] = None) -> tuple[int, str]:
+    """Запускает команду, возвращает (returncode, combined_output)."""
+    result = subprocess.run(
+        args,
+        input=input_data,
+        capture_output=True,
+        text=(input_data is None),
+    )
+    if isinstance(result.stdout, bytes):
+        out = result.stdout.decode(errors="replace")
+        err = result.stderr.decode(errors="replace")
+    else:
+        out = result.stdout
+        err = result.stderr
+    return result.returncode, (out + err).strip()
+
+
+async def apply_interface(iface: Interface, peers: list[Peer]) -> None:
+    """
+    Запускает или перезапускает amneziawg-go для интерфейса
+    и применяет конфигурацию через wg setconf.
+    """
+    ifname = iface.name
+
+    # Остановить старый процесс если есть
+    if ifname in _awg_processes:
+        proc = _awg_processes[ifname]
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        del _awg_processes[ifname]
+        # Удалить интерфейс если существует
+        _run_cmd(["ip", "link", "delete", ifname])
+
+    # Создать директорию для сокетов
+    os.makedirs("/var/run/wireguard", exist_ok=True)
+
+    # Запустить демон
+    proc = subprocess.Popen(
+        ["amneziawg-go", ifname],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    _awg_processes[ifname] = proc
+
+    # Ждём сокет
+    if not await _wait_for_socket(ifname):
+        raise RuntimeError(f"amneziawg-go socket not created for {ifname}")
+
+    # Записать конфиг во временный файл и применить
+    config_str = generate_interface_config(iface, peers)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False) as f:
+        f.write(config_str)
+        conf_path = f.name
+
+    try:
+        rc, out = _run_cmd(["wg", "setconf", ifname, conf_path])
+        if rc != 0:
+            raise RuntimeError(f"wg setconf failed: {out}")
+    finally:
+        os.unlink(conf_path)
+
+    # Назначить IP-адрес
+    _run_cmd(["ip", "addr", "flush", "dev", ifname])
+    addr = iface.address  # может быть CIDR, например 10.10.0.1/24
+    rc, out = _run_cmd(["ip", "addr", "add", addr, "dev", ifname])
+    if rc != 0:
+        raise RuntimeError(f"ip addr add failed: {out}")
+
+    rc, out = _run_cmd(["ip", "link", "set", ifname, "up"])
+    if rc != 0:
+        raise RuntimeError(f"ip link set up failed: {out}")
+
+
+async def sync_peers(iface: Interface, peers: list[Peer]) -> None:
+    """Hot-reload пиров через wg syncconf (без перезапуска демона)."""
+    ifname = iface.name
+    config_str = generate_interface_config(iface, peers)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False) as f:
+        f.write(config_str)
+        conf_path = f.name
+    try:
+        rc, out = _run_cmd(["wg", "syncconf", ifname, conf_path])
+        if rc != 0:
+            raise RuntimeError(f"wg syncconf failed: {out}")
+    finally:
+        os.unlink(conf_path)
+
+
+async def stop_interface(ifname: str) -> None:
+    """Останавливает интерфейс и завершает демон."""
+    _run_cmd(["ip", "link", "delete", ifname])
+    if ifname in _awg_processes:
+        proc = _awg_processes.pop(ifname)
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+
+# ── Статус ───────────────────────────────────────────────────────────────
+
+def get_status() -> dict:
+    """
+    Парсит вывод `wg show all dump`.
+
+    Формат строк:
+      interface  private_key  public_key  listen_port  fwmark
+      <TAB>peer_pubkey  psk  endpoint  allowed_ips  handshake  rx  tx  keepalive
+    """
+    rc, output = _run_cmd(["wg", "show", "all", "dump"])
+    if rc != 0:
+        return {}
+
+    result: dict[str, dict] = {}
+    current_iface: Optional[str] = None
+
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        if line.startswith("\t"):
+            # Строка пира
+            if current_iface is None:
+                continue
+            parts = line.strip().split("\t")
+            if len(parts) < 8:
+                continue
+            pubkey, psk, endpoint, allowed_ips, handshake, rx, tx, keepalive = (
+                parts + [""] * 8
+            )[:8]
+            peer_data = {
+                "public_key": pubkey,
+                "endpoint": endpoint if endpoint != "(none)" else None,
+                "allowed_ips": allowed_ips,
+                "latest_handshake": int(handshake) if handshake.isdigit() else 0,
+                "rx_bytes": int(rx) if rx.isdigit() else 0,
+                "tx_bytes": int(tx) if tx.isdigit() else 0,
+                "persistent_keepalive": int(keepalive) if keepalive.isdigit() else None,
+            }
+            result[current_iface]["peers"][pubkey] = peer_data
+        else:
+            # Строка интерфейса
+            parts = line.split("\t")
+            if len(parts) < 4:
+                continue
+            ifname, priv, pub, port = (parts + [""] * 4)[:4]
+            current_iface = ifname
+            result[ifname] = {
+                "name": ifname,
+                "public_key": pub,
+                "listen_port": int(port) if port.isdigit() else None,
+                "running": ifname in _awg_processes,
+                "peers": {},
+            }
+
+    return result
+
+
+def is_running(ifname: str) -> bool:
+    if ifname not in _awg_processes:
+        return False
+    return _awg_processes[ifname].poll() is None
+
+
+async def load_interface(iface: Interface, session: AsyncSession) -> None:
+    """
+    Загружает интерфейс из БД и применяет.
+    Вспомогательная функция для lifespan.
+    """
+    result = await session.execute(
+        select(Peer).where(Peer.interface_id == iface.id, Peer.enabled == True)  # noqa: E712
+    )
+    peers = list(result.scalars().all())
+    await apply_interface(iface, peers)

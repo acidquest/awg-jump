@@ -12,6 +12,7 @@ class Peer(Base):
     interface_id = Column(Integer, ForeignKey("interfaces.id", ondelete="CASCADE"), nullable=False)
 
     name = Column(String(128), nullable=False, default="")
+    private_key = Column(String(64), nullable=True)   # хранится для генерации клиентского конфига
     public_key = Column(String(64), unique=True, nullable=False)
     preshared_key = Column(String(64), nullable=True)
 
