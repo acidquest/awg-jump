@@ -1,28 +1,31 @@
+# syntax=docker/dockerfile:1.7
+
 # ============================================================
 # Stage 1 — сборка amneziawg-go
 # ============================================================
-FROM golang:1.22-alpine AS awg-builder
+FROM golang:1.24-alpine AS awg-builder
 
 RUN apk add --no-cache git make
 
 WORKDIR /build
-RUN git clone https://github.com/amnezia-vpn/amneziawg-go.git .
-RUN go build -o amneziawg-go ./...
+RUN git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-go.git .
+RUN mkdir -p /out \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/amneziawg-go .
 
 # ============================================================
 # Stage 2 — минималистичный upstream образ
 # ============================================================
-FROM debian:bookworm-slim AS final
+FROM alpine:3.20 AS final
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apk add --no-cache \
     iproute2 \
     iptables \
-    wireguard-tools \
-    && rm -rf /var/lib/apt/lists/*
+    wireguard-tools
 
-COPY --from=awg-builder /build/amneziawg-go /usr/local/bin/amneziawg-go
+COPY --from=awg-builder /out/amneziawg-go /usr/local/bin/amneziawg-go
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /usr/local/bin/amneziawg-go /entrypoint.sh \
+    && mkdir -p /var/run/wireguard
 
 EXPOSE 51821/udp
 

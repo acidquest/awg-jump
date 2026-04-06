@@ -20,13 +20,14 @@ services:
     sysctls:
       - net.ipv4.ip_forward=1
     env_file:
-      - .env
+      - ${ENV_FILE:-.env}
     volumes:
       - ./data:/data
     networks:
       - awg-net
     ports:
       - "${AWG0_LISTEN_PORT:-51820}:${AWG0_LISTEN_PORT:-51820}/udp"
+      - "127.0.0.1:${WEB_PORT:-8080}:8080"
     expose:
       - "8080"
     healthcheck:
@@ -45,7 +46,7 @@ services:
       awg-jump:
         condition: service_healthy
     env_file:
-      - .env
+      - ${ENV_FILE:-.env}
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/generate-cert.sh:/docker-entrypoint.d/10-generate-cert.sh:ro
@@ -54,7 +55,7 @@ services:
       - awg-net
     ports:
       - "${NGINX_HTTPS_PORT:-443}:443"
-      - "80:80"
+      - "${NGINX_HTTP_PORT:-80}:80"
 
   # ── Локальная тестовая upstream нода (опционально) ──────────────────────
   awg-node:

@@ -1,23 +1,27 @@
 # Data и секреты
 data/
 .env
+.env.*
 *.db
 *.db-shm
 *.db-wal
 
 # Python
 __pycache__/
+*/__pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
 *.egg-info/
 dist/
+*/dist/
 build/
 .venv/
 venv/
 
 # Node / Frontend
 node_modules/
+*/node_modules/
 frontend/dist/
 frontend/.vite/
 

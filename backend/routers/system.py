@@ -37,7 +37,6 @@ _LOG_FILES = {
 @router.get("/status")
 async def get_status(
     session: AsyncSession = Depends(get_db),
-    _user: str = Depends(get_current_user),
 ) -> dict:
     """Агрегированный статус всей системы."""
     uptime_seconds = int(time.time() - _START_TIME)

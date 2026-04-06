@@ -28,27 +28,36 @@ router = APIRouter(prefix="/api/backup", tags=["backup"])
 _BACKUP_VERSION = "1"
 
 
+def _json_safe_setting(name: str, default):
+    value = getattr(settings, name, default)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return default
+
+
 def _env_snapshot() -> dict:
     """Публичные параметры — без паролей и ключей."""
     return {
         "version": _BACKUP_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "config": {
-            "awg0_listen_port": settings.awg0_listen_port,
-            "awg0_address": settings.awg0_address,
-            "awg0_dns": settings.awg0_dns,
-            "awg1_address": settings.awg1_address,
-            "awg1_allowed_ips": settings.awg1_allowed_ips,
-            "awg1_persistent_keepalive": settings.awg1_persistent_keepalive,
-            "physical_iface": settings.physical_iface,
-            "routing_table_ru": settings.routing_table_ru,
-            "routing_table_vpn": settings.routing_table_vpn,
-            "fwmark_ru": settings.fwmark_ru,
-            "fwmark_vpn": settings.fwmark_vpn,
-            "geoip_source_ru": settings.geoip_source_ru,
-            "geoip_update_cron": settings.geoip_update_cron,
-            "node_awg_port": settings.node_awg_port,
-            "node_vpn_subnet": settings.node_vpn_subnet,
+            "awg0_listen_port": _json_safe_setting("awg0_listen_port", 51820),
+            "awg0_address": _json_safe_setting("awg0_address", "10.10.0.1/24"),
+            "awg0_dns": _json_safe_setting("awg0_dns", "1.1.1.1"),
+            "awg1_address": _json_safe_setting("awg1_address", "10.20.0.2/32"),
+            "awg1_allowed_ips": _json_safe_setting("awg1_allowed_ips", "0.0.0.0/0"),
+            "awg1_persistent_keepalive": _json_safe_setting("awg1_persistent_keepalive", 25),
+            "physical_iface": _json_safe_setting("physical_iface", "eth0"),
+            "routing_table_ru": _json_safe_setting("routing_table_ru", 100),
+            "routing_table_vpn": _json_safe_setting("routing_table_vpn", 200),
+            "fwmark_ru": _json_safe_setting("fwmark_ru", "0x1"),
+            "fwmark_vpn": _json_safe_setting("fwmark_vpn", "0x2"),
+            "geoip_source_ru": _json_safe_setting(
+                "geoip_source_ru", "http://www.ipdeny.com/ipblocks/data/countries/ru.zone"
+            ),
+            "geoip_update_cron": _json_safe_setting("geoip_update_cron", "0 4 * * *"),
+            "node_awg_port": _json_safe_setting("node_awg_port", 51821),
+            "node_vpn_subnet": _json_safe_setting("node_vpn_subnet", "10.20.0.0/24"),
         },
     }
 
@@ -57,11 +66,21 @@ def _build_zip_bytes() -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         # config.db
-        if os.path.exists(settings.db_path):
-            zf.write(settings.db_path, arcname="config.db")
+        if os.path.isfile(settings.db_path):
+            fd = os.open(settings.db_path, os.O_RDONLY)
+            try:
+                chunks: list[bytes] = []
+                while True:
+                    chunk = os.read(fd, 1024 * 1024)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                zf.writestr("config.db", b"".join(chunks))
+            finally:
+                os.close(fd)
 
         # env_snapshot.json
-        zf.writestr("env_snapshot.json", json.dumps(_env_snapshot(), indent=2))
+        zf.writestr("env_snapshot.json", json.dumps(_env_snapshot(), indent=2, default=str))
 
         # wg_configs/ (если есть)
         if os.path.isdir(settings.wg_config_dir):
@@ -145,20 +164,18 @@ async def import_backup(
     data = await file.read()
 
     try:
-        _validate_zip(data)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # Бэкап текущей БД
-    if os.path.exists(settings.db_path):
-        bak_path = settings.db_path + ".bak"
-        try:
-            shutil.copy2(settings.db_path, bak_path)
-        except Exception as e:
-            logger.warning("Could not back up current db: %s", e)
-
-    try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            if "config.db" not in zf.namelist():
+                raise HTTPException(status_code=400, detail="Archive must contain config.db")
+
+            # Бэкап текущей БД
+            if os.path.exists(settings.db_path):
+                bak_path = settings.db_path + ".bak"
+                try:
+                    shutil.copy2(settings.db_path, bak_path)
+                except Exception as e:
+                    logger.warning("Could not back up current db: %s", e)
+
             # Заменить config.db
             db_dir = os.path.dirname(settings.db_path)
             os.makedirs(db_dir, exist_ok=True)
@@ -176,7 +193,10 @@ async def import_backup(
                     dest = os.path.join(settings.wg_config_dir, fname)
                     with zf.open(name) as src, open(dest, "wb") as dst:
                         dst.write(src.read())
-
+    except zipfile.BadZipFile as e:
+        raise HTTPException(status_code=400, detail=f"Invalid ZIP file: {e}")
+    except HTTPException:
+        raise
     except Exception as e:
         # Откат если что-то пошло не так
         bak = settings.db_path + ".bak"

@@ -1,7 +1,24 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 echo "[entrypoint] AWG Jump Server starting..."
+
+SUPERVISOR_PID=0
+
+graceful_shutdown() {
+    echo "[entrypoint] Received shutdown signal, stopping supervisor..."
+
+    if command -v supervisorctl >/dev/null 2>&1; then
+        supervisorctl -c /etc/supervisor/supervisord.conf stop all >/dev/null 2>&1 || true
+        supervisorctl -c /etc/supervisor/supervisord.conf shutdown >/dev/null 2>&1 || true
+    fi
+
+    if [ "${SUPERVISOR_PID}" -gt 0 ] && kill -0 "${SUPERVISOR_PID}" 2>/dev/null; then
+        wait "${SUPERVISOR_PID}" || true
+    fi
+}
+
+trap graceful_shutdown TERM INT
 
 # ── 1. Переключить на legacy iptables (совместимость) ────────────────────
 echo "[entrypoint] Configuring iptables-legacy..."
@@ -13,6 +30,7 @@ mkdir -p "${DATA_DIR:-/data}"
 mkdir -p "${GEOIP_CACHE_DIR:-/data/geoip}"
 mkdir -p "${BACKUP_DIR:-/data/backups}"
 mkdir -p "${WG_CONFIG_DIR:-/data/wg_configs}"
+mkdir -p /var/log/supervisor
 mkdir -p /var/run/wireguard
 
 # ── 3. Применить миграции БД ─────────────────────────────────────────────
@@ -94,6 +112,8 @@ async def init_defaults():
 asyncio.run(init_defaults())
 PYEOF
 
-# ── 5. Запустить supervisor (управляет uvicorn) ──────────────────────────
+# ── 5. Запустить supervisor (uvicorn → lifespan: interfaces → geoip → routing → scheduler)
 echo "[entrypoint] Starting supervisor..."
-exec /usr/bin/supervisord -n -c /etc/supervisor/supervisord.conf
+/usr/bin/supervisord -n -c /etc/supervisor/supervisord.conf &
+SUPERVISOR_PID=$!
+wait "${SUPERVISOR_PID}"

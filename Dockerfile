@@ -1,16 +1,33 @@
+# syntax=docker/dockerfile:1.7
+
 # ============================================================
 # Stage 1 — сборка amneziawg-go
 # ============================================================
-FROM golang:1.22-alpine AS awg-builder
+FROM golang:1.24-alpine AS awg-builder
 
 RUN apk add --no-cache git make
 
 WORKDIR /build
-RUN git clone https://github.com/amnezia-vpn/amneziawg-go.git .
-RUN go build -o amneziawg-go ./...
+RUN git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-go.git .
+RUN mkdir -p /out \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/amneziawg-go .
 
 # ============================================================
-# Stage 2 — сборка frontend
+# Stage 2 — Python runtime dependencies
+# ============================================================
+FROM python:3.12-slim-bookworm AS python-builder
+
+ENV VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH
+
+WORKDIR /build
+COPY backend/requirements.txt .
+RUN python -m venv "$VIRTUAL_ENV" \
+    && pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+# ============================================================
+# Stage 3 — сборка frontend
 # ============================================================
 FROM node:20-alpine AS frontend-builder
 
@@ -21,37 +38,38 @@ COPY frontend/ .
 RUN npm run build
 
 # ============================================================
-# Stage 3 — финальный образ
+# Stage 4 — финальный образ
 # ============================================================
-FROM debian:bookworm-slim AS final
+FROM python:3.12-slim-bookworm AS final
+
+ENV PATH=/opt/venv/bin:$PATH \
+    PYTHONPATH=/app \
+    PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    iproute2 \
-    iptables \
-    ipset \
-    wireguard-tools \
-    curl \
     ca-certificates \
-    openssh-client \
-    python3 \
-    python3-pip \
-    supervisor \
-    procps \
+    curl \
+    iproute2 \
+    ipset \
+    iptables \
     net-tools \
+    openssh-client \
+    procps \
+    supervisor \
+    wireguard-tools \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=awg-builder /build/amneziawg-go /usr/local/bin/amneziawg-go
+COPY --from=awg-builder /out/amneziawg-go /usr/local/bin/amneziawg-go
+COPY --from=python-builder /opt/venv /opt/venv
 COPY --from=frontend-builder /frontend/dist /app/static
-
-COPY backend/requirements.txt /app/requirements.txt
-RUN pip3 install --no-cache-dir --break-system-packages -r /app/requirements.txt
 
 COPY backend/ /app/backend/
 COPY node/ /app/node/
 COPY scripts/ /app/scripts/
-COPY supervisord.conf /etc/supervisor/conf.d/awg-jump.conf
+COPY supervisord.conf /etc/supervisor/supervisord.conf
 
-RUN chmod +x /app/scripts/*.sh
+RUN chmod +x /usr/local/bin/amneziawg-go /app/scripts/*.sh \
+    && mkdir -p /var/log/supervisor /var/run/wireguard
 
 WORKDIR /app
 

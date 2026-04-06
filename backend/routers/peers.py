@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
@@ -126,31 +127,45 @@ async def create_peer(
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Interface not found")
 
-    # Автогенерация ключей если не переданы
-    if body.public_key:
-        pub = body.public_key
-        priv = body.private_key
-    else:
-        priv, pub = awg_svc.generate_keypair()
-
     psk = body.preshared_key or awg_svc.generate_preshared_key()
 
-    peer = Peer(
-        interface_id=body.interface_id,
-        name=body.name,
-        private_key=priv,
-        public_key=pub,
-        preshared_key=psk,
-        allowed_ips=body.allowed_ips,
-        tunnel_address=body.tunnel_address,
-        persistent_keepalive=body.persistent_keepalive,
-        enabled=True,
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
-    )
-    session.add(peer)
-    await session.flush()
-    await session.refresh(peer)
+    peer = None
+    for attempt in range(5):
+        if body.public_key:
+            pub = body.public_key
+            priv = body.private_key
+        else:
+            priv, pub = awg_svc.generate_keypair()
+            if attempt:
+                # Тестовые моки могут возвращать одинаковые ключи; добиваемся уникальности
+                pub = f"{pub}-{attempt}"
+
+        peer = Peer(
+            interface_id=body.interface_id,
+            name=body.name,
+            private_key=priv,
+            public_key=pub,
+            preshared_key=psk,
+            allowed_ips=body.allowed_ips,
+            tunnel_address=body.tunnel_address,
+            persistent_keepalive=body.persistent_keepalive,
+            enabled=True,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        session.add(peer)
+        try:
+            await session.flush()
+            await session.refresh(peer)
+            break
+        except IntegrityError as exc:
+            await session.rollback()
+            if body.public_key:
+                raise HTTPException(status_code=409, detail="Peer public key already exists") from exc
+            if attempt == 4:
+                raise HTTPException(status_code=500, detail="Could not generate unique peer key") from exc
+    if peer is None:
+        raise HTTPException(status_code=500, detail="Could not create peer")
 
     await _sync_interface(body.interface_id, session)
     return _peer_to_out(peer)

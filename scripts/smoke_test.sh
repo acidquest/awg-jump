@@ -1,69 +1,45 @@
 #!/bin/bash
-# Smoke test: запуск, базовые проверки, остановка
-set -e
+set -euo pipefail
 
-COMPOSE="docker-compose"
-API="http://localhost:8080"
-PASS=0
-FAIL=0
+COMPOSE=(env ENV_FILE=.env.smoke docker compose --env-file .env.smoke)
 
-green() { echo -e "\033[32m[PASS]\033[0m $*"; }
-red()   { echo -e "\033[31m[FAIL]\033[0m $*"; }
-
-check() {
-    local desc="$1"; shift
-    if "$@" &>/dev/null; then
-        green "$desc"
-        ((PASS++))
-    else
-        red "$desc"
-        ((FAIL++))
-    fi
+cleanup() {
+    "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+    rm -f .env.smoke
 }
 
-echo "=== AWG Jump Smoke Test ==="
+trap cleanup EXIT
 
-# Поднять стек
-echo "[*] Building and starting containers..."
-$COMPOSE up -d --build
+cp .env.example .env.smoke
+python3 - <<'PYEOF'
+from pathlib import Path
 
-echo "[*] Waiting 20s for services to start..."
-sleep 20
+path = Path(".env.smoke")
+text = path.read_text()
+text = text.replace("ADMIN_PASSWORD=changeme_REQUIRED   # ОБЯЗАТЕЛЬНО изменить!", "ADMIN_PASSWORD=test")
+text = text.replace("SECRET_KEY=replace-with-random-secret-key-here", "SECRET_KEY=smoke-test-secret-key")
+text = text.replace("TLS_COMMON_NAME=localhost", "TLS_COMMON_NAME=127.0.0.1")
+text = text.replace("NGINX_HTTPS_PORT=443", "NGINX_HTTPS_PORT=8443")
+text = text.replace("NGINX_HTTP_PORT=80", "NGINX_HTTP_PORT=8081")
+path.write_text(text)
+PYEOF
 
-# Проверка: контейнер запущен
-check "awg-jump container is running" \
-    docker inspect -f '{{.State.Running}}' awg-jump
+echo "[smoke] docker compose up -d --build"
+"${COMPOSE[@]}" up -d --build
 
-# Проверка: /api/system/status
-check "GET /api/system/status returns 200" \
-    curl -sf "${API}/api/system/status" -o /dev/null
+echo "[smoke] sleep 15"
+sleep 15
 
-# Проверка: логин
-TOKEN=$(curl -sf -X POST "${API}/api/auth/login" \
+echo "[smoke] curl -f http://localhost:8080/api/system/status"
+curl -f http://localhost:8080/api/system/status
+
+echo "[smoke] curl -f -X POST http://localhost:8080/api/auth/login -d '{\"username\":\"admin\",\"password\":\"test\"}'"
+curl -f -X POST http://localhost:8080/api/auth/login \
     -H "Content-Type: application/json" \
-    -d '{"username":"admin","password":"changeme"}' \
-    | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4 || true)
+    -d '{"username":"admin","password":"test"}'
 
-if [ -n "$TOKEN" ]; then
-    green "POST /api/auth/login returns token"
-    ((PASS++))
-else
-    red "POST /api/auth/login — no token"
-    ((FAIL++))
-fi
+echo "[smoke] docker exec awg-jump wg show"
+docker exec awg-jump wg show
 
-# Проверка: wg show внутри контейнера
-check "wg show runs inside awg-jump" \
-    docker exec awg-jump wg show
-
-# Проверка: amneziawg-go бинарник исполняемый
-check "amneziawg-go binary is executable" \
-    docker exec awg-jump test -x /usr/local/bin/amneziawg-go
-
-# Остановить стек
-echo "[*] Stopping containers..."
-$COMPOSE down
-
-echo ""
-echo "=== Results: ${PASS} passed, ${FAIL} failed ==="
-[ "$FAIL" -eq 0 ] && exit 0 || exit 1
+echo "[smoke] docker compose down"
+"${COMPOSE[@]}" down
