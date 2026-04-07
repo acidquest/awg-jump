@@ -14,22 +14,36 @@ update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || tr
 : "${AWG_PEER_PUBLIC_KEY:?AWG_PEER_PUBLIC_KEY is required}"
 : "${AWG_PEER_ALLOWED_IPS:=10.20.0.2/32}"
 
-# Проверить наличие /dev/net/tun (должен быть пробршен через devices: в compose)
-if [ ! -c /dev/net/tun ]; then
-    echo "[awg-node] ERROR: /dev/net/tun not found. Add 'devices: [/dev/net/tun:/dev/net/tun]' to docker-compose.yml"
-    exit 1
+# Определить режим: kernel module или userspace amneziawg-go
+USE_KERNEL=0
+if grep -qE "amneziawg|wireguard" /proc/modules 2>/dev/null; then
+    echo "[awg-node] AmneziaWG kernel module detected"
+    USE_KERNEL=1
 fi
 
-# Запустить TUN демон
-echo "[awg-node] Starting amneziawg-go daemon..."
-amneziawg-go awg0 &
-AWG_PID=$!
-sleep 2
+AWG_PID=0
 
-# Проверить что сокет создан
-if [ ! -S /var/run/wireguard/awg0.sock ]; then
-    echo "[awg-node] ERROR: WireGuard socket not created"
-    exit 1
+if [ "$USE_KERNEL" = "1" ]; then
+    # ── Kernel mode: создать интерфейс через ip link ──────────────────────
+    echo "[awg-node] Creating kernel interface awg0..."
+    ip link add awg0 type amneziawg || { echo "[awg-node] ERROR: ip link add awg0 type amneziawg failed"; exit 1; }
+else
+    # ── Userspace mode: запустить amneziawg-go ────────────────────────────
+    # Проверить наличие /dev/net/tun
+    if [ ! -c /dev/net/tun ]; then
+        echo "[awg-node] ERROR: /dev/net/tun not found. Add 'devices: [/dev/net/tun:/dev/net/tun]' to docker-compose.yml"
+        exit 1
+    fi
+
+    echo "[awg-node] Starting amneziawg-go daemon..."
+    amneziawg-go awg0 &
+    AWG_PID=$!
+    sleep 2
+
+    if [ ! -S /var/run/wireguard/awg0.sock ]; then
+        echo "[awg-node] ERROR: WireGuard socket not created"
+        exit 1
+    fi
 fi
 
 # Сформировать конфиг (права 600 — файл содержит приватный ключ)
@@ -106,11 +120,19 @@ iptables -t nat -A POSTROUTING -o "${DEFAULT_IFACE}" -j MASQUERADE
 
 echo "[awg-node] Node is ready. Listening on UDP port ${AWG_LISTEN_PORT}"
 
-# Держать контейнер живым, пересматривать статус каждые 60с
+# Держать контейнер живым, проверять статус каждые 60с
 while true; do
-    if ! kill -0 "$AWG_PID" 2>/dev/null; then
-        echo "[awg-node] ERROR: amneziawg-go process died"
-        exit 1
+    if [ "$USE_KERNEL" = "0" ] && [ "$AWG_PID" -gt 0 ]; then
+        if ! kill -0 "$AWG_PID" 2>/dev/null; then
+            echo "[awg-node] ERROR: amneziawg-go process died"
+            exit 1
+        fi
+    else
+        # Kernel mode: проверяем что интерфейс существует
+        if ! ip link show awg0 > /dev/null 2>&1; then
+            echo "[awg-node] ERROR: awg0 interface disappeared"
+            exit 1
+        fi
     fi
     sleep 60
 done

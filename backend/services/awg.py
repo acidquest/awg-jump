@@ -24,8 +24,41 @@ from backend.models.interface import Interface, InterfaceMode
 from backend.models.peer import Peer
 
 
-# ── Singleton — PID таблица запущенных демонов ───────────────────────────
+# ── Singleton — PID таблица запущенных демонов (userspace режим) ─────────
 _awg_processes: dict[str, subprocess.Popen] = {}
+
+# ── Режим работы: kernel module или userspace amneziawg-go ────────────────
+_kernel_mode: bool | None = None  # None = ещё не определено
+
+
+def _detect_kernel_mode() -> bool:
+    """
+    Определяет доступен ли нативный kernel module AmneziaWG.
+    Проверяет /proc/modules и пробует создать временный интерфейс.
+    """
+    global _kernel_mode
+    if _kernel_mode is not None:
+        return _kernel_mode
+
+    # Проверить загруженные модули
+    rc, out = _run_cmd(["grep", "-qE", "amneziawg|wireguard", "/proc/modules"])
+    if rc == 0:
+        logger.info("[awg] Kernel module detected via /proc/modules")
+        _kernel_mode = True
+        return True
+
+    # Попробовать создать тестовый интерфейс
+    test_iface = "awg_test_$$"
+    rc2, _ = _run_cmd(["ip", "link", "add", "awg_probe", "type", "amneziawg"])
+    if rc2 == 0:
+        _run_cmd(["ip", "link", "delete", "awg_probe"])
+        logger.info("[awg] Kernel module detected via ip link probe")
+        _kernel_mode = True
+        return True
+
+    logger.info("[awg] Kernel module not available, using amneziawg-go userspace")
+    _kernel_mode = False
+    return False
 
 
 # ── Генерация ключей ─────────────────────────────────────────────────────
@@ -279,15 +312,10 @@ async def apply_interface(iface: Interface, peers: list[Peer]) -> None:
     logger.info("[awg] apply_interface: %s (mode=%s, addr=%s, port=%s, peers=%d)",
                 ifname, iface.mode, iface.address, iface.listen_port, len(peers))
 
-    # Проверить наличие бинарника
-    rc_which, which_out = _run_cmd(["which", "amneziawg-go"])
-    if rc_which != 0:
-        rc_which, which_out = _run_cmd(["ls", "-la", "/usr/local/bin/amneziawg-go"])
-        logger.error("[awg] amneziawg-go not found in PATH. ls result: %s", which_out)
-        raise RuntimeError("amneziawg-go binary not found")
-    logger.info("[awg] amneziawg-go found at: %s", which_out.strip())
+    use_kernel = _detect_kernel_mode()
+    logger.info("[awg] Using %s mode for %s", "kernel" if use_kernel else "userspace", ifname)
 
-    # Остановить старый процесс если есть
+    # Остановить/удалить старый интерфейс если есть
     if ifname in _awg_processes:
         proc = _awg_processes[ifname]
         if proc.poll() is None:
@@ -299,41 +327,49 @@ async def apply_interface(iface: Interface, peers: list[Peer]) -> None:
                 logger.warning("[awg] %s did not terminate, killing", ifname)
                 proc.kill()
         del _awg_processes[ifname]
-        rc_del, out_del = _run_cmd(["ip", "link", "delete", ifname])
-        logger.debug("[awg] ip link delete %s: rc=%d %s", ifname, rc_del, out_del)
 
-    # Создать директорию для сокетов
-    os.makedirs("/var/run/wireguard", exist_ok=True)
+    rc_del, out_del = _run_cmd(["ip", "link", "delete", ifname])
+    logger.debug("[awg] ip link delete %s: rc=%d %s", ifname, rc_del, out_del)
 
-    # Запустить демон — перехватываем stderr в pipe для логирования
-    logger.info("[awg] Starting amneziawg-go %s...", ifname)
-    proc = subprocess.Popen(
-        ["amneziawg-go", ifname],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    _awg_processes[ifname] = proc
+    if use_kernel:
+        # ── Kernel module: создать интерфейс через ip link ────────────────
+        rc, out = _run_cmd(["ip", "link", "add", ifname, "type", "amneziawg"])
+        if rc != 0:
+            raise RuntimeError(f"ip link add {ifname} type amneziawg failed: {out}")
+        logger.info("[awg] Kernel interface %s created", ifname)
+    else:
+        # ── Userspace: запустить amneziawg-go демон ───────────────────────
+        rc_which, which_out = _run_cmd(["which", "amneziawg-go"])
+        if rc_which != 0:
+            raise RuntimeError("amneziawg-go binary not found")
+        logger.info("[awg] amneziawg-go found at: %s", which_out.strip())
 
-    # Ждём сокет
-    sock_ok = await _wait_for_socket(ifname)
-    if not sock_ok:
-        # Прочитать вывод упавшего процесса
-        exit_code = proc.poll()
-        try:
-            daemon_out = proc.stdout.read().decode(errors="replace") if proc.stdout else ""
-        except Exception:
-            daemon_out = "(could not read output)"
-        logger.error(
-            "[awg] amneziawg-go failed to create socket for %s. "
-            "exit_code=%s, output: %s",
-            ifname, exit_code, daemon_out or "(no output)"
+        os.makedirs("/var/run/wireguard", exist_ok=True)
+
+        logger.info("[awg] Starting amneziawg-go %s...", ifname)
+        proc = subprocess.Popen(
+            ["amneziawg-go", ifname],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
-        raise RuntimeError(
-            f"amneziawg-go socket not created for {ifname} "
-            f"(exit={exit_code}): {daemon_out[:300]}"
-        )
+        _awg_processes[ifname] = proc
 
-    logger.info("[awg] amneziawg-go socket ready for %s (pid=%d)", ifname, proc.pid)
+        sock_ok = await _wait_for_socket(ifname)
+        if not sock_ok:
+            exit_code = proc.poll()
+            try:
+                daemon_out = proc.stdout.read().decode(errors="replace") if proc.stdout else ""
+            except Exception:
+                daemon_out = "(could not read output)"
+            logger.error(
+                "[awg] amneziawg-go failed to create socket for %s. exit_code=%s, output: %s",
+                ifname, exit_code, daemon_out or "(no output)"
+            )
+            raise RuntimeError(
+                f"amneziawg-go socket not created for {ifname} "
+                f"(exit={exit_code}): {daemon_out[:300]}"
+            )
+        logger.info("[awg] amneziawg-go socket ready for %s (pid=%d)", ifname, proc.pid)
 
     # Сгенерировать конфиг (логируем без приватного ключа)
     config_str = generate_interface_config(iface, peers)
@@ -396,7 +432,7 @@ async def sync_peers(iface: Interface, peers: list[Peer]) -> None:
 
 
 async def stop_interface(ifname: str) -> None:
-    """Останавливает интерфейс и завершает демон."""
+    """Останавливает интерфейс и завершает демон (если userspace)."""
     _run_cmd(["ip", "link", "delete", ifname])
     if ifname in _awg_processes:
         proc = _awg_processes.pop(ifname)
@@ -406,6 +442,7 @@ async def stop_interface(ifname: str) -> None:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 proc.kill()
+    logger.info("[awg] Interface %s stopped", ifname)
 
 
 # ── Статус ───────────────────────────────────────────────────────────────
@@ -467,6 +504,11 @@ def get_status() -> dict:
 
 
 def is_running(ifname: str) -> bool:
+    if _detect_kernel_mode():
+        # Kernel mode: проверяем наличие интерфейса
+        rc, _ = _run_cmd(["ip", "link", "show", ifname])
+        return rc == 0
+    # Userspace mode: проверяем живой процесс
     if ifname not in _awg_processes:
         return False
     return _awg_processes[ifname].poll() is None
