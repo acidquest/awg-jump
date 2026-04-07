@@ -369,6 +369,10 @@ async def delete_node(
         from backend.services.awg import _run_cmd
         _run_cmd(["awg", "set", "awg1", "peer", node.public_key, "remove"])
 
+    if node.is_active:
+        from backend.services.routing import update_vpn_route
+        update_vpn_route(None)
+
     await session.delete(node)
     await session.flush()
 

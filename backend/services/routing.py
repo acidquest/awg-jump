@@ -71,6 +71,15 @@ def _ensure_route(table: int, route_args: list[str], *, description: str) -> Non
         logger.info("%s", description)
 
 
+def _delete_route(table: int, route_args: list[str], *, description: str) -> None:
+    while True:
+        rc, out = _run(["ip", "route", "del"] + route_args + ["table", str(table)])
+        if rc != 0:
+            if out:
+                logger.info("%s: %s", description, out)
+            break
+
+
 def _ensure_geoip_ipset() -> None:
     """
     Гарантирует существование geoip ipset до установки iptables правил.
@@ -120,19 +129,33 @@ def setup_policy_routing() -> None:
     update_vpn_route("awg1", fallback_gateway=gw)
 
 
-def update_vpn_route(interface_name: str, fallback_gateway: Optional[str] = None) -> None:
-    """Обновляет маршрут по умолчанию в VPN-таблице (вызывается при смене ноды)."""
+def update_vpn_route(
+    interface_name: Optional[str],
+    fallback_gateway: Optional[str] = None,
+) -> None:
+    """
+    Обновляет маршруты в VPN-таблице.
+    Если interface_name задан — трафик идёт через awg1, а eth0 остаётся резервом.
+    Если interface_name=None — primary route через awg1 удаляется и остаётся только eth0 fallback.
+    """
     table_vpn = settings.routing_table_vpn
     phys_iface = settings.physical_iface
 
-    _ensure_route(
-        table_vpn,
-        ["default", "dev", interface_name, "metric", _VPN_ROUTE_METRIC_PRIMARY],
-        description=(
-            f"VPN table: primary default dev {interface_name} "
-            f"metric {_VPN_ROUTE_METRIC_PRIMARY} (table {table_vpn})"
-        ),
-    )
+    if interface_name:
+        _ensure_route(
+            table_vpn,
+            ["default", "dev", interface_name, "metric", _VPN_ROUTE_METRIC_PRIMARY],
+            description=(
+                f"VPN table: primary default dev {interface_name} "
+                f"metric {_VPN_ROUTE_METRIC_PRIMARY} (table {table_vpn})"
+            ),
+        )
+    else:
+        _delete_route(
+            table_vpn,
+            ["default", "dev", "awg1", "metric", _VPN_ROUTE_METRIC_PRIMARY],
+            description="VPN table: removed primary default via awg1",
+        )
 
     gw = fallback_gateway or _get_default_gateway(phys_iface)
     if gw:

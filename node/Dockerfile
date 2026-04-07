@@ -32,6 +32,7 @@ FROM alpine:3.20 AS final
 RUN apk add --no-cache \
     iproute2 \
     iptables \
+    tcpdump \
     wireguard-tools \
     libmnl
 

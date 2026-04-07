@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.database import get_db
 from backend.models.interface import Interface
 from backend.models.upstream_node import UpstreamNode
+from backend.models.upstream_node import NodeStatus
 from backend.models.geoip import GeoipSource
 from backend.routers.auth import get_current_user
 import backend.services.awg as awg_svc
@@ -145,7 +146,10 @@ async def get_logs(
 
 
 @router.post("/restart-routing")
-async def restart_routing(_user: str = Depends(get_current_user)) -> dict:
+async def restart_routing(
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+) -> dict:
     """Сбросить и переприменить policy routing + iptables правила."""
     errors = []
     try:
@@ -154,7 +158,14 @@ async def restart_routing(_user: str = Depends(get_current_user)) -> dict:
         errors.append(f"teardown: {e}")
 
     try:
+        active_node = await session.scalar(
+            select(UpstreamNode).where(
+                UpstreamNode.is_active == True,  # noqa: E712
+                UpstreamNode.status == NodeStatus.online,
+            )
+        )
         routing_svc.setup_policy_routing()
+        routing_svc.update_vpn_route("awg1" if active_node else None)
         routing_svc.setup_iptables()
     except Exception as e:
         errors.append(f"setup: {e}")

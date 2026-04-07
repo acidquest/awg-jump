@@ -23,6 +23,7 @@ from backend.config import settings as _settings, validate_security_settings
 from backend.database import AsyncSessionLocal, engine, Base
 from backend.models.interface import Interface
 from backend.models.geoip import GeoipSource
+from backend.models.upstream_node import NodeStatus, UpstreamNode
 from backend.routers import auth, backup, geoip, interfaces, nodes, peers, routing, system
 from backend.scheduler import scheduler, setup_scheduler
 import backend.services.awg as awg_svc
@@ -112,7 +113,15 @@ async def _init_geoip_and_routing() -> None:
 
     # Policy routing
     try:
+        async with AsyncSessionLocal() as session:
+            active_node = await session.scalar(
+                select(UpstreamNode).where(
+                    UpstreamNode.is_active == True,  # noqa: E712
+                    UpstreamNode.status == NodeStatus.online,
+                )
+            )
         routing_svc.setup_policy_routing()
+        routing_svc.update_vpn_route("awg1" if active_node else None)
         routing_svc.setup_iptables()
         logger.info("Policy routing configured")
     except Exception as e:

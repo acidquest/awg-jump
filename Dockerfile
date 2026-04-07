@@ -71,6 +71,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
     procps \
     supervisor \
+    tcpdump \
     wireguard-tools \
     && rm -rf /var/lib/apt/lists/*
 

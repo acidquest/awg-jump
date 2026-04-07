@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.interface import Interface, InterfaceMode
 from backend.models.peer import Peer
+from backend.models.upstream_node import NodeStatus, UpstreamNode
 
 
 # ── Singleton — PID таблица запущенных демонов (userspace режим) ─────────
@@ -527,4 +528,33 @@ async def load_interface(iface: Interface, session: AsyncSession) -> None:
         select(Peer).where(Peer.interface_id == iface.id, Peer.enabled == True)  # noqa: E712
     )
     peers = list(result.scalars().all())
+
+    if iface.mode == InterfaceMode.client and iface.name == "awg1" and not peers:
+        active_node = await session.scalar(
+            select(UpstreamNode).where(
+                UpstreamNode.is_active == True,  # noqa: E712
+                UpstreamNode.status == NodeStatus.online,
+                UpstreamNode.public_key.isnot(None),
+                UpstreamNode.awg_address.isnot(None),
+            )
+        )
+        if active_node:
+            iface.endpoint = f"{active_node.host}:{active_node.awg_port}"
+            iface.allowed_ips = active_node.awg_address
+            peers = [
+                Peer(
+                    interface_id=iface.id,
+                    name=f"upstream-node-{active_node.id}",
+                    public_key=active_node.public_key,
+                    preshared_key=active_node.preshared_key,
+                    allowed_ips=active_node.awg_address,
+                    persistent_keepalive=iface.persistent_keepalive,
+                    enabled=True,
+                )
+            ]
+            logger.info(
+                "[awg] Loaded active upstream node %d into awg1 config",
+                active_node.id,
+            )
+
     await apply_interface(iface, peers)

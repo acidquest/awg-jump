@@ -715,6 +715,8 @@ class NodeDeployer:
                 failed.updated_at = datetime.now(timezone.utc)
                 session.add(failed)
                 await session.commit()
+                from backend.services.routing import update_vpn_route
+                update_vpn_route(None)
                 return False
 
             # Деактивировать упавшую
@@ -795,6 +797,12 @@ class NodeDeployer:
 
         if public_key:
             _run_cmd(["awg", "set", "awg1", "peer", public_key, "remove"])
+
+        async with AsyncSessionLocal() as session:
+            node_obj = await _get_node(node_id, session)
+            if node_obj.is_active:
+                from backend.services.routing import update_vpn_route
+                update_vpn_route(None)
 
         _health_fail_counts.pop(node_id, None)
 
