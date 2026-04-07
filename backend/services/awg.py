@@ -33,30 +33,28 @@ _kernel_mode: bool | None = None  # None = ещё не определено
 
 def _detect_kernel_mode() -> bool:
     """
-    Определяет доступен ли нативный kernel module AmneziaWG.
-    Проверяет /proc/modules и пробует создать временный интерфейс.
+    Определяет доступен ли нативный kernel module AmneziaWG (не обычный wireguard!).
+    Только amneziawg поддерживает обфускацию — стандартный wireguard нам не подходит.
     """
     global _kernel_mode
     if _kernel_mode is not None:
         return _kernel_mode
 
-    # Проверить загруженные модули
-    rc, out = _run_cmd(["grep", "-qE", "amneziawg|wireguard", "/proc/modules"])
+    # Проверить загруженные модули — только amneziawg, не wireguard
+    rc, out = _run_cmd(["grep", "-q", "amneziawg", "/proc/modules"])
     if rc == 0:
-        logger.info("[awg] Kernel module detected via /proc/modules")
-        _kernel_mode = True
-        return True
+        logger.info("[awg] AmneziaWG kernel module detected via /proc/modules")
+        # Дополнительно убедиться что тип интерфейса существует
+        rc2, _ = _run_cmd(["ip", "link", "add", "awg_probe", "type", "amneziawg"])
+        if rc2 == 0:
+            _run_cmd(["ip", "link", "delete", "awg_probe"])
+            logger.info("[awg] Kernel mode confirmed via ip link probe")
+            _kernel_mode = True
+            return True
+        else:
+            logger.warning("[awg] amneziawg in /proc/modules but ip link add failed — using userspace")
 
-    # Попробовать создать тестовый интерфейс
-    test_iface = "awg_test_$$"
-    rc2, _ = _run_cmd(["ip", "link", "add", "awg_probe", "type", "amneziawg"])
-    if rc2 == 0:
-        _run_cmd(["ip", "link", "delete", "awg_probe"])
-        logger.info("[awg] Kernel module detected via ip link probe")
-        _kernel_mode = True
-        return True
-
-    logger.info("[awg] Kernel module not available, using amneziawg-go userspace")
+    logger.info("[awg] AmneziaWG kernel module not available, using amneziawg-go userspace")
     _kernel_mode = False
     return False
 
