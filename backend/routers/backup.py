@@ -11,9 +11,9 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import zipfile
 from datetime import datetime, timezone
-from typing import BinaryIO
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
@@ -65,19 +65,16 @@ def _env_snapshot() -> dict:
 def _build_zip_bytes() -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        # config.db
+        # config.db — атомарный снимок через sqlite3.backup() (WAL-safe, Python 3.12)
         if os.path.isfile(settings.db_path):
-            fd = os.open(settings.db_path, os.O_RDONLY)
+            src = sqlite3.connect(f"file:{settings.db_path}?mode=ro", uri=True)
+            dst = sqlite3.connect(":memory:")
             try:
-                chunks: list[bytes] = []
-                while True:
-                    chunk = os.read(fd, 1024 * 1024)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                zf.writestr("config.db", b"".join(chunks))
+                src.backup(dst)
+                zf.writestr("config.db", bytes(dst.serialize()))
             finally:
-                os.close(fd)
+                src.close()
+                dst.close()
 
         # env_snapshot.json
         zf.writestr("env_snapshot.json", json.dumps(_env_snapshot(), indent=2, default=str))
