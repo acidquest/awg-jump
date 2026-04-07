@@ -17,17 +17,13 @@ update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || tr
 # Определить режим: kernel module или userspace amneziawg-go
 # Проверяем строго amneziawg — стандартный wireguard не поддерживает обфускацию
 USE_KERNEL=0
-if grep -q "amneziawg" /proc/modules 2>/dev/null; then
-    echo "[awg-node] AmneziaWG kernel module found, testing ip link..."
-    if ip link add awg_probe type amneziawg 2>/dev/null; then
-        ip link delete awg_probe 2>/dev/null || true
-        echo "[awg-node] Kernel mode confirmed"
-        USE_KERNEL=1
-    else
-        echo "[awg-node] Kernel module found but ip link failed, using userspace"
-    fi
+echo "[awg-node] Probing for AmneziaWG kernel module via ip link..."
+if ip link add awg_probe type amneziawg 2>/dev/null; then
+    ip link delete awg_probe 2>/dev/null || true
+    echo "[awg-node] Kernel mode confirmed"
+    USE_KERNEL=1
 else
-    echo "[awg-node] No AmneziaWG kernel module, using amneziawg-go userspace"
+    echo "[awg-node] No AmneziaWG kernel module (ip link probe failed), using amneziawg-go userspace"
 fi
 
 AWG_PID=0

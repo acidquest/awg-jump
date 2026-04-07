@@ -35,26 +35,24 @@ def _detect_kernel_mode() -> bool:
     """
     Определяет доступен ли нативный kernel module AmneziaWG (не обычный wireguard!).
     Только amneziawg поддерживает обфускацию — стандартный wireguard нам не подходит.
+
+    Используем прямой ip link probe вместо grep /proc/modules — надёжнее,
+    потому что имя модуля в /proc/modules может отличаться (amneziawg vs amnezia_wg).
+    Именно этот же метод использует amneziawg-go для детекции ядра.
     """
     global _kernel_mode
     if _kernel_mode is not None:
         return _kernel_mode
 
-    # Проверить загруженные модули — только amneziawg, не wireguard
-    rc, out = _run_cmd(["grep", "-q", "amneziawg", "/proc/modules"])
+    # Пробуем создать интерфейс типа amneziawg — если успешно, ядро поддерживает
+    rc, out = _run_cmd(["ip", "link", "add", "awg_probe", "type", "amneziawg"])
     if rc == 0:
-        logger.info("[awg] AmneziaWG kernel module detected via /proc/modules")
-        # Дополнительно убедиться что тип интерфейса существует
-        rc2, _ = _run_cmd(["ip", "link", "add", "awg_probe", "type", "amneziawg"])
-        if rc2 == 0:
-            _run_cmd(["ip", "link", "delete", "awg_probe"])
-            logger.info("[awg] Kernel mode confirmed via ip link probe")
-            _kernel_mode = True
-            return True
-        else:
-            logger.warning("[awg] amneziawg in /proc/modules but ip link add failed — using userspace")
+        _run_cmd(["ip", "link", "delete", "awg_probe"])
+        logger.info("[awg] Kernel mode confirmed via ip link probe (amneziawg module present)")
+        _kernel_mode = True
+        return True
 
-    logger.info("[awg] AmneziaWG kernel module not available, using amneziawg-go userspace")
+    logger.info("[awg] AmneziaWG kernel module not available (ip link probe rc=%d), using amneziawg-go userspace", rc)
     _kernel_mode = False
     return False
 
