@@ -78,6 +78,35 @@ def _peer_to_out(peer: Peer) -> PeerOut:
     )
 
 
+async def _apply_live_stats(peers: list[Peer], session: AsyncSession) -> list[Peer]:
+    """Подмешивает live handshake/rx/tx из awg show all dump поверх значений из БД."""
+    if not peers:
+        return peers
+
+    iface_ids = {p.interface_id for p in peers}
+    result = await session.execute(select(Interface).where(Interface.id.in_(iface_ids)))
+    iface_map = {iface.id: iface.name for iface in result.scalars().all()}
+
+    status = awg_svc.get_status()
+    if not status:
+        return peers
+
+    for peer in peers:
+        iface_name = iface_map.get(peer.interface_id)
+        if not iface_name:
+            continue
+        peer_stat = status.get(iface_name, {}).get("peers", {}).get(peer.public_key)
+        if peer_stat is None:
+            continue
+        hs = peer_stat.get("latest_handshake", 0)
+        peer.last_handshake = (
+            datetime.fromtimestamp(hs, tz=timezone.utc) if hs else None
+        )
+        peer.rx_bytes = peer_stat.get("rx_bytes", 0)
+        peer.tx_bytes = peer_stat.get("tx_bytes", 0)
+    return peers
+
+
 async def _get_peer_or_404(peer_id: int, session: AsyncSession) -> Peer:
     result = await session.execute(select(Peer).where(Peer.id == peer_id))
     peer = result.scalar_one_or_none()
@@ -160,7 +189,9 @@ async def list_peers(
     if interface_id is not None:
         q = q.where(Peer.interface_id == interface_id)
     result = await session.execute(q)
-    return [_peer_to_out(p) for p in result.scalars().all()]
+    peers = list(result.scalars().all())
+    peers = await _apply_live_stats(peers, session)
+    return [_peer_to_out(p) for p in peers]
 
 
 @router.post("", response_model=PeerOut, status_code=201)
@@ -233,6 +264,7 @@ async def get_peer(
     _user: str = Depends(get_current_user),
 ) -> PeerOut:
     peer = await _get_peer_or_404(peer_id, session)
+    await _apply_live_stats([peer], session)
     return _peer_to_out(peer)
 
 
