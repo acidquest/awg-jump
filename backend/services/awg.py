@@ -470,13 +470,8 @@ def get_status() -> dict:
     for line in output.splitlines():
         if not line.strip():
             continue
-        if line.startswith("\t"):
-            # Строка пира
-            if current_iface is None:
-                continue
-            parts = line.strip().split("\t")
-            if len(parts) < 8:
-                continue
+        parts = line.strip().split("\t")
+        if len(parts) >= 8 and current_iface is not None:
             pubkey, psk, endpoint, allowed_ips, handshake, rx, tx, keepalive = (
                 parts + [""] * 8
             )[:8]
@@ -490,11 +485,7 @@ def get_status() -> dict:
                 "persistent_keepalive": int(keepalive) if keepalive.isdigit() else None,
             }
             result[current_iface]["peers"][pubkey] = peer_data
-        else:
-            # Строка интерфейса
-            parts = line.split("\t")
-            if len(parts) < 4:
-                continue
+        elif len(parts) >= 4:
             ifname, priv, pub, port = (parts + [""] * 4)[:4]
             current_iface = ifname
             result[ifname] = {
@@ -540,14 +531,14 @@ async def load_interface(iface: Interface, session: AsyncSession) -> None:
         )
         if active_node:
             iface.endpoint = f"{active_node.host}:{active_node.awg_port}"
-            iface.allowed_ips = active_node.awg_address
+            iface.allowed_ips = iface.allowed_ips or "0.0.0.0/0"
             peers = [
                 Peer(
                     interface_id=iface.id,
                     name=f"upstream-node-{active_node.id}",
                     public_key=active_node.public_key,
                     preshared_key=active_node.preshared_key,
-                    allowed_ips=active_node.awg_address,
+                    allowed_ips=iface.allowed_ips,
                     persistent_keepalive=iface.persistent_keepalive,
                     enabled=True,
                 )

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.config import settings
 from backend.database import AsyncSessionLocal, get_db
 from backend.models.upstream_node import DeployLog, DeployStatus, NodeStatus, UpstreamNode
 from backend.routers.auth import get_current_user
@@ -27,6 +28,7 @@ from backend.services.node_deployer import (
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 logger = logging.getLogger(__name__)
+_UPSTREAM_ALLOWED_IPS = settings.awg1_allowed_ips or "0.0.0.0/0"
 
 
 # ── Схемы ─────────────────────────────────────────────────────────────────
@@ -401,7 +403,7 @@ async def reset_node(
         "awg", "set", "awg1",
         "peer", node.public_key,
         "endpoint", f"{node.host}:{node.awg_port}",
-        "allowed-ips", node.awg_address,
+        "allowed-ips", _UPSTREAM_ALLOWED_IPS,
         "persistent-keepalive", "25",
     ])
     if rc != 0:
@@ -458,7 +460,7 @@ async def activate_node(
             "awg", "set", "awg1",
             "peer", node.public_key,
             "endpoint", f"{node.host}:{node.awg_port}",
-            "allowed-ips", node.awg_address,
+            "allowed-ips", _UPSTREAM_ALLOWED_IPS,
             "persistent-keepalive", "25",
         ])
         if rc != 0:

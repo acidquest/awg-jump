@@ -25,6 +25,8 @@ from backend.services.awg import _run_cmd, generate_keypair
 
 logger = logging.getLogger(__name__)
 
+_UPSTREAM_ALLOWED_IPS = settings.awg1_allowed_ips or "0.0.0.0/0"
+
 # ── SSE очереди деплоя: log_id → asyncio.Queue ───────────────────────────
 _deploy_queues: dict[int, asyncio.Queue] = {}
 
@@ -392,7 +394,7 @@ class NodeDeployer:
                 "awg", "set", "awg1",
                 "peer", node_public_key,
                 "endpoint", f"{host}:{awg_port}",
-                "allowed-ips", awg_address,
+                "allowed-ips", _UPSTREAM_ALLOWED_IPS,
                 "persistent-keepalive", "25",
             ])
 
@@ -627,8 +629,6 @@ class NodeDeployer:
             if rc == 0:
                 now_ts = int(time.time())
                 for line in output.splitlines():
-                    if not line.startswith("\t"):
-                        continue
                     parts = line.strip().split("\t")
                     if len(parts) < 7:
                         continue
@@ -652,7 +652,7 @@ class NodeDeployer:
                         if result["alive"]:
                             if age < 180:
                                 node_obj.last_seen = datetime.now(timezone.utc)
-                            if node_obj.status == NodeStatus.degraded:
+                            if node_obj.status in (NodeStatus.degraded, NodeStatus.offline):
                                 node_obj.status = NodeStatus.online
                         else:
                             node_obj.status = NodeStatus.degraded
@@ -746,7 +746,7 @@ class NodeDeployer:
             "awg", "set", "awg1",
             "peer", new_pubkey,
             "endpoint", f"{new_host}:{new_port}",
-            "allowed-ips", new_address,
+            "allowed-ips", _UPSTREAM_ALLOWED_IPS,
             "persistent-keepalive", "25",
         ])
 
