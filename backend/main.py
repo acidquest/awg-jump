@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
@@ -206,5 +206,17 @@ async def health() -> dict:
 
 # ── SPA static files ─────────────────────────────────────────────────────
 
-if os.path.exists("/app/static"):
-    app.mount("/", StaticFiles(directory="/app/static", html=True), name="static")
+_STATIC_DIR = "/app/static"
+
+if os.path.exists(_STATIC_DIR):
+    # Монтируем статику для assets (JS/CSS/img) — точный match по файлам
+    app.mount("/assets", StaticFiles(directory=os.path.join(_STATIC_DIR, "assets")), name="assets")
+
+    # Catch-all: все остальные не-API запросы отдают index.html (SPA routing)
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str) -> FileResponse:
+        # Если запрошен реальный файл (favicon, robots.txt и т.п.) — отдаём его
+        file_path = os.path.join(_STATIC_DIR, full_path)
+        if os.path.isfile(file_path):
+            return FileResponse(file_path)
+        return FileResponse(os.path.join(_STATIC_DIR, "index.html"))
