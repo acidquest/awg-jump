@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 RUN git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-tools.git .
-RUN make -C src -j$(nproc)
+RUN make -C src -j$(nproc) && make -C src install DESTDIR=/out PREFIX=/usr
 
 # ============================================================
 # Stage 2 — Python runtime dependencies
@@ -74,7 +74,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=awg-builder /out/amneziawg-go /usr/local/bin/amneziawg-go
-COPY --from=awg-tools-builder /build/src/awg /usr/local/bin/awg
+COPY --from=awg-tools-builder /out/usr/bin/awg /usr/local/bin/awg
 COPY --from=python-builder /opt/venv /opt/venv
 COPY --from=frontend-builder /frontend/dist /app/static
 

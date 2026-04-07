@@ -22,7 +22,7 @@ RUN apk add --no-cache ca-certificates git build-base libmnl-dev pkgconf bash
 
 WORKDIR /build
 RUN git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-tools.git .
-RUN make -C src -j$(nproc)
+RUN make -C src -j$(nproc) && make -C src install DESTDIR=/out PREFIX=/usr
 
 # ============================================================
 # Stage 3 — минималистичный upstream образ
@@ -36,7 +36,7 @@ RUN apk add --no-cache \
     libmnl
 
 COPY --from=awg-builder /out/amneziawg-go /usr/local/bin/amneziawg-go
-COPY --from=awg-tools-builder /build/src/awg /usr/local/bin/awg
+COPY --from=awg-tools-builder /out/usr/bin/awg /usr/local/bin/awg
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /usr/local/bin/amneziawg-go /usr/local/bin/awg /entrypoint.sh \
     && mkdir -p /var/run/wireguard
