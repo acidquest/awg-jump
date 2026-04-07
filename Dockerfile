@@ -5,7 +5,7 @@
 # ============================================================
 FROM golang:1.24-alpine AS awg-builder
 
-RUN apk add --no-cache git make
+RUN apk add --no-cache ca-certificates git make
 
 WORKDIR /build
 RUN git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-go.git .
@@ -19,7 +19,7 @@ RUN mkdir -p /out \
 FROM debian:bookworm-slim AS awg-tools-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git make gcc pkg-config libmnl-dev \
+    ca-certificates git make gcc pkg-config libmnl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
