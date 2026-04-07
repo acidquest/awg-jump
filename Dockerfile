@@ -19,7 +19,7 @@ RUN mkdir -p /out \
 FROM debian:bookworm-slim AS awg-tools-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates git make gcc pkg-config libmnl-dev \
+    ca-certificates git build-essential pkg-config libmnl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build

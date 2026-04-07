@@ -18,7 +18,7 @@ RUN mkdir -p /out \
 # ============================================================
 FROM alpine:3.20 AS awg-tools-builder
 
-RUN apk add --no-cache ca-certificates git make gcc musl-dev libmnl-dev pkgconf bash
+RUN apk add --no-cache ca-certificates git build-base libmnl-dev pkgconf bash
 
 WORKDIR /build
 RUN git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-tools.git .
