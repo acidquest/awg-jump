@@ -84,7 +84,7 @@ COPY scripts/ /app/scripts/
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 
 RUN chmod +x /usr/local/bin/amneziawg-go /app/scripts/*.sh \
-    && mkdir -p /var/log/supervisor /var/run/wireguard
+    && mkdir -p /var/log/supervisor /var/run/amneziawg
 
 WORKDIR /app
 

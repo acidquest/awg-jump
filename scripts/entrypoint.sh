@@ -39,7 +39,7 @@ mkdir -p "${GEOIP_CACHE_DIR:-/data/geoip}"
 mkdir -p "${BACKUP_DIR:-/data/backups}"
 mkdir -p "${WG_CONFIG_DIR:-/data/wg_configs}"
 mkdir -p /var/log/supervisor
-mkdir -p /var/run/wireguard
+mkdir -p /var/run/amneziawg
 
 # ── 4. Применить миграции БД ─────────────────────────────────────────────
 echo "[entrypoint] Running database migrations..."

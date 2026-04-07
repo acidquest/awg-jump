@@ -39,7 +39,7 @@ COPY --from=awg-builder /out/amneziawg-go /usr/local/bin/amneziawg-go
 COPY --from=awg-tools-builder /out/usr/bin/awg /usr/local/bin/awg
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /usr/local/bin/amneziawg-go /usr/local/bin/awg /entrypoint.sh \
-    && mkdir -p /var/run/wireguard
+    && mkdir -p /var/run/amneziawg
 
 EXPOSE 51821/udp
 

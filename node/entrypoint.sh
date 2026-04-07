@@ -49,8 +49,8 @@ else
     AWG_PID=$!
     sleep 2
 
-    if [ ! -S /var/run/wireguard/awg0.sock ]; then
-        echo "[awg-node] ERROR: WireGuard socket not created"
+    if [ ! -S /var/run/amneziawg/awg0.sock ]; then
+        echo "[awg-node] ERROR: AmneziaWG socket not created"
         exit 1
     fi
 fi

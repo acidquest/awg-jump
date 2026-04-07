@@ -271,9 +271,10 @@ def generate_qr_bytes(config_str: str) -> bytes:
 
 # ── Управление демоном ───────────────────────────────────────────────────
 
-async def _wait_for_socket(ifname: str, timeout: float = 5.0) -> bool:
+async def _wait_for_socket(ifname: str, timeout: float = 10.0) -> bool:
     """Ждёт появления UNIX-сокета amneziawg-go."""
-    sock_path = f"/var/run/wireguard/{ifname}.sock"
+    # amneziawg-go создаёт сокет в /var/run/amneziawg/ (не в /var/run/wireguard/)
+    sock_path = f"/var/run/amneziawg/{ifname}.sock"
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
         if os.path.exists(sock_path):
@@ -340,7 +341,7 @@ async def apply_interface(iface: Interface, peers: list[Peer]) -> None:
             raise RuntimeError("amneziawg-go binary not found in PATH")
         logger.info("[awg] amneziawg-go found at: %s", which_out.strip())
 
-        os.makedirs("/var/run/wireguard", exist_ok=True)
+        os.makedirs("/var/run/amneziawg", exist_ok=True)
 
         logger.info("[awg] Starting amneziawg-go %s...", ifname)
         env = os.environ.copy()
