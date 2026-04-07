@@ -519,9 +519,12 @@ class NodeDeployer:
                     awg1_public_key=awg1.public_key if awg1 else "",
                     awg1=awg1,
                 )
+                compose_content = _make_compose_content(awg_port)
                 async with conn.start_sftp_client() as sftp:
                     async with sftp.open("/opt/awg-node/.env", "w") as f:
                         await f.write(env_content)
+                    async with sftp.open("/opt/awg-node/docker-compose.yml", "w") as f:
+                        await f.write(compose_content)
 
                 await emit("Rebuilding docker image...")
                 async with conn.create_process(
