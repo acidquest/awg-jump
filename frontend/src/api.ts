@@ -60,7 +60,10 @@ export const getPeerConfig = (id: number, endpoint?: string) =>
     responseType: 'text',
   })
 export const getPeerQr = (id: number, endpoint?: string) =>
-  `/api/peers/${id}/qr${endpoint ? `?server_endpoint=${encodeURIComponent(endpoint)}` : ''}`
+  api.get(`/peers/${id}/qr`, {
+    params: endpoint ? { server_endpoint: endpoint } : {},
+    responseType: 'blob',
+  })
 
 // ── Nodes ─────────────────────────────────────────────────────────────────
 export const getNodes = () => api.get('/nodes')

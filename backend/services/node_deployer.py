@@ -82,12 +82,14 @@ def _make_env_content(
     awg1: Interface,
 ) -> str:
     """Генерирует содержимое .env для awg-node (нода — сервер, без Junk)."""
+    # AWG_PEER_ALLOWED_IPS — адрес awg1 jump-сервера (он пир для ноды)
+    jump_awg1_address = settings.awg1_address  # например 10.20.0.2/32
     lines = [
         f"AWG_LISTEN_PORT={awg_port}",
         f"AWG_PRIVATE_KEY={private_key}",
         f"AWG_ADDRESS={awg_address}",
         f"AWG_PEER_PUBLIC_KEY={awg1_public_key}",
-        "AWG_PEER_ALLOWED_IPS=10.20.0.2/32",
+        f"AWG_PEER_ALLOWED_IPS={jump_awg1_address}",
         "AWG_PEER_ENDPOINT=",
         # Симметричные параметры обфускации (нода — сервер, Junk не нужен)
         f"AWG_S1={awg1.obf_s1 or 0}",
@@ -222,11 +224,15 @@ class NodeDeployer:
                     port=ssh_port,
                     username=ssh_user,
                     password=ssh_password,
-                    known_hosts=None,
+                    known_hosts=None,  # TODO: store and verify host keys after first deploy
                     connect_timeout=15,
                 )
-            except Exception:
-                raise RuntimeError("SSH connection failed")
+            except asyncssh.PermissionDenied:
+                raise RuntimeError("SSH connection failed: invalid credentials")
+            except asyncssh.ConnectionLost as e:
+                raise RuntimeError(f"SSH connection lost: {e}")
+            except OSError as e:
+                raise RuntimeError(f"SSH connection failed: {e}")
 
             async with conn:
                 # ── Шаг 2: apt-get update & upgrade ──────────────────────
@@ -280,7 +286,7 @@ class NodeDeployer:
 
                 # ── Шаг 7: передача исходников через tar pipe ─────────────
                 await emit("Uploading node sources via tar pipe...")
-                tar_bytes = await asyncio.get_event_loop().run_in_executor(
+                tar_bytes = await asyncio.get_running_loop().run_in_executor(
                     None, _pack_node_sources
                 )
                 await conn.run("mkdir -p /opt/awg-node", check=True)
@@ -480,15 +486,19 @@ class NodeDeployer:
                     port=ssh_port,
                     username=ssh_user,
                     password=ssh_password,
-                    known_hosts=None,
+                    known_hosts=None,  # TODO: store and verify host keys after first deploy
                     connect_timeout=15,
                 )
-            except Exception:
-                raise RuntimeError("SSH connection failed")
+            except asyncssh.PermissionDenied:
+                raise RuntimeError("SSH connection failed: invalid credentials")
+            except asyncssh.ConnectionLost as e:
+                raise RuntimeError(f"SSH connection lost: {e}")
+            except OSError as e:
+                raise RuntimeError(f"SSH connection failed: {e}")
 
             async with conn:
                 await emit("Uploading fresh node sources...")
-                tar_bytes = await asyncio.get_event_loop().run_in_executor(
+                tar_bytes = await asyncio.get_running_loop().run_in_executor(
                     None, _pack_node_sources
                 )
                 await conn.run("mkdir -p /opt/awg-node", check=True)
@@ -738,7 +748,7 @@ class NodeDeployer:
                     port=ssh_port,
                     username=ssh_user,
                     password=ssh_password,
-                    known_hosts=None,
+                    known_hosts=None,  # TODO: store and verify host keys after first deploy
                     connect_timeout=10,
                 )
                 async with conn:

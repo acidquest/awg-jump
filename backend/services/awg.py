@@ -242,8 +242,8 @@ def generate_qr_bytes(config_str: str) -> bytes:
 async def _wait_for_socket(ifname: str, timeout: float = 5.0) -> bool:
     """Ждёт появления UNIX-сокета amneziawg-go."""
     sock_path = f"/var/run/wireguard/{ifname}.sock"
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
         if os.path.exists(sock_path):
             return True
         await asyncio.sleep(0.2)
@@ -303,17 +303,21 @@ async def apply_interface(iface: Interface, peers: list[Peer]) -> None:
         raise RuntimeError(f"amneziawg-go socket not created for {ifname}")
 
     # Записать конфиг во временный файл и применить
+    # mode=0o600 — только владелец может читать (файл содержит приватный ключ)
     config_str = generate_interface_config(iface, peers)
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False) as f:
-        f.write(config_str)
-        conf_path = f.name
-
+    fd, conf_path = tempfile.mkstemp(suffix=".conf")
     try:
+        os.chmod(conf_path, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(config_str)
         rc, out = _run_cmd(["wg", "setconf", ifname, conf_path])
         if rc != 0:
             raise RuntimeError(f"wg setconf failed: {out}")
     finally:
-        os.unlink(conf_path)
+        try:
+            os.unlink(conf_path)
+        except OSError:
+            pass
 
     # Назначить IP-адрес
     _run_cmd(["ip", "addr", "flush", "dev", ifname])
@@ -331,15 +335,19 @@ async def sync_peers(iface: Interface, peers: list[Peer]) -> None:
     """Hot-reload пиров через wg syncconf (без перезапуска демона)."""
     ifname = iface.name
     config_str = generate_interface_config(iface, peers)
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False) as f:
-        f.write(config_str)
-        conf_path = f.name
+    fd, conf_path = tempfile.mkstemp(suffix=".conf")
     try:
+        os.chmod(conf_path, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(config_str)
         rc, out = _run_cmd(["wg", "syncconf", ifname, conf_path])
         if rc != 0:
             raise RuntimeError(f"wg syncconf failed: {out}")
     finally:
-        os.unlink(conf_path)
+        try:
+            os.unlink(conf_path)
+        except OSError:
+            pass
 
 
 async def stop_interface(ifname: str) -> None:

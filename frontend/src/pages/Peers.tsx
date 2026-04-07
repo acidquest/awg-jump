@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getInterfaces, getPeers, createPeer, updatePeer,
@@ -311,8 +311,26 @@ function EditPeerModal({ peer, onClose, onSaved }: { peer: Peer; onClose: () => 
 function QrModal({ peer, onClose }: { peer: Peer; onClose: () => void }) {
   const [endpoint, setEndpoint] = useState('')
   const [applied, setApplied] = useState(false)
+  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
-  const qrSrc = getPeerQr(peer.id, applied ? endpoint : undefined)
+  // Загружаем QR через axios (с auth-токеном), конвертируем blob → object URL
+  useEffect(() => {
+    let objectUrl: string | null = null
+    setLoading(true)
+    setError('')
+    getPeerQr(peer.id, applied ? endpoint : undefined)
+      .then((res) => {
+        objectUrl = URL.createObjectURL(res.data as Blob)
+        setBlobUrl(objectUrl)
+      })
+      .catch(() => setError('Failed to load QR code'))
+      .finally(() => setLoading(false))
+    return () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [peer.id, applied, endpoint])
 
   return (
     <Modal open title={`QR — ${peer.name}`} onClose={onClose}>
@@ -322,28 +340,34 @@ function QrModal({ peer, onClose }: { peer: Peer; onClose: () => void }) {
           <input
             className="form-input mono"
             value={endpoint}
-            onChange={(e) => setEndpoint(e.target.value)}
+            onChange={(e) => { setEndpoint(e.target.value); setApplied(false) }}
             placeholder="1.2.3.4:51820"
           />
           <button className="btn btn-secondary" onClick={() => setApplied(true)}>Apply</button>
         </div>
       </div>
-      <div style={{ textAlign: 'center', marginTop: 16 }}>
-        <img
-          src={qrSrc}
-          alt="QR code"
-          style={{ maxWidth: 280, imageRendering: 'pixelated', border: '1px solid var(--border)', borderRadius: 8 }}
-        />
+      <div style={{ textAlign: 'center', marginTop: 16, minHeight: 120 }}>
+        {loading && <span className="spinner" />}
+        {error && <div className="error-box">{error}</div>}
+        {!loading && !error && blobUrl && (
+          <img
+            src={blobUrl}
+            alt="QR code"
+            style={{ maxWidth: 280, imageRendering: 'pixelated', border: '1px solid var(--border)', borderRadius: 8 }}
+          />
+        )}
       </div>
       <div className="modal-actions">
         <button className="btn btn-secondary" onClick={onClose}>Close</button>
-        <a
-          href={qrSrc}
-          download={`${peer.name}.png`}
-          className="btn btn-primary"
-        >
-          Download PNG
-        </a>
+        {blobUrl && (
+          <a
+            href={blobUrl}
+            download={`${peer.name}.png`}
+            className="btn btn-primary"
+          >
+            Download PNG
+          </a>
+        )}
       </div>
     </Modal>
   )

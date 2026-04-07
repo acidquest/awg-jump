@@ -60,7 +60,7 @@ async def run_geoip_update() -> None:
                 prefixes = await geoip_fetcher.fetch(source, progress_cb=_broadcast)
 
                 _broadcast(f"Updating ipset {source.ipset_name}...")
-                await asyncio.get_event_loop().run_in_executor(
+                await asyncio.get_running_loop().run_in_executor(
                     None,
                     ipset_manager.create_or_update,
                     source.ipset_name,

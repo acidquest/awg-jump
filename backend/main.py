@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
+from backend.config import settings as _settings, validate_security_settings
 from backend.database import AsyncSessionLocal, engine, Base
 from backend.models.interface import Interface
 from backend.models.geoip import GeoipSource
@@ -122,6 +123,9 @@ async def _init_geoip_and_routing() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Step 0: Security warnings
+    validate_security_settings()
+
     # Step 1: DB
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -167,9 +171,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AWG Jump",
     version="1.0.0",
-    docs_url="/api/docs",
-    redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json",
+    docs_url="/api/docs" if _settings.enable_api_docs else None,
+    redoc_url="/api/redoc" if _settings.enable_api_docs else None,
+    openapi_url="/api/openapi.json" if _settings.enable_api_docs else None,
     lifespan=lifespan,
 )
 

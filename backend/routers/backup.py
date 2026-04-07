@@ -176,20 +176,21 @@ async def import_backup(
                 except Exception as e:
                     logger.warning("Could not back up current db: %s", e)
 
-            # Заменить config.db
+            # Заменить config.db — читаем содержимое напрямую (без extract, нет path traversal)
             db_dir = os.path.dirname(settings.db_path)
             os.makedirs(db_dir, exist_ok=True)
-            zf.extract("config.db", path=db_dir)
-            # Переместить в правильное место если нужно
-            extracted = os.path.join(db_dir, "config.db")
-            if extracted != settings.db_path:
-                shutil.move(extracted, settings.db_path)
+            with zf.open("config.db") as src, open(settings.db_path, "wb") as dst:
+                dst.write(src.read())
 
-            # Восстановить wg_configs/
+            # Восстановить wg_configs/ — только безопасные имена файлов
             os.makedirs(settings.wg_config_dir, exist_ok=True)
             for name in zf.namelist():
                 if name.startswith("wg_configs/") and not name.endswith("/"):
                     fname = os.path.basename(name)
+                    # Защита от path traversal: пропускать пустые или подозрительные имена
+                    if not fname or fname.startswith(".") or "/" in fname or "\\" in fname:
+                        logger.warning("Skipping suspicious archive entry: %s", name)
+                        continue
                     dest = os.path.join(settings.wg_config_dir, fname)
                     with zf.open(name) as src, open(dest, "wb") as dst:
                         dst.write(src.read())

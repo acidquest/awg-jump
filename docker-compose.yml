@@ -27,7 +27,7 @@ services:
       - awg-net
     ports:
       - "${AWG0_LISTEN_PORT:-51820}:${AWG0_LISTEN_PORT:-51820}/udp"
-      - "127.0.0.1:${WEB_PORT:-8080}:${WEB_PORT:-8080}"
+      # WEB_PORT намеренно НЕ публикуется наружу — nginx проксирует через внутреннюю сеть
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:${WEB_PORT:-8080}/api/health"]
       interval: 30s

@@ -14,8 +14,8 @@ from backend.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Счётчики неудач для failover (node_id → count)
-_health_fail_counts: dict[int, int] = {}
+# Счётчики неудач хранятся в node_deployer (единственный источник правды)
+# Импортируем оттуда чтобы не дублировать состояние
 
 scheduler = AsyncIOScheduler()
 
@@ -77,6 +77,8 @@ async def _node_health_check() -> None:
     from backend.database import AsyncSessionLocal
     from backend.models.upstream_node import NodeStatus, UpstreamNode
     from backend.services.node_deployer import deployer
+
+    from backend.services.node_deployer import _health_fail_counts
 
     try:
         async with AsyncSessionLocal() as session:

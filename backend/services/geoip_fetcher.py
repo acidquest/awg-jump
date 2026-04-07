@@ -2,6 +2,7 @@
 GeoIP fetcher — загрузка CIDR-списков с кэшированием.
 """
 import asyncio
+import ipaddress
 import logging
 import os
 import time
@@ -37,9 +38,12 @@ def _parse_prefixes(text: str) -> list[str]:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        # Базовая валидация: должен содержать точку (IPv4)
-        if "." in line or ":" in line:
+        try:
+            # Строгая валидация: только корректные IPv4/IPv6 сети
+            ipaddress.ip_network(line, strict=False)
             prefixes.append(line)
+        except ValueError:
+            logger.debug("Skipping invalid prefix: %r", line)
     return prefixes
 
 

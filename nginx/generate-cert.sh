@@ -15,7 +15,16 @@ mkdir -p "$CERT_DIR"
 CN="${TLS_COMMON_NAME:-localhost}"
 echo "[generate-cert] Generating self-signed certificate for CN=$CN (valid 10 years)..."
 
-# Попытка с subjectAltName (современные браузеры требуют SAN)
+# Определяем тип CN: IP-адрес или DNS-имя — для корректного SubjectAltName
+# Проверяем является ли CN IPv4/IPv6 адресом
+if echo "$CN" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || echo "$CN" | grep -q ':'; then
+    SAN="IP:$CN"
+else
+    SAN="DNS:$CN"
+fi
+
+echo "[generate-cert] SubjectAltName: $SAN"
+
 openssl req -x509 \
     -newkey rsa:4096 \
     -sha256 \
@@ -23,17 +32,8 @@ openssl req -x509 \
     -nodes \
     -keyout "$CERT_DIR/server.key" \
     -out "$CERT_DIR/server.crt" \
-    -subj "/C=XX/ST=State/L=City/O=AWG/CN=$CN" \
-    -addext "subjectAltName=DNS:$CN,IP:$CN" 2>/dev/null \
-|| \
-openssl req -x509 \
-    -newkey rsa:4096 \
-    -sha256 \
-    -days 3650 \
-    -nodes \
-    -keyout "$CERT_DIR/server.key" \
-    -out "$CERT_DIR/server.crt" \
-    -subj "/CN=$CN"
+    -subj "/CN=$CN" \
+    -addext "subjectAltName=$SAN"
 
 chmod 600 "$CERT_DIR/server.key"
 

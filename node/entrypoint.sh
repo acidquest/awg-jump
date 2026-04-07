@@ -26,8 +26,9 @@ if [ ! -S /var/run/wireguard/awg0.sock ]; then
     exit 1
 fi
 
-# Сформировать конфиг
+# Сформировать конфиг (права 600 — файл содержит приватный ключ)
 CONFIG_FILE=$(mktemp)
+chmod 600 "$CONFIG_FILE"
 cat > "$CONFIG_FILE" << EOF
 [Interface]
 ListenPort = ${AWG_LISTEN_PORT}
@@ -87,8 +88,15 @@ ip link set awg0 up
 echo "[awg-node] Interface awg0 is up: ${AWG_ADDRESS}"
 wg show awg0
 
-# NAT — пробросить трафик через eth0
-iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+# NAT — пробросить трафик через физический интерфейс
+# Берём дефолтный интерфейс динамически (обычно eth0, но может быть другим)
+DEFAULT_IFACE=$(ip route show default | awk '/default via/ { print $5 }' | head -1)
+if [ -z "$DEFAULT_IFACE" ]; then
+    DEFAULT_IFACE="eth0"
+    echo "[awg-node] WARNING: could not detect default interface, using eth0"
+fi
+echo "[awg-node] NAT MASQUERADE on ${DEFAULT_IFACE}"
+iptables -t nat -A POSTROUTING -o "${DEFAULT_IFACE}" -j MASQUERADE
 
 echo "[awg-node] Node is ready. Listening on UDP port ${AWG_LISTEN_PORT}"
 
