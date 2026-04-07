@@ -115,6 +115,8 @@ def _make_compose_content(awg_port: int) -> str:
         f"    cap_add:\n"
         f"      - NET_ADMIN\n"
         f"      - NET_RAW\n"
+        f"    sysctls:\n"
+        f"      - net.ipv4.ip_forward=1\n"
         f"    devices:\n"
         f"      - /dev/net/tun:/dev/net/tun\n"
         f"    network_mode: host\n"

@@ -476,9 +476,7 @@ def get_status() -> dict:
         if not line.strip():
             continue
         parts = line.strip().split("\t")
-        if parts[0].startswith("awg"):
-            if len(parts) < 4:
-                continue
+        if len(parts) >= 4 and parts[3].isdigit():
             ifname, priv, pub, port = (parts + [""] * 4)[:4]
             current_iface = ifname
             result[ifname] = {
@@ -488,10 +486,19 @@ def get_status() -> dict:
                 "running": ifname in _awg_processes,
                 "peers": {},
             }
-        elif len(parts) >= 8 and current_iface is not None:
-            pubkey, psk, endpoint, allowed_ips, handshake, rx, tx, keepalive = (
-                parts + [""] * 8
-            )[:8]
+        elif len(parts) >= 9:
+            ifname, pubkey, psk, endpoint, allowed_ips, handshake, rx, tx, keepalive = (
+                parts + [""] * 9
+            )[:9]
+            ifname = ifname.strip()
+            if ifname not in result:
+                result[ifname] = {
+                    "name": ifname,
+                    "public_key": "",
+                    "listen_port": None,
+                    "running": ifname in _awg_processes,
+                    "peers": {},
+                }
             peer_data = {
                 "public_key": pubkey,
                 "endpoint": endpoint if endpoint != "(none)" else None,
@@ -501,7 +508,7 @@ def get_status() -> dict:
                 "tx_bytes": int(tx) if tx.isdigit() else 0,
                 "persistent_keepalive": int(keepalive) if keepalive.isdigit() else None,
             }
-            result[current_iface]["peers"][pubkey] = peer_data
+            result[ifname]["peers"][pubkey] = peer_data
     return result
 
 

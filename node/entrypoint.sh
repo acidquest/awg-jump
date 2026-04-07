@@ -3,6 +3,9 @@ set -e
 
 echo "[awg-node] Starting AmneziaWG node..."
 
+# Нода должна маршрутизировать трафик из awg0 в uplink.
+sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+
 # Переключить на legacy iptables (совместимость с ядром)
 update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null || true
 update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
