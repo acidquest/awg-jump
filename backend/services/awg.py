@@ -273,44 +273,82 @@ async def apply_interface(iface: Interface, peers: list[Peer]) -> None:
     и применяет конфигурацию через wg setconf.
     """
     ifname = iface.name
+    logger.info("[awg] apply_interface: %s (mode=%s, addr=%s, port=%s, peers=%d)",
+                ifname, iface.mode, iface.address, iface.listen_port, len(peers))
+
+    # Проверить наличие бинарника
+    rc_which, which_out = _run_cmd(["which", "amneziawg-go"])
+    if rc_which != 0:
+        rc_which, which_out = _run_cmd(["ls", "-la", "/usr/local/bin/amneziawg-go"])
+        logger.error("[awg] amneziawg-go not found in PATH. ls result: %s", which_out)
+        raise RuntimeError("amneziawg-go binary not found")
+    logger.info("[awg] amneziawg-go found at: %s", which_out.strip())
 
     # Остановить старый процесс если есть
     if ifname in _awg_processes:
         proc = _awg_processes[ifname]
         if proc.poll() is None:
+            logger.info("[awg] Stopping existing %s process (pid=%d)", ifname, proc.pid)
             proc.terminate()
             try:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
+                logger.warning("[awg] %s did not terminate, killing", ifname)
                 proc.kill()
         del _awg_processes[ifname]
-        # Удалить интерфейс если существует
-        _run_cmd(["ip", "link", "delete", ifname])
+        rc_del, out_del = _run_cmd(["ip", "link", "delete", ifname])
+        logger.debug("[awg] ip link delete %s: rc=%d %s", ifname, rc_del, out_del)
 
     # Создать директорию для сокетов
     os.makedirs("/var/run/wireguard", exist_ok=True)
 
-    # Запустить демон
+    # Запустить демон — перехватываем stderr в pipe для логирования
+    logger.info("[awg] Starting amneziawg-go %s...", ifname)
     proc = subprocess.Popen(
         ["amneziawg-go", ifname],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
     )
     _awg_processes[ifname] = proc
 
     # Ждём сокет
-    if not await _wait_for_socket(ifname):
-        raise RuntimeError(f"amneziawg-go socket not created for {ifname}")
+    sock_ok = await _wait_for_socket(ifname)
+    if not sock_ok:
+        # Прочитать вывод упавшего процесса
+        exit_code = proc.poll()
+        try:
+            daemon_out = proc.stdout.read().decode(errors="replace") if proc.stdout else ""
+        except Exception:
+            daemon_out = "(could not read output)"
+        logger.error(
+            "[awg] amneziawg-go failed to create socket for %s. "
+            "exit_code=%s, output: %s",
+            ifname, exit_code, daemon_out or "(no output)"
+        )
+        raise RuntimeError(
+            f"amneziawg-go socket not created for {ifname} "
+            f"(exit={exit_code}): {daemon_out[:300]}"
+        )
+
+    logger.info("[awg] amneziawg-go socket ready for %s (pid=%d)", ifname, proc.pid)
+
+    # Сгенерировать конфиг (логируем без приватного ключа)
+    config_str = generate_interface_config(iface, peers)
+    config_preview = "\n".join(
+        line if "PrivateKey" not in line and "PresharedKey" not in line else line.split("=")[0] + "= [REDACTED]"
+        for line in config_str.splitlines()
+    )
+    logger.debug("[awg] Config for %s:\n%s", ifname, config_preview)
 
     # Записать конфиг во временный файл и применить
     # mode=0o600 — только владелец может читать (файл содержит приватный ключ)
-    config_str = generate_interface_config(iface, peers)
     fd, conf_path = tempfile.mkstemp(suffix=".conf")
     try:
         os.chmod(conf_path, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(config_str)
         rc, out = _run_cmd(["wg", "setconf", ifname, conf_path])
+        logger.info("[awg] wg setconf %s: rc=%d %s", ifname, rc, out)
         if rc != 0:
             raise RuntimeError(f"wg setconf failed: {out}")
     finally:
@@ -321,14 +359,18 @@ async def apply_interface(iface: Interface, peers: list[Peer]) -> None:
 
     # Назначить IP-адрес
     _run_cmd(["ip", "addr", "flush", "dev", ifname])
-    addr = iface.address  # может быть CIDR, например 10.10.0.1/24
+    addr = iface.address
     rc, out = _run_cmd(["ip", "addr", "add", addr, "dev", ifname])
+    logger.info("[awg] ip addr add %s dev %s: rc=%d %s", addr, ifname, rc, out)
     if rc != 0:
         raise RuntimeError(f"ip addr add failed: {out}")
 
     rc, out = _run_cmd(["ip", "link", "set", ifname, "up"])
+    logger.info("[awg] ip link set %s up: rc=%d %s", ifname, rc, out)
     if rc != 0:
         raise RuntimeError(f"ip link set up failed: {out}")
+
+    logger.info("[awg] Interface %s is UP ✓", ifname)
 
 
 async def sync_peers(iface: Interface, peers: list[Peer]) -> None:

@@ -76,7 +76,7 @@ async def _start_interfaces() -> None:
                 await awg_svc.load_interface(iface, session)
                 logger.info("Interface %s started", iface.name)
             except Exception as e:
-                logger.error("Failed to start %s: %s", iface.name, e)
+                logger.error("Failed to start %s: %s", iface.name, e, exc_info=True)
 
 
 async def _init_geoip_and_routing() -> None:

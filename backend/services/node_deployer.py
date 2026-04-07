@@ -291,7 +291,8 @@ class NodeDeployer:
                 )
                 await conn.run("mkdir -p /opt/awg-node", check=True)
                 async with conn.create_process(
-                    "tar -xzf - -C /opt/awg-node --strip-components=1"
+                    "tar -xzf - -C /opt/awg-node --strip-components=1",
+                    encoding=None,  # бинарный режим — stdin принимает bytes
                 ) as proc:
                     proc.stdin.write(tar_bytes)
                     proc.stdin.write_eof()
@@ -503,7 +504,8 @@ class NodeDeployer:
                 )
                 await conn.run("mkdir -p /opt/awg-node", check=True)
                 async with conn.create_process(
-                    "tar -xzf - -C /opt/awg-node --strip-components=1"
+                    "tar -xzf - -C /opt/awg-node --strip-components=1",
+                    encoding=None,  # бинарный режим — stdin принимает bytes
                 ) as proc:
                     proc.stdin.write(tar_bytes)
                     proc.stdin.write_eof()
