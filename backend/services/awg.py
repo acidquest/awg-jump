@@ -6,6 +6,7 @@ PIDs хранятся в памяти (module-level singleton).
 """
 import asyncio
 import io
+import logging
 import os
 import random
 import secrets
@@ -13,6 +14,8 @@ import subprocess
 import tempfile
 from datetime import datetime, timezone
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
