@@ -197,7 +197,12 @@ def generate_interface_config(iface: Interface, peers: list[Peer]) -> str:
         lines.append(f"PublicKey = {peer.public_key}")
         if peer.preshared_key:
             lines.append(f"PresharedKey = {peer.preshared_key}")
-        lines.append(f"AllowedIPs = {peer.allowed_ips}")
+        server_allowed_ips = (
+            peer.tunnel_address
+            if iface.mode == InterfaceMode.server and peer.tunnel_address
+            else peer.allowed_ips
+        )
+        lines.append(f"AllowedIPs = {server_allowed_ips}")
         if peer.persistent_keepalive:
             lines.append(f"PersistentKeepalive = {peer.persistent_keepalive}")
         # Для клиентского интерфейса (awg1): endpoint upstream ноды
@@ -471,7 +476,19 @@ def get_status() -> dict:
         if not line.strip():
             continue
         parts = line.strip().split("\t")
-        if len(parts) >= 8 and current_iface is not None:
+        if parts[0].startswith("awg"):
+            if len(parts) < 4:
+                continue
+            ifname, priv, pub, port = (parts + [""] * 4)[:4]
+            current_iface = ifname
+            result[ifname] = {
+                "name": ifname,
+                "public_key": pub,
+                "listen_port": int(port) if port.isdigit() else None,
+                "running": ifname in _awg_processes,
+                "peers": {},
+            }
+        elif len(parts) >= 8 and current_iface is not None:
             pubkey, psk, endpoint, allowed_ips, handshake, rx, tx, keepalive = (
                 parts + [""] * 8
             )[:8]
@@ -485,17 +502,6 @@ def get_status() -> dict:
                 "persistent_keepalive": int(keepalive) if keepalive.isdigit() else None,
             }
             result[current_iface]["peers"][pubkey] = peer_data
-        elif len(parts) >= 4:
-            ifname, priv, pub, port = (parts + [""] * 4)[:4]
-            current_iface = ifname
-            result[ifname] = {
-                "name": ifname,
-                "public_key": pub,
-                "listen_port": int(port) if port.isdigit() else None,
-                "running": ifname in _awg_processes,
-                "peers": {},
-            }
-
     return result
 
 
