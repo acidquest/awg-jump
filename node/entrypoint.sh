@@ -114,6 +114,11 @@ rm -f "$CONFIG_FILE"
 ip addr add "${AWG_ADDRESS}" dev awg0
 ip link set awg0 up
 
+# Явный route до tunnel IP jump-сервера.
+# awg setconf не управляет маршрутизацией как wg-quick, поэтому без этого
+# пакеты к 10.20.0.2 уходят в default route через eth0.
+ip route replace "${AWG_PEER_ALLOWED_IPS}" dev awg0
+
 echo "[awg-node] Interface awg0 is up: ${AWG_ADDRESS}"
 awg show awg0
 

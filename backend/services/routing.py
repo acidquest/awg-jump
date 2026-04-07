@@ -80,6 +80,30 @@ def _delete_route(table: int, route_args: list[str], *, description: str) -> Non
             break
 
 
+def update_upstream_host_route(peer_address: Optional[str], interface_name: str = "awg1") -> None:
+    """
+    Обновляет host-route до tunnel IP активной upstream-ноды в main table.
+    Без этого пакеты к 10.20.0.x уходят в eth0, а не в awg1.
+    """
+    subnet = settings.node_vpn_subnet
+    rc, out = _run(["ip", "-4", "route", "show", "table", "main", subnet])
+    if rc == 0 and out:
+        for line in out.splitlines():
+            route = line.strip()
+            if not route or "dev lo" in route:
+                continue
+            if peer_address and route.startswith(peer_address.split("/")[0]):
+                continue
+            _run(["ip", "route", "del"] + route.split())
+
+    if peer_address:
+        _ensure_route(
+            254,
+            [peer_address, "dev", interface_name],
+            description=f"Main table: upstream host route {peer_address} dev {interface_name}",
+        )
+
+
 def _ensure_geoip_ipset() -> None:
     """
     Гарантирует существование geoip ipset до установки iptables правил.

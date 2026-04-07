@@ -122,6 +122,9 @@ async def _init_geoip_and_routing() -> None:
             )
         routing_svc.setup_policy_routing()
         routing_svc.update_vpn_route("awg1" if active_node else None)
+        routing_svc.update_upstream_host_route(
+            active_node.awg_address if active_node and active_node.awg_address else None
+        )
         routing_svc.setup_iptables()
         logger.info("Policy routing configured")
     except Exception as e:

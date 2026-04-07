@@ -372,8 +372,9 @@ async def delete_node(
         _run_cmd(["awg", "set", "awg1", "peer", node.public_key, "remove"])
 
     if node.is_active:
-        from backend.services.routing import update_vpn_route
+        from backend.services.routing import update_upstream_host_route, update_vpn_route
         update_vpn_route(None)
+        update_upstream_host_route(None)
 
     await session.delete(node)
     await session.flush()
@@ -420,8 +421,9 @@ async def reset_node(
     _health_fail_counts.pop(node_id, None)
 
     if node.is_active:
-        from backend.services.routing import update_vpn_route
+        from backend.services.routing import update_upstream_host_route, update_vpn_route
         update_vpn_route("awg1")
+        update_upstream_host_route(node.awg_address)
 
     return _node_to_out(node)
 
@@ -465,8 +467,9 @@ async def activate_node(
         ])
         if rc != 0:
             logger.warning("[activate_node] awg set awg1 peer failed: %s", out)
-        from backend.services.routing import update_vpn_route
+        from backend.services.routing import update_upstream_host_route, update_vpn_route
         update_vpn_route("awg1")
+        update_upstream_host_route(node.awg_address)
 
     return _node_to_out(node)
 

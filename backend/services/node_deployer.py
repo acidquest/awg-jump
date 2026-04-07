@@ -401,8 +401,9 @@ class NodeDeployer:
             # ── Шаг 15: активация (если первая нода) ──────────────────────
             if is_first:
                 await emit("Activating as default upstream route...", status="running")
-                from backend.services.routing import update_vpn_route
+                from backend.services.routing import update_upstream_host_route, update_vpn_route
                 update_vpn_route("awg1")
+                update_upstream_host_route(awg_address)
             else:
                 await emit("Deployment complete!", status="ok")
 
@@ -717,6 +718,8 @@ class NodeDeployer:
                 await session.commit()
                 from backend.services.routing import update_vpn_route
                 update_vpn_route(None)
+                from backend.services.routing import update_upstream_host_route
+                update_upstream_host_route(None)
                 return False
 
             # Деактивировать упавшую
@@ -750,8 +753,9 @@ class NodeDeployer:
             "persistent-keepalive", "25",
         ])
 
-        from backend.services.routing import update_vpn_route
+        from backend.services.routing import update_upstream_host_route, update_vpn_route
         update_vpn_route("awg1")
+        update_upstream_host_route(new_address)
 
         _health_fail_counts[failed_node_id] = 0
         return True
@@ -801,8 +805,9 @@ class NodeDeployer:
         async with AsyncSessionLocal() as session:
             node_obj = await _get_node(node_id, session)
             if node_obj.is_active:
-                from backend.services.routing import update_vpn_route
+                from backend.services.routing import update_upstream_host_route, update_vpn_route
                 update_vpn_route(None)
+                update_upstream_host_route(None)
 
         _health_fail_counts.pop(node_id, None)
 

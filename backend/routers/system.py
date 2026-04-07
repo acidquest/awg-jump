@@ -166,6 +166,9 @@ async def restart_routing(
         )
         routing_svc.setup_policy_routing()
         routing_svc.update_vpn_route("awg1" if active_node else None)
+        routing_svc.update_upstream_host_route(
+            active_node.awg_address if active_node and active_node.awg_address else None
+        )
         routing_svc.setup_iptables()
     except Exception as e:
         errors.append(f"setup: {e}")
