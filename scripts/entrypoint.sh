@@ -150,9 +150,10 @@ async def init_defaults():
         if not geoip:
             geoip = GeoipSource(
                 name="ipdeny.com RU",
+                display_name="Russia",
                 url=settings.geoip_source_ru,
                 country_code="ru",
-                ipset_name="geoip_ru",
+                ipset_name="geoip_local",
                 enabled=True,
                 created_at=datetime.now(timezone.utc),
             )

@@ -94,21 +94,37 @@ async def _init_geoip_and_routing() -> None:
             )
             sources = result.scalars().all()
 
+        merged_prefixes: set[str] = set()
         for source in sources:
+            source.ipset_name = geoip_fetcher.LOCAL_GEOIP_IPSET_NAME
             prefixes = geoip_fetcher.load_from_cache(source.country_code)
             if prefixes:
                 logger.info(
-                    "Loading ipset %s from cache: %d prefixes",
-                    source.ipset_name, len(prefixes),
+                    "Loaded cache for %s (%s): %d prefixes",
+                    source.country_code,
+                    source.display_name or source.name,
+                    len(prefixes),
                 )
-                ipset_mgr.create_or_update(source.ipset_name, prefixes)
+                merged_prefixes.update(prefixes)
             else:
-                logger.warning(
-                    "No GeoIP cache for %s — creating empty ipset %s",
-                    source.country_code, source.ipset_name,
-                )
-                if not ipset_mgr.exists(source.ipset_name):
-                    ipset_mgr.create(source.ipset_name)
+                logger.warning("No GeoIP cache for %s", source.country_code)
+
+        logger.info(
+            "Loading aggregated ipset %s from cache: %d prefixes",
+            geoip_fetcher.LOCAL_GEOIP_IPSET_NAME,
+            len(merged_prefixes),
+        )
+        ipset_mgr.create_or_update(
+            geoip_fetcher.LOCAL_GEOIP_IPSET_NAME,
+            sorted(merged_prefixes),
+        )
+
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(GeoipSource))
+            for source in result.scalars().all():
+                source.ipset_name = geoip_fetcher.LOCAL_GEOIP_IPSET_NAME
+                session.add(source)
+            await session.commit()
     except Exception as e:
         logger.error("GeoIP/ipset init failed: %s", e)
 
@@ -163,7 +179,8 @@ async def lifespan(app: FastAPI):
 
     # Step 6: Split DNS (dnsmasq)
     try:
-        await dns_mgr.apply_from_db()
+        async with AsyncSessionLocal() as session:
+            await dns_mgr.reload(session)
         logger.info("Split DNS started")
     except Exception as e:
         logger.error("Split DNS init failed: %s", e)

@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     fwmark_vpn: str = "0x2"
 
     # ── GeoIP ────────────────────────────────────────────────────────────
-    geoip_source_ru: str = "http://www.ipdeny.com/ipblocks/data/countries/ru.zone"
+    geoip_source_ru: str = "https://www.ipdeny.com/ipblocks/data/countries/ru.zone"
     geoip_update_cron: str = "0 4 * * *"
     geoip_fetch_timeout: int = 30
 

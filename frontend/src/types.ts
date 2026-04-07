@@ -89,13 +89,20 @@ export interface NodeStats {
 
 export interface GeoipSource {
   id: number
-  name: string
+  display_name: string
   url: string
   country_code: string
-  ipset_name: string
   last_updated: string | null
   prefix_count: number | null
   enabled: boolean
+  created_at: string | null
+}
+
+export interface GeoipStatus {
+  update_running: boolean
+  total_prefixes: number
+  last_updated: string | null
+  sources: GeoipSource[]
 }
 
 export interface DnsDomain {
@@ -106,13 +113,20 @@ export interface DnsDomain {
   created_at: string | null
 }
 
+export interface DnsZone {
+  zone: 'local' | 'vpn'
+  dns_servers: string[]
+  description: string
+  updated_at: string
+}
+
 export interface DnsStatus {
   running: boolean
   pid: number | null
   listen_ip: string
   conf_file: string
-  yandex_dns: string
-  default_dns: string[]
+  local_zone_dns?: string[]
+  vpn_zone_dns?: string[]
 }
 
 export interface SystemStatus {

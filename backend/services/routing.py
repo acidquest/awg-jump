@@ -14,7 +14,7 @@ from backend.config import settings
 import backend.services.ipset_manager as ipset_mgr
 
 logger = logging.getLogger(__name__)
-_GEOIP_IPSET_NAME = "geoip_ru"
+_GEOIP_IPSET_NAME = "geoip_local"
 _VPN_ROUTE_METRIC_PRIMARY = "100"
 _VPN_ROUTE_METRIC_FALLBACK = "200"
 

@@ -6,8 +6,8 @@ from backend.database import Base
 
 
 class DnsUpstream(str, enum.Enum):
-    yandex = "yandex"    # 77.88.8.8 — для RU-доменов
-    default = "default"  # 1.1.1.1 / 8.8.8.8 — для всего остального
+    LOCAL = "yandex"   # local zone DNS
+    VPN = "default"    # vpn zone DNS
 
 
 class DnsDomain(Base):
@@ -16,9 +16,13 @@ class DnsDomain(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     domain = Column(String(253), unique=True, nullable=False)  # RFC 1035: max 253 chars
     upstream = Column(
-        SAEnum(DnsUpstream),
+        SAEnum(
+            DnsUpstream,
+            values_callable=lambda enum_cls: [item.value for item in enum_cls],
+            native_enum=False,
+        ),
         nullable=False,
-        default=DnsUpstream.yandex,
+        default=DnsUpstream.LOCAL,
         server_default="yandex",
     )
     enabled = Column(Boolean, nullable=False, default=True, server_default="1")

@@ -11,9 +11,10 @@ dnsmasq слушает на:
 
 Контейнер получает разделённый DNS автоматически через /etc/resolv.conf → 127.0.0.1.
 Маршрутизация DNS-трафика контейнера обеспечивается iptables mangle OUTPUT
-(fwmark по geoip_ru ipset, как и для клиентского трафика).
+(fwmark по geoip_local ipset, как и для клиентского трафика).
 """
 import ipaddress
+import json
 import logging
 import os
 import signal
@@ -21,13 +22,24 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 logger = logging.getLogger(__name__)
 
 _CONF_FILE = "/etc/dnsmasq-awg.conf"
 _PID_FILE = "/var/run/dnsmasq-awg.pid"
 
-_YANDEX_DNS = "77.88.8.8"
-_DEFAULT_DNS = ["1.1.1.1", "8.8.8.8"]
+_DEFAULT_ZONE_SETTINGS = {
+    "local": {
+        "dns_servers": ["77.88.8.8"],
+        "description": "DNS for local routing zone (RU/etc)",
+    },
+    "vpn": {
+        "dns_servers": ["1.1.1.1", "8.8.8.8"],
+        "description": "DNS for VPN routing zone",
+    },
+}
 
 
 def get_awg0_ip() -> str:
@@ -39,8 +51,8 @@ def get_awg0_ip() -> str:
         return settings.awg0_address.split("/")[0]
 
 
-def _write_config(domains: list) -> None:
-    """Генерирует конфиг dnsmasq из списка доменов."""
+def _write_config(domains: list, local_dns: list[str], vpn_dns: list[str]) -> None:
+    """Генерирует конфиг dnsmasq из списка доменов и DNS-серверов зон."""
     listen_ip = get_awg0_ip()
 
     lines = [
@@ -54,23 +66,67 @@ def _write_config(domains: list) -> None:
         "local-ttl=60",
         "dns-forward-max=150",
         "",
-        "# Default upstreams (non-RU traffic → VPN)",
+        "# Default upstreams (VPN zone)",
     ]
-    for dns in _DEFAULT_DNS:
+    for dns in vpn_dns:
         lines.append(f"server={dns}")
 
-    yandex_domains = [d for d in domains if d.enabled and d.upstream == "yandex"]
-    if yandex_domains:
+    local_domains = [d for d in domains if d.enabled and getattr(d.upstream, "value", d.upstream) == "yandex"]
+    if local_domains:
         lines.append("")
-        lines.append(f"# RU domains → Yandex DNS ({_YANDEX_DNS})")
-        for d in sorted(yandex_domains, key=lambda x: x.domain):
-            lines.append(f"server=/{d.domain}/{_YANDEX_DNS}")
+        lines.append(f"# Local zone domains -> {', '.join(local_dns)}")
+        for d in sorted(local_domains, key=lambda x: x.domain):
+            for dns in local_dns:
+                lines.append(f"server=/{d.domain}/{dns}")
 
     Path(_CONF_FILE).write_text("\n".join(lines) + "\n")
     logger.info(
-        "dnsmasq config written: listen=%s, RU domains=%d",
-        listen_ip, len(yandex_domains),
+        "dnsmasq config written: listen=%s, local_domains=%d, local_dns=%s, vpn_dns=%s",
+        listen_ip, len(local_domains), local_dns, vpn_dns,
     )
+
+
+async def _ensure_zone_settings(db: AsyncSession) -> None:
+    from backend.models.dns_zone_settings import DnsZoneSettings
+
+    changed = False
+    for zone, payload in _DEFAULT_ZONE_SETTINGS.items():
+        existing = await db.scalar(
+            select(DnsZoneSettings).where(DnsZoneSettings.zone == zone)
+        )
+        if existing is None:
+            db.add(
+                DnsZoneSettings(
+                    zone=zone,
+                    dns_servers=json.dumps(payload["dns_servers"]),
+                    description=payload["description"],
+                )
+            )
+            changed = True
+
+    if changed:
+        await db.commit()
+
+
+async def get_zone_dns(db: AsyncSession, zone: str) -> list[str]:
+    from backend.models.dns_zone_settings import DnsZoneSettings
+
+    await _ensure_zone_settings(db)
+    row = await db.scalar(
+        select(DnsZoneSettings).where(DnsZoneSettings.zone == zone)
+    )
+    if row is None:
+        raise RuntimeError(f"DNS zone settings not found for zone={zone!r}")
+
+    try:
+        dns_servers = json.loads(row.dns_servers)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid dns_servers JSON for zone={zone!r}") from exc
+
+    if not isinstance(dns_servers, list) or not dns_servers or not all(isinstance(x, str) for x in dns_servers):
+        raise RuntimeError(f"Invalid dns_servers payload for zone={zone!r}")
+
+    return dns_servers
 
 
 def is_running() -> bool:
@@ -100,7 +156,7 @@ def start() -> None:
 
     if not Path(_CONF_FILE).exists():
         # Минимальный конфиг если вызвали до apply_from_db
-        _write_config([])
+        _write_config([], _DEFAULT_ZONE_SETTINGS["local"]["dns_servers"], _DEFAULT_ZONE_SETTINGS["vpn"]["dns_servers"])
 
     cmd = [
         "dnsmasq",
@@ -117,7 +173,7 @@ def start() -> None:
     _patch_resolv_conf()
 
 
-def reload() -> None:
+def _reload_process() -> None:
     """Перечитывает конфиг dnsmasq без перезапуска (SIGHUP)."""
     pid = _get_pid()
     if pid is None or not is_running():
@@ -159,27 +215,32 @@ def _patch_resolv_conf() -> None:
         logger.warning("Could not patch resolv.conf: %s", e)
 
 
-async def apply_from_db() -> None:
-    """
-    Читает домены из БД, генерирует конфиг dnsmasq и перезагружает его.
-    Открывает собственную DB-сессию — безопасно вызывать из любого контекста.
-    """
-    from sqlalchemy import select
-    from backend.database import AsyncSessionLocal
+async def reload(db: AsyncSession) -> None:
+    """Читает настройки и домены из БД, генерирует конфиг dnsmasq и перезагружает сервис."""
     from backend.models.dns_domain import DnsDomain
 
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(DnsDomain).order_by(DnsDomain.domain)
-        )
-        domains = result.scalars().all()
+    local_dns = await get_zone_dns(db, "local")
+    vpn_dns = await get_zone_dns(db, "vpn")
 
-    _write_config(domains)
+    result = await db.execute(
+        select(DnsDomain).order_by(DnsDomain.domain)
+    )
+    domains = result.scalars().all()
+
+    _write_config(domains, local_dns, vpn_dns)
 
     if is_running():
-        reload()
+        _reload_process()
     else:
         start()
+
+
+async def apply_from_db() -> None:
+    """Совместимый helper: открывает свою DB-сессию и вызывает reload()."""
+    from backend.database import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as session:
+        await reload(session)
 
 
 def get_status() -> dict:
@@ -189,6 +250,6 @@ def get_status() -> dict:
         "pid": _get_pid() if is_running() else None,
         "listen_ip": get_awg0_ip(),
         "conf_file": _CONF_FILE,
-        "yandex_dns": _YANDEX_DNS,
-        "default_dns": _DEFAULT_DNS,
+        "local_zone_dns": _DEFAULT_ZONE_SETTINGS["local"]["dns_servers"],
+        "vpn_zone_dns": _DEFAULT_ZONE_SETTINGS["vpn"]["dns_servers"],
     }

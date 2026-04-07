@@ -4,6 +4,7 @@ from backend.models.geoip import GeoipSource
 from backend.models.upstream_node import UpstreamNode, DeployLog
 from backend.models.routing_rule import RoutingRule
 from backend.models.dns_domain import DnsDomain
+from backend.models.dns_zone_settings import DnsZoneSettings
 
 __all__ = [
     "Interface",
@@ -13,4 +14,5 @@ __all__ = [
     "DeployLog",
     "RoutingRule",
     "DnsDomain",
+    "DnsZoneSettings",
 ]
