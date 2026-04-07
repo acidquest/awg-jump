@@ -367,7 +367,7 @@ async def delete_node(
     elif node.public_key:
         # Убрать peer из awg1 без SSH
         from backend.services.awg import _run_cmd
-        _run_cmd(["wg", "set", "awg1", "peer", node.public_key, "remove"])
+        _run_cmd(["awg", "set", "awg1", "peer", node.public_key, "remove"])
 
     await session.delete(node)
     await session.flush()

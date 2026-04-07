@@ -103,9 +103,9 @@ if [ -n "${AWG_PEER_PERSISTENT_KEEPALIVE}" ]; then
     echo "PersistentKeepalive = ${AWG_PEER_PERSISTENT_KEEPALIVE}" >> "$CONFIG_FILE"
 fi
 
-# Применить конфиг
-echo "[awg-node] Applying WireGuard config..."
-wg setconf awg0 "$CONFIG_FILE"
+# Применить конфиг (awg поддерживает обфускацию-параметры: S1/S2/H1/H2 и т.д.)
+echo "[awg-node] Applying AmneziaWG config..."
+awg setconf awg0 "$CONFIG_FILE"
 rm -f "$CONFIG_FILE"
 
 # Настроить сетевой интерфейс
@@ -113,7 +113,7 @@ ip addr add "${AWG_ADDRESS}" dev awg0
 ip link set awg0 up
 
 echo "[awg-node] Interface awg0 is up: ${AWG_ADDRESS}"
-wg show awg0
+awg show awg0
 
 # NAT — пробросить трафик через физический интерфейс
 # Берём дефолтный интерфейс динамически (обычно eth0, но может быть другим)

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # ============================================================
-# Stage 1 — сборка amneziawg-go
+# Stage 1 — сборка amneziawg-go (userspace демон)
 # ============================================================
 FROM golang:1.24-alpine AS awg-builder
 
@@ -11,6 +11,20 @@ WORKDIR /build
 RUN git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-go.git .
 RUN mkdir -p /out \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/amneziawg-go .
+
+# ============================================================
+# Stage 2 — сборка amneziawg-tools (команда awg)
+# Нужна для работы с kernel module: awg setconf/syncconf/show/set
+# ============================================================
+FROM debian:bookworm-slim AS awg-tools-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git make gcc pkg-config libmnl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+RUN git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-tools.git .
+RUN make -C src -j$(nproc)
 
 # ============================================================
 # Stage 2 — Python runtime dependencies
@@ -60,6 +74,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=awg-builder /out/amneziawg-go /usr/local/bin/amneziawg-go
+COPY --from=awg-tools-builder /build/src/awg /usr/local/bin/awg
 COPY --from=python-builder /opt/venv /opt/venv
 COPY --from=frontend-builder /frontend/dist /app/static
 

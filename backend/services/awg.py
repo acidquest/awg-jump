@@ -61,15 +61,15 @@ def _detect_kernel_mode() -> bool:
 
 def generate_keypair() -> tuple[str, str]:
     """Возвращает (private_key, public_key) в base64 формате WireGuard."""
-    priv = subprocess.check_output(["wg", "genkey"]).decode().strip()
+    priv = subprocess.check_output(["awg", "genkey"]).decode().strip()
     pub = subprocess.check_output(
-        ["wg", "pubkey"], input=priv.encode()
+        ["awg", "pubkey"], input=priv.encode()
     ).decode().strip()
     return priv, pub
 
 
 def generate_preshared_key() -> str:
-    return subprocess.check_output(["wg", "genpsk"]).decode().strip()
+    return subprocess.check_output(["awg", "genpsk"]).decode().strip()
 
 
 # ── Генерация параметров обфускации ──────────────────────────────────────
@@ -337,7 +337,7 @@ async def apply_interface(iface: Interface, peers: list[Peer]) -> None:
         # ── Userspace: запустить amneziawg-go демон ───────────────────────
         rc_which, which_out = _run_cmd(["which", "amneziawg-go"])
         if rc_which != 0:
-            raise RuntimeError("amneziawg-go binary not found")
+            raise RuntimeError("amneziawg-go binary not found in PATH")
         logger.info("[awg] amneziawg-go found at: %s", which_out.strip())
 
         os.makedirs("/var/run/wireguard", exist_ok=True)
@@ -386,10 +386,10 @@ async def apply_interface(iface: Interface, peers: list[Peer]) -> None:
         os.chmod(conf_path, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(config_str)
-        rc, out = _run_cmd(["wg", "setconf", ifname, conf_path])
-        logger.info("[awg] wg setconf %s: rc=%d %s", ifname, rc, out)
+        rc, out = _run_cmd(["awg", "setconf", ifname, conf_path])
+        logger.info("[awg] awg setconf %s: rc=%d %s", ifname, rc, out)
         if rc != 0:
-            raise RuntimeError(f"wg setconf failed: {out}")
+            raise RuntimeError(f"awg setconf failed: {out}")
     finally:
         try:
             os.unlink(conf_path)
@@ -421,9 +421,9 @@ async def sync_peers(iface: Interface, peers: list[Peer]) -> None:
         os.chmod(conf_path, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(config_str)
-        rc, out = _run_cmd(["wg", "syncconf", ifname, conf_path])
+        rc, out = _run_cmd(["awg", "syncconf", ifname, conf_path])
         if rc != 0:
-            raise RuntimeError(f"wg syncconf failed: {out}")
+            raise RuntimeError(f"awg syncconf failed: {out}")
     finally:
         try:
             os.unlink(conf_path)
@@ -455,7 +455,7 @@ def get_status() -> dict:
       interface  private_key  public_key  listen_port  fwmark
       <TAB>peer_pubkey  psk  endpoint  allowed_ips  handshake  rx  tx  keepalive
     """
-    rc, output = _run_cmd(["wg", "show", "all", "dump"])
+    rc, output = _run_cmd(["awg", "show", "all", "dump"])
     if rc != 0:
         return {}
 

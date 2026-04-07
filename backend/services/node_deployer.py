@@ -389,7 +389,7 @@ class NodeDeployer:
             # ── Шаг 14: добавить peer в awg1 ──────────────────────────────
             await emit("Adding node as awg1 peer...")
             _run_cmd([
-                "wg", "set", "awg1",
+                "awg", "set", "awg1",
                 "peer", node_public_key,
                 "endpoint", f"{host}:{awg_port}",
                 "allowed-ips", awg_address,
@@ -611,7 +611,7 @@ class NodeDeployer:
         result: dict = {"node_id": node_id, "alive": False, "latency_ms": None}
 
         if is_active and public_key:
-            rc, output = _run_cmd(["wg", "show", "awg1", "dump"])
+            rc, output = _run_cmd(["awg", "show", "awg1", "dump"])
             if rc == 0:
                 now_ts = int(time.time())
                 for line in output.splitlines():
@@ -728,7 +728,7 @@ class NodeDeployer:
         )
 
         _run_cmd([
-            "wg", "set", "awg1",
+            "awg", "set", "awg1",
             "peer", new_pubkey,
             "endpoint", f"{new_host}:{new_port}",
             "allowed-ips", new_address,
@@ -781,7 +781,7 @@ class NodeDeployer:
                 )
 
         if public_key:
-            _run_cmd(["wg", "set", "awg1", "peer", public_key, "remove"])
+            _run_cmd(["awg", "set", "awg1", "peer", public_key, "remove"])
 
         _health_fail_counts.pop(node_id, None)
 
