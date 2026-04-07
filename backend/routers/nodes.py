@@ -373,6 +373,53 @@ async def delete_node(
     await session.flush()
 
 
+@router.post("/{node_id}/reset", response_model=NodeOut)
+async def reset_node(
+    node_id: int,
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+) -> NodeOut:
+    """
+    Сбросить статус ноды на online и пере-добавить peer в awg1.
+    Используется для восстановления ноды после offline без повторного деплоя.
+    """
+    node = await _get_node_or_404(node_id, session)
+    if not node.public_key or not node.awg_address:
+        raise HTTPException(
+            status_code=400,
+            detail="Node has no AWG keypair — deploy first",
+        )
+
+    from backend.services.awg import _run_cmd
+
+    # Пере-добавить peer в awg1 (может не существовать если awg1 не был запущен при деплое)
+    rc, out = _run_cmd([
+        "awg", "set", "awg1",
+        "peer", node.public_key,
+        "endpoint", f"{node.host}:{node.awg_port}",
+        "allowed-ips", node.awg_address,
+        "persistent-keepalive", "25",
+    ])
+    if rc != 0:
+        logger.warning("[reset_node] awg set awg1 peer rc=%d: %s", rc, out)
+
+    # Сбросить статус
+    node.status = NodeStatus.online
+    node.updated_at = datetime.now(timezone.utc)
+    session.add(node)
+    await session.flush()
+
+    # Сбросить счётчик неудач
+    from backend.services.node_deployer import _health_fail_counts
+    _health_fail_counts.pop(node_id, None)
+
+    if node.is_active:
+        from backend.services.routing import update_vpn_route
+        update_vpn_route("awg1")
+
+    return _node_to_out(node)
+
+
 @router.post("/{node_id}/activate", response_model=NodeOut)
 async def activate_node(
     node_id: int,
@@ -381,10 +428,10 @@ async def activate_node(
 ) -> NodeOut:
     """Переключить активную ноду вручную."""
     node = await _get_node_or_404(node_id, session)
-    if node.status not in (NodeStatus.online, NodeStatus.degraded):
+    if node.status == NodeStatus.pending:
         raise HTTPException(
             status_code=400,
-            detail=f"Node status is '{node.status.value}', must be online or degraded",
+            detail="Node is not deployed yet",
         )
 
     # Деактивировать все остальные
@@ -403,13 +450,15 @@ async def activate_node(
     # Переключить awg1 endpoint
     if node.public_key and node.awg_address:
         from backend.services.awg import _run_cmd
-        _run_cmd([
-            "wg", "set", "awg1",
+        rc, out = _run_cmd([
+            "awg", "set", "awg1",
             "peer", node.public_key,
             "endpoint", f"{node.host}:{node.awg_port}",
             "allowed-ips", node.awg_address,
             "persistent-keepalive", "25",
         ])
+        if rc != 0:
+            logger.warning("[activate_node] awg set awg1 peer failed: %s", out)
         from backend.services.routing import update_vpn_route
         update_vpn_route("awg1")
 

@@ -76,6 +76,7 @@ export const deployNode = (data: Record<string, unknown>) => api.post('/nodes/de
 export const redeployNode = (id: number, data: Record<string, unknown>) =>
   api.post(`/nodes/${id}/redeploy`, data)
 export const activateNode = (id: number) => api.post(`/nodes/${id}/activate`)
+export const resetNode = (id: number) => api.post(`/nodes/${id}/reset`)
 export const checkNode = (id: number) => api.post(`/nodes/${id}/check`)
 export const getNodeStats = (id: number) => api.get(`/nodes/${id}/stats`)
 

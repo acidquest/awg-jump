@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     secret_key: str = "insecure-default-key-change-me"
     session_ttl_hours: int = 8
 
+    # ── Публичный адрес сервера (для Endpoint в клиентских конфигах) ─────
+    server_host: str = ""
+
     # ── AWG0 (сервер, принимает клиентов) ────────────────────────────────
     awg0_listen_port: int = 51820
     awg0_private_key: str = ""

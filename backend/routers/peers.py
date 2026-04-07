@@ -1,3 +1,4 @@
+import ipaddress
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -8,8 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.config import settings
 from backend.database import get_db
-from backend.models.interface import Interface
+from backend.models.interface import Interface, InterfaceMode
 from backend.models.peer import Peer
 from backend.routers.auth import get_current_user
 import backend.services.awg as awg_svc
@@ -84,6 +86,53 @@ async def _get_peer_or_404(peer_id: int, session: AsyncSession) -> Peer:
     return peer
 
 
+async def _allocate_tunnel_address(interface: Interface, session: AsyncSession) -> Optional[str]:
+    """
+    Автоматически выделяет следующий свободный /32 адрес из подсети интерфейса.
+    Например, если awg0 имеет адрес 10.10.0.1/24, первый пир получит 10.10.0.2/32.
+    """
+    if not interface.address or interface.mode != InterfaceMode.server:
+        return None
+    try:
+        network = ipaddress.IPv4Interface(interface.address).network
+        server_ip = str(ipaddress.IPv4Interface(interface.address).ip)
+    except ValueError:
+        return None
+
+    result = await session.execute(
+        select(Peer.tunnel_address).where(
+            Peer.interface_id == interface.id,
+            Peer.tunnel_address.isnot(None),
+        )
+    )
+    used = {server_ip}
+    for row in result.all():
+        addr = row[0]
+        if addr:
+            used.add(addr.split("/")[0])
+
+    for host in network.hosts():
+        if str(host) not in used:
+            return f"{host}/32"
+
+    return None
+
+
+def _build_endpoint(override: Optional[str], iface: Interface) -> str:
+    """
+    Строит endpoint для клиентского конфига.
+    Приоритет: явный query-параметр → SERVER_HOST из .env → iface.endpoint → заглушка.
+    """
+    if override:
+        return override
+    if settings.server_host:
+        port = iface.listen_port or 51820
+        return f"{settings.server_host}:{port}"
+    if iface.endpoint:
+        return iface.endpoint
+    return "SERVER_IP:PORT"
+
+
 async def _sync_interface(interface_id: int, session: AsyncSession) -> None:
     """Hot-reload пиров если интерфейс запущен."""
     result = await session.execute(
@@ -124,10 +173,16 @@ async def create_peer(
     result = await session.execute(
         select(Interface).where(Interface.id == body.interface_id)
     )
-    if result.scalar_one_or_none() is None:
+    iface = result.scalar_one_or_none()
+    if iface is None:
         raise HTTPException(status_code=404, detail="Interface not found")
 
     psk = body.preshared_key or awg_svc.generate_preshared_key()
+
+    # Автоматически выделить tunnel_address если не указан явно
+    tunnel_address = body.tunnel_address
+    if not tunnel_address:
+        tunnel_address = await _allocate_tunnel_address(iface, session)
 
     peer = None
     for attempt in range(5):
@@ -147,7 +202,7 @@ async def create_peer(
             public_key=pub,
             preshared_key=psk,
             allowed_ips=body.allowed_ips,
-            tunnel_address=body.tunnel_address,
+            tunnel_address=tunnel_address,
             persistent_keepalive=body.persistent_keepalive,
             enabled=True,
             created_at=datetime.now(timezone.utc),
@@ -241,8 +296,8 @@ async def get_peer_config(
     if iface is None:
         raise HTTPException(status_code=404, detail="Interface not found")
 
-    # Endpoint: из query-параметра или из поля интерфейса
-    endpoint = server_endpoint or iface.endpoint or "SERVER_IP:PORT"
+    # Endpoint: query-параметр → settings.server_host → поле интерфейса → заглушка
+    endpoint = _build_endpoint(server_endpoint, iface)
     config_str = awg_svc.generate_client_config(peer, iface, endpoint)
     filename = f"{peer.name or f'peer-{peer.id}'}.conf"
     return Response(
@@ -267,7 +322,7 @@ async def get_peer_qr(
     if iface is None:
         raise HTTPException(status_code=404, detail="Interface not found")
 
-    endpoint = server_endpoint or iface.endpoint or "SERVER_IP:PORT"
+    endpoint = _build_endpoint(server_endpoint, iface)
     config_str = awg_svc.generate_client_config(peer, iface, endpoint)
     try:
         png_bytes = awg_svc.generate_qr_bytes(config_str)

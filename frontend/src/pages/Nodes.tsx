@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getNodes, createNode, deployNode, redeployNode,
-  activateNode, checkNode, deleteNode, getNodeStats
+  activateNode, resetNode, checkNode, deleteNode, getNodeStats
 } from '../api'
 import { Node, NodeStats, DeployLog } from '../types'
 import StatusBadge from '../components/StatusBadge'
@@ -65,6 +65,11 @@ export default function Nodes() {
       qc.invalidateQueries({ queryKey: ['nodes'] })
       if (selectedNode?.id === id) setSelectedNode(null)
     },
+  })
+
+  const resetMut = useMutation({
+    mutationFn: (id: number) => resetNode(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['nodes'] }),
   })
 
   if (isLoading) return <div style={{ padding: 40, textAlign: 'center' }}><span className="spinner" /></div>
@@ -152,6 +157,12 @@ export default function Nodes() {
                         onClick={() => checkMut.mutate(n.id)}
                         title="Health check"
                       >Check</button>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => resetMut.mutate(n.id)}
+                        disabled={!n.public_key}
+                        title="Re-add peer to awg1 and reset status to online"
+                      >Reset</button>
                       <button
                         className="btn btn-secondary btn-sm"
                         onClick={() => setRedeployNode(n)}
