@@ -41,8 +41,10 @@ else
     fi
 
     echo "[awg-node] Starting amneziawg-go daemon..."
-    # Принудительный userspace режим — игнорировать wireguard/amneziawg kernel модуль хоста
-    export WG_I_PREFER_BUGGY_USERSPACE_TO_ACTUAL_KERNEL_WIREGUARD_SUPPORT=1
+    # WG_PROCESS_FOREGROUND=1 — не форкаться в демон, работать на переднем плане.
+    # Без этого флага родительский процесс форкает дочерний и завершается (exit 0),
+    # что ломает отслеживание PID и проверку сокета.
+    export WG_PROCESS_FOREGROUND=1
     amneziawg-go awg0 &
     AWG_PID=$!
     sleep 2

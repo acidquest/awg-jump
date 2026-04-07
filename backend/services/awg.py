@@ -344,8 +344,11 @@ async def apply_interface(iface: Interface, peers: list[Peer]) -> None:
 
         logger.info("[awg] Starting amneziawg-go %s...", ifname)
         env = os.environ.copy()
-        # Принудительный userspace режим — игнорировать наличие wireguard/amneziawg kernel модуля
-        env["WG_I_PREFER_BUGGY_USERSPACE_TO_ACTUAL_KERNEL_WIREGUARD_SUPPORT"] = "1"
+        # Foreground режим — amneziawg-go НЕ форкается в демон.
+        # Без этого флага: родитель форкает дочерний процесс и завершается с кодом 0,
+        # пока дочерний работает в фоне. Popen отслеживает родителя → exit=0 → мы думаем что упал.
+        # С WG_PROCESS_FOREGROUND=1: процесс остаётся живым, сокет создаётся в основном потоке.
+        env["WG_PROCESS_FOREGROUND"] = "1"
         proc = subprocess.Popen(
             ["amneziawg-go", ifname],
             stdout=subprocess.PIPE,
