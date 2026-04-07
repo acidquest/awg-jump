@@ -45,6 +45,8 @@ else
     fi
 
     echo "[awg-node] Starting amneziawg-go daemon..."
+    # Принудительный userspace режим — игнорировать wireguard/amneziawg kernel модуль хоста
+    export WG_I_PREFER_BUGGY_USERSPACE_TO_ACTUAL_KERNEL_WIREGUARD_SUPPORT=1
     amneziawg-go awg0 &
     AWG_PID=$!
     sleep 2

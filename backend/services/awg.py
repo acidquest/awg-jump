@@ -345,10 +345,14 @@ async def apply_interface(iface: Interface, peers: list[Peer]) -> None:
         os.makedirs("/var/run/wireguard", exist_ok=True)
 
         logger.info("[awg] Starting amneziawg-go %s...", ifname)
+        env = os.environ.copy()
+        # Принудительный userspace режим — игнорировать наличие wireguard/amneziawg kernel модуля
+        env["WG_I_PREFER_BUGGY_USERSPACE_TO_ACTUAL_KERNEL_WIREGUARD_SUPPORT"] = "1"
         proc = subprocess.Popen(
             ["amneziawg-go", ifname],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            env=env,
         )
         _awg_processes[ifname] = proc
 
