@@ -135,6 +135,15 @@ fi
 echo "[awg-node] NAT MASQUERADE on ${DEFAULT_IFACE}"
 iptables -t nat -A POSTROUTING -o "${DEFAULT_IFACE}" -j MASQUERADE
 
+# Разрешить форвардинг трафика между awg0 и uplink.
+# На многих хостах policy FORWARD = DROP (например, из-за Docker), поэтому
+# одного MASQUERADE недостаточно: пакеты из awg0 режутся до выхода в eth0.
+echo "[awg-node] FORWARD allow awg0 <-> ${DEFAULT_IFACE}"
+iptables -C FORWARD -i awg0 -o "${DEFAULT_IFACE}" -j ACCEPT 2>/dev/null || \
+iptables -A FORWARD -i awg0 -o "${DEFAULT_IFACE}" -j ACCEPT
+iptables -C FORWARD -i "${DEFAULT_IFACE}" -o awg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+iptables -A FORWARD -i "${DEFAULT_IFACE}" -o awg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
 echo "[awg-node] Node is ready. Listening on UDP port ${AWG_LISTEN_PORT}"
 
 # Держать контейнер живым, проверять статус каждые 60с
