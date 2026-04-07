@@ -206,9 +206,9 @@ def setup_iptables() -> None:
 
     _ensure_geoip_ipset()
 
-    # mangle PREROUTING: ставим fwmark только на пакеты от AWG-клиентов (-i awg0).
-    # Без ограничения по интерфейсу маркируется и обратный трафик (ответы из интернета),
-    # что ломает маршрутизацию ответных пакетов обратно к клиентам.
+    # mangle PREROUTING: fwmark для трафика от AWG-клиентов (-i awg0).
+    # Ограничение по интерфейсу обязательно: без него маркируются и ответные пакеты
+    # из интернета, что ломает маршрутизацию обратно к клиентам.
     _ipt_add("mangle", "PREROUTING", [
         "-i", "awg0",
         "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
@@ -220,6 +220,20 @@ def setup_iptables() -> None:
         "-j", "MARK", "--set-mark", fwmark_vpn,
     ])
     logger.info("iptables mangle PREROUTING rules configured")
+
+    # mangle OUTPUT: fwmark для трафика самого контейнера (DNS-запросы dnsmasq и т.д.).
+    # PREROUTING не охватывает locally-generated пакеты — для них нужна цепочка OUTPUT.
+    # Благодаря этому DNS-запросы к 77.88.8.8 (RU) пойдут через eth0,
+    # а к 1.1.1.1/8.8.8.8 — через awg1.
+    _ipt_add("mangle", "OUTPUT", [
+        "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
+        "-j", "MARK", "--set-mark", fwmark_ru,
+    ])
+    _ipt_add("mangle", "OUTPUT", [
+        "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
+        "-j", "MARK", "--set-mark", fwmark_vpn,
+    ])
+    logger.info("iptables mangle OUTPUT rules configured (container traffic)")
 
     # nat POSTROUTING: MASQUERADE исходящего трафика
     _ipt_add("nat", "POSTROUTING", ["-o", phys_iface, "-j", "MASQUERADE"])
@@ -244,7 +258,7 @@ def teardown() -> None:
     _run(["ip", "route", "flush", "table", str(table_ru)])
     _run(["ip", "route", "flush", "table", str(table_vpn)])
 
-    # iptables mangle
+    # iptables mangle PREROUTING
     _ipt_del("mangle", "PREROUTING", [
         "-i", "awg0",
         "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
@@ -252,6 +266,16 @@ def teardown() -> None:
     ])
     _ipt_del("mangle", "PREROUTING", [
         "-i", "awg0",
+        "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
+        "-j", "MARK", "--set-mark", fwmark_vpn,
+    ])
+
+    # iptables mangle OUTPUT
+    _ipt_del("mangle", "OUTPUT", [
+        "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
+        "-j", "MARK", "--set-mark", fwmark_ru,
+    ])
+    _ipt_del("mangle", "OUTPUT", [
         "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
         "-j", "MARK", "--set-mark", fwmark_vpn,
     ])
@@ -289,5 +313,13 @@ def get_status() -> dict:
         ]),
         "nat_eth0": _ipt_rule_exists("nat", "POSTROUTING", ["-o", phys_iface, "-j", "MASQUERADE"]),
         "nat_awg1": _ipt_rule_exists("nat", "POSTROUTING", ["-o", "awg1", "-j", "MASQUERADE"]),
+        "output_ru": _ipt_rule_exists("mangle", "OUTPUT", [
+            "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
+            "-j", "MARK", "--set-mark", settings.fwmark_ru,
+        ]),
+        "output_vpn": _ipt_rule_exists("mangle", "OUTPUT", [
+            "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
+            "-j", "MARK", "--set-mark", settings.fwmark_vpn,
+        ]),
         "physical_iface": phys_iface,
     }

@@ -90,6 +90,16 @@ export const getRoutingStatus = () => api.get('/routing/status')
 export const applyRouting = () => api.post('/routing/apply')
 export const resetRouting = () => api.post('/routing/reset')
 
+// ── DNS ───────────────────────────────────────────────────────────────────
+export const getDnsStatus = () => api.get('/dns/status')
+export const getDnsDomains = () => api.get('/dns/domains')
+export const createDnsDomain = (data: Record<string, unknown>) => api.post('/dns/domains', data)
+export const updateDnsDomain = (id: number, data: Record<string, unknown>) =>
+  api.put(`/dns/domains/${id}`, data)
+export const deleteDnsDomain = (id: number) => api.delete(`/dns/domains/${id}`)
+export const toggleDnsDomain = (id: number) => api.post(`/dns/domains/${id}/toggle`)
+export const reloadDns = () => api.post('/dns/reload')
+
 // ── Backup ────────────────────────────────────────────────────────────────
 export const downloadBackup = () =>
   api.get('/backup/export', { responseType: 'blob' })

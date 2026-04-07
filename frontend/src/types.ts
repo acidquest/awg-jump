@@ -98,6 +98,23 @@ export interface GeoipSource {
   enabled: boolean
 }
 
+export interface DnsDomain {
+  id: number
+  domain: string
+  upstream: 'yandex' | 'default'
+  enabled: boolean
+  created_at: string | null
+}
+
+export interface DnsStatus {
+  running: boolean
+  pid: number | null
+  listen_ip: string
+  conf_file: string
+  yandex_dns: string
+  default_dns: string[]
+}
+
 export interface SystemStatus {
   uptime_seconds: number
   interfaces: Array<{

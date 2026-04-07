@@ -63,6 +63,7 @@ ENV PATH=/opt/venv/bin:$PATH \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    dnsmasq \
     iproute2 \
     ipset \
     iptables \
@@ -86,7 +87,10 @@ COPY scripts/ /app/scripts/
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 
 RUN chmod +x /usr/local/bin/amneziawg-go /app/scripts/*.sh \
-    && mkdir -p /var/log/supervisor /var/run/amneziawg
+    && mkdir -p /var/log/supervisor /var/run/amneziawg \
+    # Отключаем системный dnsmasq — управляем вручную через dns_manager.py
+    && rm -f /etc/dnsmasq.conf /etc/dnsmasq.d/* \
+    && echo "# Managed by AWG dns_manager.py" > /etc/dnsmasq.conf
 
 WORKDIR /app
 

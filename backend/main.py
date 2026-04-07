@@ -24,9 +24,10 @@ from backend.database import AsyncSessionLocal, engine, Base
 from backend.models.interface import Interface
 from backend.models.geoip import GeoipSource
 from backend.models.upstream_node import NodeStatus, UpstreamNode
-from backend.routers import auth, backup, geoip, interfaces, nodes, peers, routing, system
+from backend.routers import auth, backup, dns, geoip, interfaces, nodes, peers, routing, system
 from backend.scheduler import scheduler, setup_scheduler
 import backend.services.awg as awg_svc
+import backend.services.dns_manager as dns_mgr
 import backend.services.geoip_fetcher as geoip_fetcher
 import backend.services.ipset_manager as ipset_mgr
 import backend.services.routing as routing_svc
@@ -160,7 +161,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("GeoIP/routing init failed: %s", e)
 
-    # Step 6: Scheduler
+    # Step 6: Split DNS (dnsmasq)
+    try:
+        await dns_mgr.apply_from_db()
+        logger.info("Split DNS started")
+    except Exception as e:
+        logger.error("Split DNS init failed: %s", e)
+
+    # Step 7: Scheduler
     setup_scheduler()
 
     yield
@@ -168,6 +176,8 @@ async def lifespan(app: FastAPI):
     # ── Graceful shutdown ─────────────────────────────────────────────────
     if scheduler.running:
         scheduler.shutdown(wait=False)
+
+    dns_mgr.stop()
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(Interface))
@@ -204,6 +214,7 @@ app.include_router(interfaces.router)
 app.include_router(peers.router)
 app.include_router(geoip.router)
 app.include_router(routing.router)
+app.include_router(dns.router)
 app.include_router(system.router)
 app.include_router(backup.router)
 app.include_router(nodes.router)

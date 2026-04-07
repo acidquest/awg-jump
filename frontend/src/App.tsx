@@ -9,6 +9,7 @@ import Nodes from './pages/Nodes'
 import Routing from './pages/Routing'
 import GeoIP from './pages/GeoIP'
 import Backup from './pages/Backup'
+import DNS from './pages/DNS'
 
 const qc = new QueryClient({
   defaultOptions: {
@@ -43,6 +44,7 @@ export default function App() {
                     <Route path="/nodes" element={<Nodes />} />
                     <Route path="/routing" element={<Routing />} />
                     <Route path="/geoip" element={<GeoIP />} />
+                    <Route path="/dns" element={<DNS />} />
                     <Route path="/backup" element={<Backup />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>

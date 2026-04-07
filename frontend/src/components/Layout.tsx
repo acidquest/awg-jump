@@ -8,6 +8,7 @@ const NAV = [
   { to: '/nodes', label: 'Nodes', icon: ServerIcon },
   { to: '/routing', label: 'Routing', icon: RouteIcon },
   { to: '/geoip', label: 'GeoIP', icon: GlobeIcon },
+  { to: '/dns', label: 'Split DNS', icon: DnsIcon },
   { to: '/backup', label: 'Backup', icon: ArchiveIcon },
 ]
 
@@ -117,6 +118,16 @@ function ArchiveIcon({ size = 16 }: { size?: number }) {
       <polyline points="21 8 21 21 3 21 3 8"/>
       <rect x="1" y="3" width="22" height="5"/>
       <line x1="10" y1="12" x2="14" y2="12"/>
+    </svg>
+  )
+}
+
+function DnsIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2a10 10 0 1 0 10 10"/>
+      <path d="M12 6v6l4 2"/>
+      <path d="M18 14h4M20 12v4"/>
     </svg>
   )
 }
