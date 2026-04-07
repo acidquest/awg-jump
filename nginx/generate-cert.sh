@@ -12,6 +12,12 @@ fi
 
 mkdir -p "$CERT_DIR"
 
+# Установить openssl если отсутствует (nginx:alpine его не включает)
+if ! command -v openssl >/dev/null 2>&1; then
+    echo "[generate-cert] Installing openssl..."
+    apk add --no-cache openssl
+fi
+
 CN="${TLS_COMMON_NAME:-localhost}"
 echo "[generate-cert] Generating self-signed certificate for CN=$CN (valid 10 years)..."
 
