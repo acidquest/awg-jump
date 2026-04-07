@@ -5,6 +5,7 @@ APScheduler — фоновые задачи:
   - Node health-check + failover каждые NODE_HEALTH_CHECK_INTERVAL с
 """
 import logging
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -64,6 +65,50 @@ async def _awg_health_check() -> None:
                     )
     except Exception as e:
         logger.error("[scheduler] AWG health-check error: %s", e)
+
+
+# ── Peer stats sync ──────────────────────────────────────────────────────
+
+async def _sync_peer_stats() -> None:
+    """
+    Синхронизирует last_handshake, rx_bytes, tx_bytes из awg show all dump → БД.
+    Запускается каждые 30 секунд.
+    """
+    import backend.services.awg as awg_svc
+    from backend.database import AsyncSessionLocal
+    from backend.models.peer import Peer
+    from sqlalchemy import select
+
+    try:
+        status = awg_svc.get_status()
+        if not status:
+            return
+
+        async with AsyncSessionLocal() as session:
+            for iface_name, iface_data in status.items():
+                peers_data = iface_data.get("peers", {})
+                if not peers_data:
+                    continue
+                result = await session.execute(
+                    select(Peer).where(Peer.enabled == True)  # noqa: E712
+                )
+                db_peers = result.scalars().all()
+                updated = False
+                for peer in db_peers:
+                    peer_stat = peers_data.get(peer.public_key)
+                    if peer_stat is None:
+                        continue
+                    hs = peer_stat.get("latest_handshake", 0)
+                    peer.last_handshake = (
+                        datetime.fromtimestamp(hs, tz=timezone.utc) if hs else None
+                    )
+                    peer.rx_bytes = peer_stat.get("rx_bytes", 0)
+                    peer.tx_bytes = peer_stat.get("tx_bytes", 0)
+                    updated = True
+                if updated:
+                    await session.commit()
+    except Exception as e:
+        logger.error("[scheduler] Peer stats sync error: %s", e)
 
 
 # ── Node health-check + failover ─────────────────────────────────────────
@@ -149,6 +194,15 @@ def setup_scheduler() -> None:
         id="awg_health_check",
         replace_existing=True,
         name="AWG interface health check",
+    )
+
+    # Peer stats sync каждые 30 секунд
+    scheduler.add_job(
+        _sync_peer_stats,
+        trigger=IntervalTrigger(seconds=30),
+        id="peer_stats_sync",
+        replace_existing=True,
+        name="Peer stats sync (handshake/rx/tx)",
     )
 
     # Node health-check

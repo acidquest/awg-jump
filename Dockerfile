@@ -66,6 +66,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     iproute2 \
     ipset \
     iptables \
+    iputils-ping \
     net-tools \
     openssh-client \
     procps \

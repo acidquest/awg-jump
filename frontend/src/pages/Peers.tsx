@@ -31,7 +31,6 @@ export default function Peers() {
   const [showCreate, setShowCreate] = useState(false)
   const [qrPeer, setQrPeer] = useState<Peer | null>(null)
   const [editPeer, setEditPeer] = useState<Peer | null>(null)
-  const [endpoint, setEndpoint] = useState('')
 
   const { data: ifaces = [] } = useQuery<Interface[]>({
     queryKey: ['interfaces'],
@@ -41,6 +40,7 @@ export default function Peers() {
   const { data: peers = [], isLoading } = useQuery<Peer[]>({
     queryKey: ['peers', ifaceId],
     queryFn: () => getPeers(ifaceId).then((r) => r.data),
+    refetchInterval: 30_000,
   })
 
   const toggleMut = useMutation({
@@ -54,8 +54,7 @@ export default function Peers() {
   })
 
   const downloadConfig = async (peer: Peer) => {
-    const ep = endpoint || prompt('Server endpoint (host:port)', '') || ''
-    const res = await getPeerConfig(peer.id, ep)
+    const res = await getPeerConfig(peer.id)
     const blob = new Blob([res.data as string], { type: 'text/plain' })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
@@ -133,7 +132,7 @@ export default function Peers() {
                         ⬇
                       </button>
                       <button className="btn btn-ghost btn-sm" onClick={() => setQrPeer(p)} title="QR code">
-                        ⬛
+                        QR
                       </button>
                       <button className="btn btn-ghost btn-sm" onClick={() => setEditPeer(p)}>Edit</button>
                       <button
@@ -309,18 +308,15 @@ function EditPeerModal({ peer, onClose, onSaved }: { peer: Peer; onClose: () => 
 }
 
 function QrModal({ peer, onClose }: { peer: Peer; onClose: () => void }) {
-  const [endpoint, setEndpoint] = useState('')
-  const [applied, setApplied] = useState(false)
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  // Загружаем QR через axios (с auth-токеном), конвертируем blob → object URL
   useEffect(() => {
     let objectUrl: string | null = null
     setLoading(true)
     setError('')
-    getPeerQr(peer.id, applied ? endpoint : undefined)
+    getPeerQr(peer.id)
       .then((res) => {
         objectUrl = URL.createObjectURL(res.data as Blob)
         setBlobUrl(objectUrl)
@@ -330,23 +326,11 @@ function QrModal({ peer, onClose }: { peer: Peer; onClose: () => void }) {
     return () => {
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [peer.id, applied, endpoint])
+  }, [peer.id])
 
   return (
     <Modal open title={`QR — ${peer.name}`} onClose={onClose}>
-      <div className="form-group">
-        <label className="form-label">Server endpoint (optional)</label>
-        <div className="flex gap-2">
-          <input
-            className="form-input mono"
-            value={endpoint}
-            onChange={(e) => { setEndpoint(e.target.value); setApplied(false) }}
-            placeholder="1.2.3.4:51820"
-          />
-          <button className="btn btn-secondary" onClick={() => setApplied(true)}>Apply</button>
-        </div>
-      </div>
-      <div style={{ textAlign: 'center', marginTop: 16, minHeight: 120 }}>
+      <div style={{ textAlign: 'center', minHeight: 120 }}>
         {loading && <span className="spinner" />}
         {error && <div className="error-box">{error}</div>}
         {!loading && !error && blobUrl && (

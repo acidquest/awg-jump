@@ -119,15 +119,15 @@ def setup_iptables() -> None:
     phys_iface = settings.physical_iface
 
     # mangle FORWARD: ставим fwmark на основе ipset
-    _ipt_add("mangle", "FORWARD", [
+    _ipt_add("mangle", "PREROUTING", [
         "-m", "set", "--match-set", "geoip_ru", "dst",
         "-j", "MARK", "--set-mark", fwmark_ru,
     ])
-    _ipt_add("mangle", "FORWARD", [
+    _ipt_add("mangle", "PREROUTING", [
         "-m", "set", "!", "--match-set", "geoip_ru", "dst",
         "-j", "MARK", "--set-mark", fwmark_vpn,
     ])
-    logger.info("iptables mangle FORWARD rules configured")
+    logger.info("iptables mangle PREROUTING rules configured")
 
     # nat POSTROUTING: MASQUERADE исходящего трафика
     _ipt_add("nat", "POSTROUTING", ["-o", phys_iface, "-j", "MASQUERADE"])
@@ -152,11 +152,11 @@ def teardown() -> None:
     _run(["ip", "route", "del", "default", "table", str(table_vpn)])
 
     # iptables mangle
-    _ipt_del("mangle", "FORWARD", [
+    _ipt_del("mangle", "PREROUTING", [
         "-m", "set", "--match-set", "geoip_ru", "dst",
         "-j", "MARK", "--set-mark", fwmark_ru,
     ])
-    _ipt_del("mangle", "FORWARD", [
+    _ipt_del("mangle", "PREROUTING", [
         "-m", "set", "!", "--match-set", "geoip_ru", "dst",
         "-j", "MARK", "--set-mark", fwmark_vpn,
     ])
@@ -182,11 +182,11 @@ def get_status() -> dict:
         "rule_vpn": _rule_exists(fwmark_vpn, table_vpn),
         "route_ru": route_ru_out.strip() or None,
         "route_vpn": route_vpn_out.strip() or None,
-        "mangle_ru": _ipt_rule_exists("mangle", "FORWARD", [
+        "prerouting_ru": _ipt_rule_exists("mangle", "PREROUTING", [
             "-m", "set", "--match-set", "geoip_ru", "dst",
             "-j", "MARK", "--set-mark", fwmark_ru,
         ]),
-        "mangle_vpn": _ipt_rule_exists("mangle", "FORWARD", [
+        "prerouting_vpn": _ipt_rule_exists("mangle", "PREROUTING", [
             "-m", "set", "!", "--match-set", "geoip_ru", "dst",
             "-j", "MARK", "--set-mark", fwmark_vpn,
         ]),

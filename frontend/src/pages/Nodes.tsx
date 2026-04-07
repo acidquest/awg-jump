@@ -19,7 +19,8 @@ function fmtBytes(n: number | null) {
 
 function fmtDate(s: string | null) {
   if (!s) return '—'
-  return new Date(s).toLocaleString()
+  const utc = s.endsWith('Z') || s.includes('+') ? s : s + 'Z'
+  return new Date(utc).toLocaleString()
 }
 
 type DeployStep = {
