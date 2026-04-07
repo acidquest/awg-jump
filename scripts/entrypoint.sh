@@ -25,7 +25,15 @@ echo "[entrypoint] Configuring iptables-legacy..."
 update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null || true
 update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
 
-# ── 2. Создать необходимые директории ───────────────────────────────────
+# ── 2. Создать /dev/net/tun если отсутствует ────────────────────────────
+if [ ! -c /dev/net/tun ]; then
+    echo "[entrypoint] Creating /dev/net/tun..."
+    mkdir -p /dev/net
+    mknod /dev/net/tun c 10 200
+    chmod 666 /dev/net/tun
+fi
+
+# ── 3. Создать необходимые директории ───────────────────────────────────
 mkdir -p "${DATA_DIR:-/data}"
 mkdir -p "${GEOIP_CACHE_DIR:-/data/geoip}"
 mkdir -p "${BACKUP_DIR:-/data/backups}"
@@ -33,7 +41,7 @@ mkdir -p "${WG_CONFIG_DIR:-/data/wg_configs}"
 mkdir -p /var/log/supervisor
 mkdir -p /var/run/wireguard
 
-# ── 3. Применить миграции БД ─────────────────────────────────────────────
+# ── 4. Применить миграции БД ─────────────────────────────────────────────
 echo "[entrypoint] Running database migrations..."
 cd /app
 python3 -m alembic -c backend/alembic.ini upgrade head

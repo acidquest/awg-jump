@@ -14,6 +14,12 @@ update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || tr
 : "${AWG_PEER_PUBLIC_KEY:?AWG_PEER_PUBLIC_KEY is required}"
 : "${AWG_PEER_ALLOWED_IPS:=10.20.0.2/32}"
 
+# Проверить наличие /dev/net/tun (должен быть пробршен через devices: в compose)
+if [ ! -c /dev/net/tun ]; then
+    echo "[awg-node] ERROR: /dev/net/tun not found. Add 'devices: [/dev/net/tun:/dev/net/tun]' to docker-compose.yml"
+    exit 1
+fi
+
 # Запустить TUN демон
 echo "[awg-node] Starting amneziawg-go daemon..."
 amneziawg-go awg0 &

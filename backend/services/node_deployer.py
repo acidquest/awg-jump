@@ -113,6 +113,8 @@ def _make_compose_content(awg_port: int) -> str:
         f"    cap_add:\n"
         f"      - NET_ADMIN\n"
         f"      - NET_RAW\n"
+        f"    devices:\n"
+        f"      - /dev/net/tun:/dev/net/tun\n"
         f"    network_mode: host\n"
         f"    env_file: .env\n"
     )
@@ -338,7 +340,14 @@ class NodeDeployer:
                     async with sftp.open("/opt/awg-node/docker-compose.yml", "w") as f:
                         await f.write(compose_content)
 
-                # ── Шаг 11: docker-compose up ─────────────────────────────
+                # ── Шаг 11: убедиться что /dev/net/tun существует на хосте ──
+                await emit("Ensuring /dev/net/tun exists on remote host...")
+                await conn.run(
+                    "[ -c /dev/net/tun ] || (mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 666 /dev/net/tun)",
+                    check=False,
+                )
+
+                # ── Шаг 12 (бывший 11): docker-compose up ────────────────
                 await emit("Starting awg-node container...")
                 res = await conn.run(
                     "docker-compose -f /opt/awg-node/docker-compose.yml up -d",
@@ -538,6 +547,10 @@ class NodeDeployer:
                     if proc.returncode != 0:
                         raise RuntimeError("docker build failed")
 
+                await conn.run(
+                    "[ -c /dev/net/tun ] || (mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 666 /dev/net/tun)",
+                    check=False,
+                )
                 await emit("Recreating container...")
                 res = await conn.run(
                     "docker-compose -f /opt/awg-node/docker-compose.yml up -d --force-recreate",
