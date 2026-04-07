@@ -25,7 +25,7 @@
 - **Russian IP addresses** → host's physical interface (`eth0`) — direct connection, no VPN.
 - **All other traffic** → `awg1` — upstream node (foreign VPS).
 
-Additionally provides **Split DNS**: clients receive a built-in DNS server that routes queries for Russian domains through Yandex DNS, and everything else through Cloudflare/Google.
+Additionally provides **Split DNS**: clients receive a built-in DNS server that routes queries for local-zone domains through configurable local zone DNS servers, and everything else through configurable VPN zone DNS servers.
 
 The repository contains two Docker images:
 
@@ -54,7 +54,7 @@ Browser (HTTPS:443)
 │  FastAPI + SQLite + APScheduler             │
 │  amneziawg-go (awg0 + awg1)                │
 │  dnsmasq (split DNS)                        │
-│  ipset geoip_ru + iptables policy routing   │
+│  ipset geoip_local + iptables policy routing│
 └─────────────────────────────────────────────┘
        │ awg0 UDP:51820          │ awg1 → upstream
        │                         │
@@ -70,12 +70,12 @@ Browser (HTTPS:443)
 
 ```
 Client → awg0 → iptables mangle PREROUTING:
-    dst in ipset geoip_ru  →  fwmark RU  →  table 100  →  eth0 (direct)
-    dst not in geoip_ru    →  fwmark VPN →  table 200  →  awg1 (VPN)
+    dst in ipset geoip_local  →  fwmark RU  →  table 100  →  eth0 (direct)
+    dst not in geoip_local    →  fwmark VPN →  table 200  →  awg1 (VPN)
 
 Container (dnsmasq DNS queries) → iptables mangle OUTPUT:
-    dst in ipset geoip_ru  →  fwmark RU  →  table 100  →  eth0
-    dst not in geoip_ru    →  fwmark VPN →  table 200  →  awg1
+    dst in ipset geoip_local  →  fwmark RU  →  table 100  →  eth0
+    dst not in geoip_local    →  fwmark VPN →  table 200  →  awg1
 ```
 
 ---
@@ -121,7 +121,7 @@ On first launch, the container automatically:
 2. Creates `awg0` (server) and `awg1` (client) interfaces.
 3. Generates AWG keys for both interfaces.
 4. Generates AmneziaWG obfuscation parameters.
-5. Loads GeoIP cache into ipset `geoip_ru`.
+5. Loads GeoIP cache for all enabled countries into ipset `geoip_local`.
 6. Configures policy routing and iptables rules.
 7. Starts dnsmasq with a set of default Russian domains.
 8. Starts APScheduler (GeoIP cron, health checks, peer stats sync).
@@ -180,7 +180,7 @@ On first launch, the container automatically:
 
 | Variable | Default | Description |
 |---------|---------|-------------|
-| `GEOIP_SOURCE_RU` | ipdeny.com | URL of the RU CIDR block file |
+| `GEOIP_SOURCE_RU` | ipdeny.com | Default URL/template for the initial local-zone source (RU) |
 | `GEOIP_UPDATE_CRON` | `0 4 * * *` | Update schedule (UTC cron) |
 | `GEOIP_FETCH_TIMEOUT` | `30` | Download timeout in seconds |
 
@@ -244,14 +244,17 @@ View the current policy routing state:
 
 ### GeoIP
 
-- Status of ipset `geoip_ru`: prefix count, last update time.
-- Data source (ipdeny.com).
-- Manual GeoIP update trigger.
+- Status of ipset `geoip_local`: prefix count and last update time.
+- Manage countries in the local routing zone: RU, BY, KZ, and others.
+- Add, edit, and delete enabled GeoIP sources from the UI.
+- Source URL is built automatically from `country_code`, but can be overridden if needed.
+- Manual trigger for updating the aggregated GeoIP ipset.
 
 ### Split DNS
 
 - dnsmasq status: running/stopped, PID, listen address.
-- Domain list: domain name, upstream (Yandex / Default), enabled/disabled.
+- DNS zone settings: `Local Zone DNS` and `VPN Zone DNS`, editable inline.
+- Domain list: domain name, upstream (`Local Zone` / `VPN Zone`), enabled/disabled.
 - Add domains via form (TLD, domain, or subdomain).
 - Toggle individual domains without reloading.
 - **Reload dnsmasq** button — force config regeneration and reload.
@@ -296,13 +299,14 @@ AmneziaWG is a WireGuard fork with Junk packet support and header replacement to
 
 ### How It Works
 
-1. On startup (and on schedule per `GEOIP_UPDATE_CRON`), the RU CIDR block file is downloaded from `GEOIP_SOURCE_RU`.
-2. Blocks are loaded into ipset `geoip_ru` (atomic swap — no connection disruption).
-3. iptables mangle **PREROUTING** marks incoming packets from `awg0`:
-   - dst in `geoip_ru` → `fwmark RU` → table 100 → `eth0`
-   - dst not in `geoip_ru` → `fwmark VPN` → table 200 → `awg1`
-4. iptables mangle **OUTPUT** marks the container's own traffic (DNS queries etc.) by the same rules.
-5. `iptables nat POSTROUTING MASQUERADE` provides NAT on both outgoing interfaces.
+1. On startup (and on schedule per `GEOIP_UPDATE_CRON`), all enabled GeoIP sources are loaded from the database.
+2. For each country, the source URL is built automatically from `country_code` using the `ipdeny` pattern unless an explicit `url` is stored.
+3. All CIDR blocks are merged into a single ipset `geoip_local` (atomic swap — no connection disruption).
+4. iptables mangle **PREROUTING** marks incoming packets from `awg0`:
+   - dst in `geoip_local` → `fwmark RU` → table 100 → `eth0`
+   - dst not in `geoip_local` → `fwmark VPN` → table 200 → `awg1`
+5. iptables mangle **OUTPUT** marks the container's own traffic (DNS queries etc.) by the same rules.
+6. `iptables nat POSTROUTING MASQUERADE` provides NAT on both outgoing interfaces.
 
 ### Updating GeoIP
 
@@ -313,7 +317,7 @@ AmneziaWG is a WireGuard fork with Junk packet support and header replacement to
 docker exec awg-jump python -m backend.services.geoip_fetcher --force
 
 # View ipset contents:
-docker exec awg-jump ipset list geoip_ru | head -20
+docker exec awg-jump ipset list geoip_local | head -20
 ```
 
 ---
@@ -326,11 +330,11 @@ AWG Jump runs `dnsmasq` directly inside the container. AWG clients automatically
 
 ```
 Client → AWG DNS (10.10.0.1:53) → dnsmasq:
-    domain in list (upstream=yandex) → 77.88.8.8 (Yandex DNS)
-    everything else                  → 1.1.1.1, 8.8.8.8
+    domain in list (upstream=yandex / Local Zone) → local zone DNS servers
+    everything else                               → VPN zone DNS servers
 ```
 
-The container's own DNS traffic (dnsmasq queries to upstream resolvers) is routed via iptables OUTPUT — `77.88.8.8` goes through `eth0` (it's a Russian IP in geoip_ru), while `1.1.1.1` and `8.8.8.8` go through `awg1`.
+The container's own DNS traffic (dnsmasq queries to upstream resolvers) is routed via iptables OUTPUT using the same `geoip_local` ipset: local-zone IPs go through `eth0`, everything else goes through `awg1`.
 
 ### Default Domains
 
@@ -360,12 +364,35 @@ curl -X POST https://<host>/api/dns/domains \
 ```
 
 `upstream` values:
-- `yandex` — resolve via `77.88.8.8`
-- `default` — resolve via `1.1.1.1` / `8.8.8.8` (explicit override for a subdomain)
+- `yandex` — use local zone DNS servers
+- `default` — use VPN zone DNS servers
+
+The string values `yandex` and `default` are kept in the database for backward compatibility, but the UI presents them as `Local Zone` and `VPN Zone`.
 
 ### Config Reload
 
-Whenever domains change, the dnsmasq config is automatically regenerated and reloaded via `SIGHUP` (no connection interruption).
+Whenever domains or DNS zone settings change, the dnsmasq config is automatically regenerated and reloaded via `SIGHUP` (no connection interruption).
+
+### DNS Zone Settings
+
+Settings are stored in a dedicated `dns_zone_settings` table:
+
+- `local` — DNS servers for local-zone domains.
+- `vpn` — DNS servers for all other traffic.
+
+API:
+
+```bash
+# Get zone settings
+curl -H "Authorization: Bearer <token>" \
+  https://<host>/api/dns/zones
+
+# Update local zone DNS
+curl -X PUT https://<host>/api/dns/zones/local \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"dns_servers":["77.88.8.8"],"description":"DNS for local routing zone"}'
+```
 
 ### Generated dnsmasq Config
 
@@ -378,7 +405,7 @@ no-resolv
 cache-size=2000
 server=1.1.1.1
 server=8.8.8.8
-# RU domains
+# Local zone domains
 server=/ru/77.88.8.8
 server=/yandex.ru/77.88.8.8
 # ...
@@ -426,7 +453,7 @@ APScheduler checks every `NODE_HEALTH_CHECK_INTERVAL` seconds:
 
 | Content | Description |
 |---------|-------------|
-| `config.db` | All data: interfaces, keys, obfuscation params, peers, nodes, GeoIP sources, routing rules, **split DNS domains** |
+| `config.db` | All data: interfaces, keys, obfuscation params, peers, nodes, GeoIP sources, routing rules, **split DNS domains and DNS zone settings** |
 | `env_snapshot.json` | Reference snapshot of public parameters (no passwords) |
 | `wg_configs/` | Generated WireGuard config files |
 
@@ -511,24 +538,25 @@ awg-jump/
 │   │   ├── interface.py    # AWG interfaces + obf_* params
 │   │   ├── peer.py         # AWG peers
 │   │   ├── upstream_node.py # Upstream nodes + deploy logs
-│   │   ├── geoip.py        # GeoIP sources
+│   │   ├── geoip.py        # GeoIP sources + display_name
 │   │   ├── routing_rule.py # Routing rules
-│   │   └── dns_domain.py   # Split DNS domains
+│   │   ├── dns_domain.py   # Split DNS domains
+│   │   └── dns_zone_settings.py # DNS servers for local/vpn zones
 │   ├── routers/
 │   │   ├── auth.py         # JWT authentication
 │   │   ├── interfaces.py   # Interfaces API
 │   │   ├── peers.py        # Peers API
 │   │   ├── nodes.py        # Nodes API + deploy + SSE
 │   │   ├── routing.py      # Routing API
-│   │   ├── geoip.py        # GeoIP API
-│   │   ├── dns.py          # Split DNS API
+│   │   ├── geoip.py        # GeoIP API and local-zone country management
+│   │   ├── dns.py          # Split DNS API and DNS zone settings
 │   │   ├── system.py       # System information
 │   │   └── backup.py       # Export/import
 │   ├── services/
 │   │   ├── awg.py          # amneziawg-go management
 │   │   ├── routing.py      # ip rule/route + iptables
 │   │   ├── ipset_manager.py # ipset management
-│   │   ├── geoip_fetcher.py # GeoIP download
+│   │   ├── geoip_fetcher.py # GeoIP download and geoip_local aggregation
 │   │   ├── node_deployer.py # SSH node deployment
 │   │   └── dns_manager.py  # dnsmasq management
 │   └── alembic/            # DB migrations
@@ -536,7 +564,9 @@ awg-jump/
 │           ├── 0001_initial_schema.py
 │           ├── 0002_peer_private_key.py
 │           ├── 0003_node_private_key.py
-│           └── 0004_dns_domains.py
+│           ├── 0004_dns_domains.py
+│           ├── 0005_geoip_local_multi_country.py
+│           └── 0006_dns_zone_settings.py
 │
 ├── frontend/
 │   ├── src/
@@ -603,7 +633,7 @@ docker exec -it awg-jump bash
 docker exec awg-jump wg show
 
 # ipset status
-docker exec awg-jump ipset list geoip_ru | head -20
+docker exec awg-jump ipset list geoip_local | head -20
 
 # ip rules and routes
 docker exec awg-jump ip rule show
