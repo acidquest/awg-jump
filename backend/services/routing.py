@@ -11,8 +11,12 @@ import subprocess
 from typing import Optional
 
 from backend.config import settings
+import backend.services.ipset_manager as ipset_mgr
 
 logger = logging.getLogger(__name__)
+_GEOIP_IPSET_NAME = "geoip_ru"
+_VPN_ROUTE_METRIC_PRIMARY = "100"
+_VPN_ROUTE_METRIC_FALLBACK = "200"
 
 
 def _run(args: list[str]) -> tuple[int, str]:
@@ -59,6 +63,25 @@ def _ipt_del(table: str, chain: str, rule_args: list[str]) -> None:
         _run(["iptables", "-t", table, "-D", chain] + rule_args)
 
 
+def _ensure_route(table: int, route_args: list[str], *, description: str) -> None:
+    rc, out = _run(["ip", "route", "replace"] + route_args + ["table", str(table)])
+    if rc != 0:
+        logger.warning("%s failed: %s", description, out)
+    else:
+        logger.info("%s", description)
+
+
+def _ensure_geoip_ipset() -> None:
+    """
+    Гарантирует существование geoip ipset до установки iptables правил.
+    Иначе PREROUTING с --match-set падает, и NAT/MASQUERADE не успевает примениться.
+    """
+    if ipset_mgr.exists(_GEOIP_IPSET_NAME):
+        return
+    ipset_mgr.create(_GEOIP_IPSET_NAME)
+    logger.warning("Created missing ipset %s as empty set", _GEOIP_IPSET_NAME)
+
+
 def setup_policy_routing() -> None:
     """
     Создаёт ip rule и ip route для policy routing.
@@ -86,27 +109,43 @@ def setup_policy_routing() -> None:
     # ip route: default в каждой таблице
     gw = _get_default_gateway(phys_iface)
     if gw:
-        rc, out = _run(["ip", "route", "replace", "default", "via", gw,
-                        "dev", phys_iface, "table", str(table_ru)])
-        if rc != 0:
-            logger.warning("ip route add RU default failed: %s", out)
-        else:
-            logger.info("RU table: default via %s dev %s", gw, phys_iface)
+        _ensure_route(
+            table_ru,
+            ["default", "via", gw, "dev", phys_iface],
+            description=f"RU table: default via {gw} dev {phys_iface}",
+        )
     else:
         logger.warning("Cannot determine default gateway for %s", phys_iface)
 
-    update_vpn_route("awg1")
+    update_vpn_route("awg1", fallback_gateway=gw)
 
 
-def update_vpn_route(interface_name: str) -> None:
+def update_vpn_route(interface_name: str, fallback_gateway: Optional[str] = None) -> None:
     """Обновляет маршрут по умолчанию в VPN-таблице (вызывается при смене ноды)."""
     table_vpn = settings.routing_table_vpn
-    rc, out = _run(["ip", "route", "replace", "default", "dev", interface_name,
-                    "table", str(table_vpn)])
-    if rc != 0:
-        logger.warning("ip route replace VPN default failed: %s", out)
+    phys_iface = settings.physical_iface
+
+    _ensure_route(
+        table_vpn,
+        ["default", "dev", interface_name, "metric", _VPN_ROUTE_METRIC_PRIMARY],
+        description=(
+            f"VPN table: primary default dev {interface_name} "
+            f"metric {_VPN_ROUTE_METRIC_PRIMARY} (table {table_vpn})"
+        ),
+    )
+
+    gw = fallback_gateway or _get_default_gateway(phys_iface)
+    if gw:
+        _ensure_route(
+            table_vpn,
+            ["default", "via", gw, "dev", phys_iface, "metric", _VPN_ROUTE_METRIC_FALLBACK],
+            description=(
+                f"VPN table: fallback default via {gw} dev {phys_iface} "
+                f"metric {_VPN_ROUTE_METRIC_FALLBACK} (table {table_vpn})"
+            ),
+        )
     else:
-        logger.info("VPN table: default dev %s (table %d)", interface_name, table_vpn)
+        logger.warning("Cannot determine fallback gateway for VPN table on %s", phys_iface)
 
 
 def setup_iptables() -> None:
@@ -118,17 +157,19 @@ def setup_iptables() -> None:
     fwmark_vpn = settings.fwmark_vpn
     phys_iface = settings.physical_iface
 
+    _ensure_geoip_ipset()
+
     # mangle PREROUTING: ставим fwmark только на пакеты от AWG-клиентов (-i awg0).
     # Без ограничения по интерфейсу маркируется и обратный трафик (ответы из интернета),
     # что ломает маршрутизацию ответных пакетов обратно к клиентам.
     _ipt_add("mangle", "PREROUTING", [
         "-i", "awg0",
-        "-m", "set", "--match-set", "geoip_ru", "dst",
+        "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
         "-j", "MARK", "--set-mark", fwmark_ru,
     ])
     _ipt_add("mangle", "PREROUTING", [
         "-i", "awg0",
-        "-m", "set", "!", "--match-set", "geoip_ru", "dst",
+        "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
         "-j", "MARK", "--set-mark", fwmark_vpn,
     ])
     logger.info("iptables mangle PREROUTING rules configured")
@@ -151,19 +192,20 @@ def teardown() -> None:
     _run(["ip", "rule", "del", "fwmark", fwmark_ru, "table", str(table_ru)])
     _run(["ip", "rule", "del", "fwmark", fwmark_vpn, "table", str(table_vpn)])
 
-    # ip route
-    _run(["ip", "route", "del", "default", "table", str(table_ru)])
-    _run(["ip", "route", "del", "default", "table", str(table_vpn)])
+    # ip route: полностью очищаем управляемые таблицы, т.к. в VPN-таблице
+    # теперь может быть и primary route через awg1, и fallback через physical iface.
+    _run(["ip", "route", "flush", "table", str(table_ru)])
+    _run(["ip", "route", "flush", "table", str(table_vpn)])
 
     # iptables mangle
     _ipt_del("mangle", "PREROUTING", [
         "-i", "awg0",
-        "-m", "set", "--match-set", "geoip_ru", "dst",
+        "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
         "-j", "MARK", "--set-mark", fwmark_ru,
     ])
     _ipt_del("mangle", "PREROUTING", [
         "-i", "awg0",
-        "-m", "set", "!", "--match-set", "geoip_ru", "dst",
+        "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
         "-j", "MARK", "--set-mark", fwmark_vpn,
     ])
 
@@ -190,12 +232,12 @@ def get_status() -> dict:
         "route_vpn": route_vpn_out.strip() or None,
         "prerouting_ru": _ipt_rule_exists("mangle", "PREROUTING", [
             "-i", "awg0",
-            "-m", "set", "--match-set", "geoip_ru", "dst",
+            "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
             "-j", "MARK", "--set-mark", fwmark_ru,
         ]),
         "prerouting_vpn": _ipt_rule_exists("mangle", "PREROUTING", [
             "-i", "awg0",
-            "-m", "set", "!", "--match-set", "geoip_ru", "dst",
+            "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
             "-j", "MARK", "--set-mark", fwmark_vpn,
         ]),
         "nat_eth0": _ipt_rule_exists("nat", "POSTROUTING", ["-o", phys_iface, "-j", "MASQUERADE"]),
