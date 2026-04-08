@@ -1,7 +1,6 @@
 # Data и секреты
 data/
 .env
-.env.*
 *.db
 *.db-shm
 *.db-wal
