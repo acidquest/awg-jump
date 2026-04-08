@@ -2,7 +2,7 @@
 Policy routing manager — ip rule/route + iptables mangle/nat.
 
 Политика:
-  fwmark FWMARK_RU  → table ROUTING_TABLE_RU  → default via eth0
+  fwmark FWMARK_LOCAL → table ROUTING_TABLE_LOCAL → default via eth0
   fwmark FWMARK_VPN → table ROUTING_TABLE_VPN → default dev awg1
 """
 import logging
@@ -14,9 +14,10 @@ from backend.config import settings
 import backend.services.ipset_manager as ipset_mgr
 
 logger = logging.getLogger(__name__)
-_GEOIP_IPSET_NAME = "geoip_ru"
+_GEOIP_IPSET_NAME = "geoip_local"
 _VPN_ROUTE_METRIC_PRIMARY = "100"
 _VPN_ROUTE_METRIC_FALLBACK = "200"
+_DNS_OUTPUT_PROTOCOLS = ("udp", "tcp")
 
 
 def _run(args: list[str]) -> tuple[int, str]:
@@ -120,18 +121,18 @@ def setup_policy_routing() -> None:
     Создаёт ip rule и ip route для policy routing.
     Идемпотентно — проверяет существование перед добавлением.
     """
-    fwmark_ru = settings.fwmark_ru
+    fwmark_local = settings.fwmark_local
     fwmark_vpn = settings.fwmark_vpn
-    table_ru = settings.routing_table_ru
+    table_local = settings.routing_table_local
     table_vpn = settings.routing_table_vpn
     phys_iface = settings.physical_iface
 
     # ip rule: fwmark → таблица
-    if not _rule_exists(fwmark_ru, table_ru):
-        rc, out = _run(["ip", "rule", "add", "fwmark", fwmark_ru, "table", str(table_ru)])
+    if not _rule_exists(fwmark_local, table_local):
+        rc, out = _run(["ip", "rule", "add", "fwmark", fwmark_local, "table", str(table_local)])
         if rc != 0:
-            raise RuntimeError(f"ip rule add RU failed: {out}")
-        logger.info("Added ip rule: fwmark %s → table %d", fwmark_ru, table_ru)
+            raise RuntimeError(f"ip rule add LOCAL failed: {out}")
+        logger.info("Added ip rule: fwmark %s → table %d", fwmark_local, table_local)
 
     if not _rule_exists(fwmark_vpn, table_vpn):
         rc, out = _run(["ip", "rule", "add", "fwmark", fwmark_vpn, "table", str(table_vpn)])
@@ -143,9 +144,9 @@ def setup_policy_routing() -> None:
     gw = _get_default_gateway(phys_iface)
     if gw:
         _ensure_route(
-            table_ru,
+            table_local,
             ["default", "via", gw, "dev", phys_iface],
-            description=f"RU table: default via {gw} dev {phys_iface}",
+            description=f"LOCAL table: default via {gw} dev {phys_iface}",
         )
     else:
         logger.warning("Cannot determine default gateway for %s", phys_iface)
@@ -200,19 +201,19 @@ def setup_iptables() -> None:
     Настраивает правила iptables для policy routing + NAT.
     Идемпотентно.
     """
-    fwmark_ru = settings.fwmark_ru
+    fwmark_local = settings.fwmark_local
     fwmark_vpn = settings.fwmark_vpn
     phys_iface = settings.physical_iface
 
     _ensure_geoip_ipset()
 
-    # mangle PREROUTING: ставим fwmark только на пакеты от AWG-клиентов (-i awg0).
-    # Без ограничения по интерфейсу маркируется и обратный трафик (ответы из интернета),
-    # что ломает маршрутизацию ответных пакетов обратно к клиентам.
+    # mangle PREROUTING: fwmark для трафика от AWG-клиентов (-i awg0).
+    # Ограничение по интерфейсу обязательно: без него маркируются и ответные пакеты
+    # из интернета, что ломает маршрутизацию обратно к клиентам.
     _ipt_add("mangle", "PREROUTING", [
         "-i", "awg0",
         "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
-        "-j", "MARK", "--set-mark", fwmark_ru,
+        "-j", "MARK", "--set-mark", fwmark_local,
     ])
     _ipt_add("mangle", "PREROUTING", [
         "-i", "awg0",
@@ -220,6 +221,25 @@ def setup_iptables() -> None:
         "-j", "MARK", "--set-mark", fwmark_vpn,
     ])
     logger.info("iptables mangle PREROUTING rules configured")
+
+    # mangle OUTPUT: fwmark только для DNS-трафика самого контейнера.
+    # PREROUTING не охватывает locally-generated пакеты — для них нужна цепочка OUTPUT.
+    # Ограничиваемся DNS, чтобы не ломать обычный container-to-container трафик
+    # (например nginx -> awg-jump по Docker bridge).
+    for proto in _DNS_OUTPUT_PROTOCOLS:
+        _ipt_add("mangle", "OUTPUT", [
+            "-p", proto,
+            "--dport", "53",
+            "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
+            "-j", "MARK", "--set-mark", fwmark_local,
+        ])
+        _ipt_add("mangle", "OUTPUT", [
+            "-p", proto,
+            "--dport", "53",
+            "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
+            "-j", "MARK", "--set-mark", fwmark_vpn,
+        ])
+    logger.info("iptables mangle OUTPUT rules configured (DNS only)")
 
     # nat POSTROUTING: MASQUERADE исходящего трафика
     _ipt_add("nat", "POSTROUTING", ["-o", phys_iface, "-j", "MASQUERADE"])
@@ -229,26 +249,26 @@ def setup_iptables() -> None:
 
 def teardown() -> None:
     """Удаляет все установленные правила (для тестов и graceful shutdown)."""
-    fwmark_ru = settings.fwmark_ru
+    fwmark_local = settings.fwmark_local
     fwmark_vpn = settings.fwmark_vpn
-    table_ru = settings.routing_table_ru
+    table_local = settings.routing_table_local
     table_vpn = settings.routing_table_vpn
     phys_iface = settings.physical_iface
 
     # ip rule
-    _run(["ip", "rule", "del", "fwmark", fwmark_ru, "table", str(table_ru)])
+    _run(["ip", "rule", "del", "fwmark", fwmark_local, "table", str(table_local)])
     _run(["ip", "rule", "del", "fwmark", fwmark_vpn, "table", str(table_vpn)])
 
     # ip route: полностью очищаем управляемые таблицы, т.к. в VPN-таблице
     # теперь может быть и primary route через awg1, и fallback через physical iface.
-    _run(["ip", "route", "flush", "table", str(table_ru)])
+    _run(["ip", "route", "flush", "table", str(table_local)])
     _run(["ip", "route", "flush", "table", str(table_vpn)])
 
-    # iptables mangle
+    # iptables mangle PREROUTING
     _ipt_del("mangle", "PREROUTING", [
         "-i", "awg0",
         "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
-        "-j", "MARK", "--set-mark", fwmark_ru,
+        "-j", "MARK", "--set-mark", fwmark_local,
     ])
     _ipt_del("mangle", "PREROUTING", [
         "-i", "awg0",
@@ -256,31 +276,46 @@ def teardown() -> None:
         "-j", "MARK", "--set-mark", fwmark_vpn,
     ])
 
+    # iptables mangle OUTPUT
+    for proto in _DNS_OUTPUT_PROTOCOLS:
+        _ipt_del("mangle", "OUTPUT", [
+            "-p", proto,
+            "--dport", "53",
+            "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
+            "-j", "MARK", "--set-mark", fwmark_local,
+        ])
+        _ipt_del("mangle", "OUTPUT", [
+            "-p", proto,
+            "--dport", "53",
+            "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
+            "-j", "MARK", "--set-mark", fwmark_vpn,
+        ])
+
     # iptables nat (не трогаем — могут использоваться другими процессами)
     logger.info("Routing teardown complete")
 
 
 def get_status() -> dict:
     """Возвращает текущее состояние правил маршрутизации."""
-    fwmark_ru = settings.fwmark_ru
+    fwmark_local = settings.fwmark_local
     fwmark_vpn = settings.fwmark_vpn
-    table_ru = settings.routing_table_ru
+    table_local = settings.routing_table_local
     table_vpn = settings.routing_table_vpn
     phys_iface = settings.physical_iface
 
     _, rules_out = _run(["ip", "rule", "show"])
-    _, route_ru_out = _run(["ip", "route", "show", "table", str(table_ru)])
+    _, route_local_out = _run(["ip", "route", "show", "table", str(table_local)])
     _, route_vpn_out = _run(["ip", "route", "show", "table", str(table_vpn)])
 
     return {
-        "rule_ru": _rule_exists(fwmark_ru, table_ru),
+        "rule_local": _rule_exists(fwmark_local, table_local),
         "rule_vpn": _rule_exists(fwmark_vpn, table_vpn),
-        "route_ru": route_ru_out.strip() or None,
+        "route_local": route_local_out.strip() or None,
         "route_vpn": route_vpn_out.strip() or None,
-        "prerouting_ru": _ipt_rule_exists("mangle", "PREROUTING", [
+        "prerouting_local": _ipt_rule_exists("mangle", "PREROUTING", [
             "-i", "awg0",
             "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
-            "-j", "MARK", "--set-mark", fwmark_ru,
+            "-j", "MARK", "--set-mark", fwmark_local,
         ]),
         "prerouting_vpn": _ipt_rule_exists("mangle", "PREROUTING", [
             "-i", "awg0",
@@ -289,5 +324,23 @@ def get_status() -> dict:
         ]),
         "nat_eth0": _ipt_rule_exists("nat", "POSTROUTING", ["-o", phys_iface, "-j", "MASQUERADE"]),
         "nat_awg1": _ipt_rule_exists("nat", "POSTROUTING", ["-o", "awg1", "-j", "MASQUERADE"]),
+        "output_local": all(
+            _ipt_rule_exists("mangle", "OUTPUT", [
+                "-p", proto,
+                "--dport", "53",
+                "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
+                "-j", "MARK", "--set-mark", settings.fwmark_local,
+            ])
+            for proto in _DNS_OUTPUT_PROTOCOLS
+        ),
+        "output_vpn": all(
+            _ipt_rule_exists("mangle", "OUTPUT", [
+                "-p", proto,
+                "--dport", "53",
+                "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
+                "-j", "MARK", "--set-mark", settings.fwmark_vpn,
+            ])
+            for proto in _DNS_OUTPUT_PROTOCOLS
+        ),
         "physical_iface": phys_iface,
     }

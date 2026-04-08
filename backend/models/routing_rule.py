@@ -10,7 +10,7 @@ class RoutingRule(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(128), nullable=False)
 
-    ipset_name = Column(String(64), nullable=True)    # например geoip_ru
+    ipset_name = Column(String(64), nullable=True)    # например geoip_local
     fwmark = Column(String(16), nullable=True)         # например 0x1
     table_id = Column(Integer, nullable=True)          # номер таблицы маршрутизации
     via_interface = Column(String(32), nullable=True)  # eth0 или awg1

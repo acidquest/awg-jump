@@ -129,7 +129,7 @@ export default function Peers() {
                   <td>
                     <div className="flex gap-2">
                       <button className="btn btn-ghost btn-sm" onClick={() => downloadConfig(p)} title="Download config">
-                        ⬇
+                        DL
                       </button>
                       <button className="btn btn-ghost btn-sm" onClick={() => setQrPeer(p)} title="QR code">
                         QR

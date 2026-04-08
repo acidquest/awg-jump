@@ -47,13 +47,13 @@ class Settings(BaseSettings):
 
     # ── Маршрутизация ────────────────────────────────────────────────────
     physical_iface: str = "eth0"
-    routing_table_ru: int = 100
+    routing_table_local: int = 100
     routing_table_vpn: int = 200
-    fwmark_ru: str = "0x1"
+    fwmark_local: str = "0x1"
     fwmark_vpn: str = "0x2"
 
     # ── GeoIP ────────────────────────────────────────────────────────────
-    geoip_source_ru: str = "http://www.ipdeny.com/ipblocks/data/countries/ru.zone"
+    geoip_source: str = "https://www.ipdeny.com/ipblocks/data/countries/"
     geoip_update_cron: str = "0 4 * * *"
     geoip_fetch_timeout: int = 30
 

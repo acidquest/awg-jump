@@ -23,6 +23,12 @@ function fmtDate(s: string | null) {
   return new Date(utc).toLocaleString()
 }
 
+function fmtLatency(latencyMs: number | null | undefined, status?: string | null) {
+  if (latencyMs != null) return `${latencyMs.toFixed(0)} ms`
+  if (status && ['pending', 'online', 'degraded'].includes(status)) return 'probing...'
+  return '—'
+}
+
 type DeployStep = {
   ts: string
   msg: string
@@ -139,7 +145,7 @@ export default function Nodes() {
                   <td className="text-mono">{n.host}</td>
                   <td><StatusBadge status={n.status} /></td>
                   <td className="text-mono">
-                    {n.latency_ms != null ? `${n.latency_ms.toFixed(0)} ms` : '—'}
+                    {fmtLatency(n.latency_ms, n.status)}
                   </td>
                   <td className="text-mono" style={{ fontSize: 12 }}>
                     {fmtBytes(n.rx_bytes)} / {fmtBytes(n.tx_bytes)}
@@ -193,7 +199,7 @@ export default function Nodes() {
           <div className="card-grid card-grid-3" style={{ marginBottom: 16 }}>
             <div className="card">
               <div className="stat-value text-mono" style={{ fontSize: 18 }}>
-                {stats.latency_ms != null ? `${stats.latency_ms.toFixed(0)} ms` : '—'}
+                {fmtLatency(stats.latency_ms, stats.status)}
               </div>
               <div className="stat-label">latency</div>
             </div>

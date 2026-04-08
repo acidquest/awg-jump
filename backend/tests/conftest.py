@@ -67,10 +67,11 @@ async def _create_test_db() -> None:
             updated_at=datetime.now(timezone.utc),
         ))
         session.add(GeoipSource(
-            name="ipdeny.com RU",
-            url="http://www.ipdeny.com/ipblocks/data/countries/ru.zone",
+            name="Default local zone source",
+            display_name="Default Local Zone",
+            url="https://www.ipdeny.com/ipblocks/data/countries/ru.zone",
             country_code="ru",
-            ipset_name="geoip_ru",
+            ipset_name="geoip_local",
             enabled=True,
             prefix_count=100,
             last_updated=datetime.now(timezone.utc),

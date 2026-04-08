@@ -67,7 +67,7 @@ export default function Backup() {
             Downloads a ZIP archive containing:
           </p>
           <ul style={{ color: 'var(--text-2)', fontSize: 13, paddingLeft: 20, marginBottom: 20, lineHeight: 1.8 }}>
-            <li><code>config.db</code> — SQLite database (peers, interfaces, nodes)</li>
+            <li><code>config.db</code> — SQLite database (peers, interfaces, nodes, split DNS domains)</li>
             <li><code>env_snapshot.json</code> — public config params</li>
             <li><code>wg_configs/</code> — WireGuard config files</li>
           </ul>

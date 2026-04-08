@@ -59,35 +59,75 @@ from sqlalchemy import select
 from backend.database import AsyncSessionLocal
 from backend.models.interface import Interface, InterfaceMode
 from backend.models.geoip import GeoipSource
+import ipaddress
 from backend.config import settings
+from backend.models.dns_domain import DnsDomain, DnsUpstream
+
+
+def _awg0_ip(address: str) -> str:
+    """Извлекает IP из CIDR-адреса (напр. '10.10.0.1/24' → '10.10.0.1')."""
+    try:
+        return str(ipaddress.ip_interface(address).ip)
+    except Exception:
+        return address.split('/')[0]
+
+
+# Дефолтные RU-домены для split DNS
+_DEFAULT_DNS_DOMAINS = [
+    "ru", "рф",
+    "yandex.ru", "yandex.net", "yandex.com", "ya.ru",
+    "vk.com", "vk.ru", "vkontakte.ru",
+    "mail.ru", "list.ru", "inbox.ru", "bk.ru",
+    "ok.ru",
+    "rambler.ru",
+    "sberbank.ru", "sbrf.ru", "sber.ru",
+    "gosuslugi.ru",
+    "mos.ru",
+    "tinkoff.ru",
+    "avito.ru",
+    "ozon.ru",
+    "wildberries.ru",
+]
 
 
 async def init_defaults():
     async with AsyncSessionLocal() as session:
-        # Проверить наличие awg0
+        # ── awg0 ─────────────────────────────────────────────────────────
         result = await session.execute(select(Interface).where(Interface.name == "awg0"))
         awg0 = result.scalar_one_or_none()
+
+        # IP awg0 используется как DNS для клиентов (split DNS через dnsmasq)
+        awg0_ip = _awg0_ip(settings.awg0_address)
+
         if not awg0:
             awg0 = Interface(
                 name="awg0",
                 mode=InterfaceMode.server,
                 listen_port=settings.awg0_listen_port,
                 address=settings.awg0_address,
-                dns=settings.awg0_dns,
+                dns=awg0_ip,   # dnsmasq слушает на этом IP
                 enabled=True,
                 created_at=datetime.now(timezone.utc),
                 updated_at=datetime.now(timezone.utc),
             )
             session.add(awg0)
-            print("[init] Created default interface: awg0")
-        elif awg0.listen_port != settings.awg0_listen_port:
-            # Обновить порт если изменился в .env (иначе docker-compose mapping и AWG расходятся)
-            awg0.listen_port = settings.awg0_listen_port
-            awg0.updated_at = datetime.now(timezone.utc)
-            session.add(awg0)
-            print(f"[init] Updated awg0 listen_port → {settings.awg0_listen_port}")
+            print(f"[init] Created default interface: awg0 (dns={awg0_ip})")
+        else:
+            changed = False
+            if awg0.listen_port != settings.awg0_listen_port:
+                awg0.listen_port = settings.awg0_listen_port
+                changed = True
+                print(f"[init] Updated awg0 listen_port → {settings.awg0_listen_port}")
+            # Обновить DNS на awg0 IP если ещё не установлен (переход со старой версии)
+            if awg0.dns != awg0_ip:
+                awg0.dns = awg0_ip
+                changed = True
+                print(f"[init] Updated awg0 DNS → {awg0_ip} (split DNS)")
+            if changed:
+                awg0.updated_at = datetime.now(timezone.utc)
+                session.add(awg0)
 
-        # Проверить наличие awg1
+        # ── awg1 ─────────────────────────────────────────────────────────
         result = await session.execute(select(Interface).where(Interface.name == "awg1"))
         awg1 = result.scalar_one_or_none()
         if not awg1:
@@ -104,20 +144,22 @@ async def init_defaults():
             session.add(awg1)
             print("[init] Created default interface: awg1")
 
-        # Проверить наличие GeoIP источника
-        result = await session.execute(select(GeoipSource))
-        geoip = result.scalar_one_or_none()
-        if not geoip:
-            geoip = GeoipSource(
-                name="ipdeny.com RU",
-                url=settings.geoip_source_ru,
-                country_code="ru",
-                ipset_name="geoip_ru",
-                enabled=True,
-                created_at=datetime.now(timezone.utc),
-            )
-            session.add(geoip)
-            print("[init] Created default GeoIP source: ipdeny.com RU")
+        # ── GeoIP источники ──────────────────────────────────────────────
+        # По умолчанию не создаём преднастроенную страну: local zone
+        # настраивается пользователем через UI/API после первого старта.
+
+        # ── Дефолтные DNS домены для split DNS ───────────────────────────
+        result = await session.execute(select(DnsDomain))
+        existing_count = len(result.scalars().all())
+        if existing_count == 0:
+            for domain in _DEFAULT_DNS_DOMAINS:
+                session.add(DnsDomain(
+                    domain=domain,
+                    upstream=DnsUpstream.LOCAL,
+                    enabled=True,
+                    created_at=datetime.now(timezone.utc),
+                ))
+            print(f"[init] Created {len(_DEFAULT_DNS_DOMAINS)} default split DNS domains")
 
         await session.commit()
         print("[init] Database initialization complete.")

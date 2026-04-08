@@ -65,7 +65,7 @@ export default function Routing() {
             Client (AWG) ──► <span style={{ color: 'var(--accent)' }}>awg0</span> ──► [ipset/iptables mangle]
           </div>
           <div style={{ paddingLeft: 40 }}>
-            ├── <span style={{ color: '#ffa502' }}>RU CIDR</span> (ipset: geoip_ru) ──► fwmark 0x1 ──► table 100 ──► <span style={{ color: 'var(--accent)' }}>eth0</span> (direct)
+            ├── <span style={{ color: '#ffa502' }}>LOCAL CIDR</span> ──► fwmark 0x1 ──► table 100 ──► <span style={{ color: 'var(--accent)' }}>eth0</span> (direct)
           </div>
           <div style={{ paddingLeft: 40 }}>
             └── <span style={{ color: 'var(--text)' }}>other</span> ──► fwmark 0x2 ──► table 200 ──► <span style={{ color: 'var(--accent)' }}>awg1</span> ──► upstream node

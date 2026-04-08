@@ -7,7 +7,9 @@
 
 ## Быстрый старт
 
-1. Создай `.env` из шаблона: `cp .env.example .env`
+1. Создай `.env` из шаблона:
+   - RU: `cp .env.ru.example .env`
+   - EN: `cp .env.en.example .env`
 2. Измени как минимум `ADMIN_PASSWORD`, `SECRET_KEY`, `TLS_COMMON_NAME`.
 3. Подними стек: `docker compose up -d --build`
 4. Открой `https://<host>:${NGINX_HTTPS_PORT:-443}`
@@ -20,11 +22,11 @@ API контейнера `awg-jump` также биндуется на `127.0.0.
 - `SECRET_KEY`: секрет подписи токенов.
 - `AWG0_LISTEN_PORT`, `AWG0_ADDRESS`, `AWG0_DNS`: серверный интерфейс для клиентов.
 - `AWG1_ADDRESS`, `AWG1_ALLOWED_IPS`, `AWG1_PERSISTENT_KEEPALIVE`: клиентский интерфейс jump → upstream node.
-- `PHYSICAL_IFACE`: физический интерфейс для RU-трафика.
+- `PHYSICAL_IFACE`, `ROUTING_TABLE_LOCAL`: физический интерфейс и routing table для local-zone трафика.
 - `NODE_AWG_PORT`, `NODE_VPN_SUBNET`: параметры сети upstream-нод.
-- `GEOIP_SOURCE_RU`, `GEOIP_UPDATE_CRON`: источник и расписание обновления GeoIP.
+- `GEOIP_SOURCE`, `GEOIP_UPDATE_CRON`: базовый URL источника и расписание обновления GeoIP для локальной зоны.
 
-Полный список и комментарии смотри в [`.env.example`](/opt/awg-jump/.env.example).
+Полный список и комментарии смотри в [`.env.ru.example`](/opt/awg-jump/.env.ru.example) или [`.env.en.example`](/opt/awg-jump/.env.en.example).
 
 ## Nodes и деплой
 
@@ -36,6 +38,28 @@ API контейнера `awg-jump` также биндуется на `127.0.0.
 4. При активации ноды jump-сервер обновляет `awg1`, а health-check/failover переключает активную ноду при деградации.
 
 Для ручного развёртывания upstream-узла смотри [node/README.md](/opt/awg-jump/node/README.md).
+
+## Split DNS
+
+`awg-jump` запускает встроенный DNS-сервер (`dnsmasq`) прямо в контейнере.
+
+**Как это работает:**
+
+- Клиенты получают IP интерфейса `awg0` в качестве DNS-сервера (автоматически).
+- Домены из списка в веб-интерфейсе (страница **Split DNS**) могут быть направлены в `Local Zone` или `VPN Zone`.
+- Для каждой зоны задаётся свой список DNS-серверов в UI и хранится в БД.
+- DNS-запросы самого контейнера маршрутизируются по тем же правилам GeoIP: IP из `geoip_local` идут через `eth0`, остальные — через `awg1` (upstream VPN).
+
+**Управление доменами:**
+
+Страница **Split DNS** в веб-интерфейсе позволяет добавлять, отключать и удалять домены, а также редактировать DNS-серверы для `Local Zone` и `VPN Zone`. При старте создаётся набор дефолтных RU-доменов (`ru`, `рф`, `yandex.ru`, `vk.com`, `mail.ru`, `sber.ru`, `gosuslugi.ru` и др.).
+
+Список доменов и DNS zone settings сохраняются в `config.db` и включаются в бэкап автоматически.
+
+## Документация
+
+- [Полная документация (RU)](docs/README_RU.md)
+- [Full documentation (EN)](docs/README_EN.md)
 
 ## Локальная проверка
 

@@ -36,6 +36,12 @@ function NodeStatusDot({ status }: { status: string }) {
   return <span className={`pulse-dot ${color}`} />
 }
 
+function fmtLatency(latencyMs: number | null | undefined, status?: string | null) {
+  if (latencyMs != null) return `${latencyMs.toFixed(0)} ms`
+  if (status && ['pending', 'online', 'degraded'].includes(status)) return 'probing...'
+  return '—'
+}
+
 export default function Dashboard() {
   const qc = useQueryClient()
 
@@ -114,10 +120,8 @@ export default function Dashboard() {
                 <NodeStatusDot status={s.active_node.status} />
                 {' '}{s.active_node.name}
               </div>
-              <div className="stat-label">
-                {s.active_node.latency_ms != null
-                  ? `${s.active_node.latency_ms.toFixed(0)} ms`
-                  : 'no latency data'}
+              <div className="stat-label" style={{ marginTop: 8 }}>
+                {fmtLatency(s.active_node.latency_ms, s.active_node.status)}
               </div>
             </>
           ) : (

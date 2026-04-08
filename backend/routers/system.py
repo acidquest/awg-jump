@@ -69,7 +69,8 @@ async def get_status(
     for src in sources:
         geoip_out.append({
             "country_code": src.country_code,
-            "ipset_name": src.ipset_name,
+            "display_name": src.display_name,
+            "ipset_name": geoip_fetcher.LOCAL_GEOIP_IPSET_NAME,
             "prefix_count": src.prefix_count or 0,
             "last_updated": src.last_updated.isoformat() if src.last_updated else None,
             "cache_fresh": geoip_fetcher._is_cache_fresh(src.country_code),

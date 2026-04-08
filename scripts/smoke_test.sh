@@ -10,7 +10,7 @@ cleanup() {
 
 trap cleanup EXIT
 
-cp .env.example .env.smoke
+cp .env.ru.example .env.smoke
 python3 - <<'PYEOF'
 from pathlib import Path
 
