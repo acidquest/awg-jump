@@ -21,12 +21,18 @@ export default function Routing() {
 
   const applyMut = useMutation({
     mutationFn: applyRouting,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['routing'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['routing'] })
+      qc.invalidateQueries({ queryKey: ['system-status'] })
+    },
   })
 
   const resetMut = useMutation({
     mutationFn: resetRouting,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['routing'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['routing'] })
+      qc.invalidateQueries({ queryKey: ['system-status'] })
+    },
   })
 
   const settingsMut = useMutation({
@@ -34,6 +40,7 @@ export default function Routing() {
     onSuccess: () => {
       setError('')
       qc.invalidateQueries({ queryKey: ['routing'] })
+      qc.invalidateQueries({ queryKey: ['system-status'] })
     },
     onError: (err: unknown) => setError(getErrorMessage(err, 'Failed to update routing mode')),
   })

@@ -148,11 +148,13 @@ export interface SystemStatus {
     cache_fresh: boolean
   }>
   ipsets: Array<{ name: string; count: number }>
-  routing: Record<string, unknown>
+  routing: Partial<RoutingStatus> & { error?: string }
+  local_external_ip: string | null
   active_node: {
     id: number
     name: string
     host: string
+    external_ip: string
     status: string
     latency_ms: number | null
     last_seen: string | null
