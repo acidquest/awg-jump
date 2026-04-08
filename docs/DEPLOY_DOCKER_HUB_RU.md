@@ -4,7 +4,7 @@
 
 1. Локально собрать и запушить образы в Docker Hub.
 2. На чистой Linux-нode поставить Docker.
-3. Положить на ноду `docker-compose.yml`, `.env` и `.env.images`.
+3. Положить на ноду `docker-compose.yml` и `.env`.
 4. На сервере сделать `docker compose pull && docker compose up -d`.
 
 ## Какие образы публикуются
@@ -52,7 +52,6 @@ docker login
 - `.env`
 - `.env.ru.example`
 - `.env.en.example`
-- `.env.images`
 
 Этот bootstrap предназначен для основной ноды с `awg-jump` и `awg-jump-nginx`.
 Upstream-ноды через него не разворачиваются.
@@ -92,6 +91,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_first_node.ps1
 
 - `ADMIN_PASSWORD`
 - `SECRET_KEY`
+- `AWG_JUMP_IMAGE`
+- `AWG_NGINX_IMAGE`
 - при необходимости `TLS_COMMON_NAME`
 - при необходимости `SERVER_HOST`
 
@@ -99,25 +100,25 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_first_node.ps1
 
 ```bash
 cd /opt/awg-jump
-docker compose --env-file .env.images pull
-docker compose --env-file .env.images up -d
+docker compose -f docker-compose.yml pull
+docker compose -f docker-compose.yml up -d
 ```
 
 Проверка:
 
 ```bash
-docker compose --env-file .env.images ps
-docker compose --env-file .env.images logs --tail=100
+docker compose -f docker-compose.yml ps
+docker compose -f docker-compose.yml logs --tail=100
 ```
 
 ## 4. Обновление без пересборки на сервере
 
 После публикации нового тега:
 
-1. поменяй теги в `.env.images`
+1. поменяй теги в `.env`
 2. выполни:
 
 ```bash
-docker compose --env-file .env.images pull
-docker compose --env-file .env.images up -d
+docker compose -f docker-compose.yml pull
+docker compose -f docker-compose.yml up -d
 ```

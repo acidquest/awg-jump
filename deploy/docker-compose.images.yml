@@ -5,7 +5,7 @@ networks:
 
 services:
   awg-jump:
-    image: ${AWG_JUMP_IMAGE:?set AWG_JUMP_IMAGE in .env.images}
+    image: ${AWG_JUMP_IMAGE:?set AWG_JUMP_IMAGE in .env}
     pull_policy: always
     container_name: awg-jump
     restart: unless-stopped
@@ -17,7 +17,7 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     env_file:
-      - ${ENV_FILE:-.env}
+      - .env
     volumes:
       - ./data:/data
     networks:
@@ -32,7 +32,7 @@ services:
       start_period: 15s
 
   nginx:
-    image: ${AWG_NGINX_IMAGE:?set AWG_NGINX_IMAGE in .env.images}
+    image: ${AWG_NGINX_IMAGE:?set AWG_NGINX_IMAGE in .env}
     pull_policy: always
     container_name: awg-nginx
     restart: unless-stopped
@@ -40,7 +40,7 @@ services:
       awg-jump:
         condition: service_healthy
     env_file:
-      - ${ENV_FILE:-.env}
+      - .env
     volumes:
       - ./data/certs:/etc/nginx/certs
     networks:

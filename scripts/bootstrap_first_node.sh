@@ -97,15 +97,14 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 cp "$REPO_ROOT/deploy/docker-compose.images.yml" "$TMP_DIR/docker-compose.yml"
-cp "$REPO_ROOT/deploy/.env.images.example" "$TMP_DIR/.env.images"
 cp "$REPO_ROOT/.env.ru.example" "$TMP_DIR/.env.ru.example"
 cp "$REPO_ROOT/.env.en.example" "$TMP_DIR/.env.en.example"
 cp "$REPO_ROOT/.env.ru.example" "$TMP_DIR/.env"
 
 replace_env_value "$TMP_DIR/.env" "TLS_COMMON_NAME" "$HOST"
 replace_env_value "$TMP_DIR/.env" "SERVER_HOST" "$HOST"
-replace_env_value "$TMP_DIR/.env.images" "AWG_JUMP_IMAGE" "$IMAGE_JUMP"
-replace_env_value "$TMP_DIR/.env.images" "AWG_NGINX_IMAGE" "$IMAGE_NGINX"
+replace_env_value "$TMP_DIR/.env" "AWG_JUMP_IMAGE" "$IMAGE_JUMP"
+replace_env_value "$TMP_DIR/.env" "AWG_NGINX_IMAGE" "$IMAGE_NGINX"
 
 cat >"$TMP_DIR/REMOTE_BOOTSTRAP.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -173,12 +172,11 @@ tar -C "$TMP_DIR" -czf "$TMP_DIR/bundle.tgz" \
     .env \
     .env.ru.example \
     .env.en.example \
-    .env.images \
     REMOTE_BOOTSTRAP.sh
 scp -P "$SSH_PORT" "$TMP_DIR/bundle.tgz" "${SSH_USER}@${HOST}:/tmp/awg-jump-bootstrap.tgz"
 
 echo "Installing Docker and unpacking files on remote host"
-ssh -p "$SSH_PORT" "${SSH_USER}@${HOST}" "tar -xzf /tmp/awg-jump-bootstrap.tgz -C /tmp && ${REMOTE_ROOT_PREFIX}bash /tmp/REMOTE_BOOTSTRAP.sh '$REMOTE_DIR' && ${REMOTE_ROOT_PREFIX}tar -xzf /tmp/awg-jump-bootstrap.tgz -C '$REMOTE_DIR' docker-compose.yml .env .env.ru.example .env.en.example .env.images && rm -f /tmp/awg-jump-bootstrap.tgz /tmp/REMOTE_BOOTSTRAP.sh"
+ssh -p "$SSH_PORT" "${SSH_USER}@${HOST}" "tar -xzf /tmp/awg-jump-bootstrap.tgz -C /tmp && ${REMOTE_ROOT_PREFIX}bash /tmp/REMOTE_BOOTSTRAP.sh '$REMOTE_DIR' && ${REMOTE_ROOT_PREFIX}tar -xzf /tmp/awg-jump-bootstrap.tgz -C '$REMOTE_DIR' docker-compose.yml .env .env.ru.example .env.en.example && rm -f /tmp/awg-jump-bootstrap.tgz /tmp/REMOTE_BOOTSTRAP.sh"
 
 cat <<EOF
 
@@ -191,13 +189,12 @@ Files created:
   ${REMOTE_DIR}/.env
   ${REMOTE_DIR}/.env.ru.example
   ${REMOTE_DIR}/.env.en.example
-  ${REMOTE_DIR}/.env.images
 
 Next steps on the node:
   1. Edit ${REMOTE_DIR}/.env and set at least ADMIN_PASSWORD and SECRET_KEY.
-  2. Verify image tags in ${REMOTE_DIR}/.env.images.
+  2. Verify AWG_JUMP_IMAGE and AWG_NGINX_IMAGE in ${REMOTE_DIR}/.env.
   3. Start the stack:
      cd ${REMOTE_DIR}
-     docker compose --env-file .env.images pull
-     docker compose --env-file .env.images up -d
+     docker compose -f docker-compose.yml pull
+     docker compose -f docker-compose.yml up -d
 EOF
