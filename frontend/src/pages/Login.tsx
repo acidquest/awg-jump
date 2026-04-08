@@ -2,13 +2,18 @@ import { useState, FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { login } from '../api'
 
-const MATRIX_GLYPHS = '01AWGJUMP<>[]{}/*+-'
+function makeIpv4(seed: number) {
+  const octet = (value: number) => (value % 254) + 1
+  return [
+    octet(seed * 17 + 11),
+    octet(seed * 29 + 23),
+    octet(seed * 43 + 47),
+    octet(seed * 61 + 89),
+  ].join('.')
+}
 
 function makeRainStream(length: number, offset: number) {
-  return Array.from({ length }, (_, index) => {
-    const charIndex = (index * 7 + offset * 11) % MATRIX_GLYPHS.length
-    return MATRIX_GLYPHS[charIndex]
-  }).join('')
+  return Array.from({ length }, (_, index) => makeIpv4(offset * 31 + index)).join('\n')
 }
 
 export default function Login() {
@@ -21,7 +26,7 @@ export default function Login() {
     Array.from({ length: 26 }, (_, index) => ({
       id: index,
       text: makeRainStream(30 + (index % 6) * 6, index),
-      duration: 10 + (index % 5) * 2,
+      duration: 20 + (index % 5) * 4,
       delay: (index % 7) * -1.6,
       left: `${index * 3.9}%`,
       opacity: 0.16 + (index % 4) * 0.05,
@@ -78,7 +83,6 @@ export default function Login() {
           >
             AWG Jump
           </div>
-          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>AmneziaWG Gateway</div>
         </div>
 
         <div className="card">
