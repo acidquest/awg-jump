@@ -65,8 +65,12 @@ async def collect_system_metrics(session: AsyncSession) -> SystemMetric:
     )
     session.add(metric)
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=RETENTION_HOURS)
-    await session.execute(delete(SystemMetric).where(SystemMetric.collected_at < cutoff))
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=RETENTION_HOURS)).replace(tzinfo=None)
+    await session.execute(
+        delete(SystemMetric)
+        .where(SystemMetric.collected_at < cutoff)
+        .execution_options(synchronize_session=False)
+    )
     await session.commit()
     await session.refresh(metric)
     return metric
@@ -98,7 +102,7 @@ async def ensure_recent_system_metrics(session: AsyncSession) -> SystemMetric | 
 
 async def get_metrics_history(session: AsyncSession, hours: int) -> tuple[SystemMetric | None, list[SystemMetric]]:
     bounded_hours = 24 if hours >= 24 else 1
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=bounded_hours)
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=bounded_hours)).replace(tzinfo=None)
     latest = await ensure_recent_system_metrics(session)
     history = (
         await session.execute(
