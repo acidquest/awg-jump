@@ -155,7 +155,7 @@ async def init_defaults():
             for domain in _DEFAULT_DNS_DOMAINS:
                 session.add(DnsDomain(
                     domain=domain,
-                    upstream=DnsUpstream.yandex,
+                    upstream=DnsUpstream.LOCAL,
                     enabled=True,
                     created_at=datetime.now(timezone.utc),
                 ))
