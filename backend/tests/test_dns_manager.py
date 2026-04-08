@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from backend.services import dns_manager
 
@@ -24,3 +25,27 @@ def test_write_config_uses_idna_domains(tmp_path, monkeypatch):
     content = conf_path.read_text()
     assert "server=/xn--p1ai/77.88.8.8" in content
     assert "server=/example.ru/77.88.8.8" in content
+
+
+def test_start_uses_non_blocking_process(monkeypatch):
+    dns_manager._PROCESS = None
+
+    monkeypatch.setattr(dns_manager, "is_running", lambda: False)
+    monkeypatch.setattr(dns_manager, "_patch_resolv_conf", lambda: None)
+
+    run_mock = Mock(return_value=SimpleNamespace(returncode=0, stderr=""))
+    monkeypatch.setattr(dns_manager.subprocess, "run", run_mock)
+
+    proc = SimpleNamespace(pid=1234, returncode=None, poll=lambda: None)
+    popen_mock = Mock(return_value=proc)
+    monkeypatch.setattr(dns_manager.subprocess, "Popen", popen_mock)
+
+    checks = iter([False, True])
+    monkeypatch.setattr(dns_manager, "is_running", lambda: next(checks))
+    monkeypatch.setattr(dns_manager.time, "sleep", lambda _: None)
+
+    dns_manager.start()
+
+    popen_args = popen_mock.call_args.args[0]
+    assert "--keep-in-foreground" in popen_args
+    assert dns_manager._PROCESS is proc

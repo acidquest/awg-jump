@@ -19,6 +19,7 @@ import logging
 import os
 import signal
 import subprocess
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -29,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 _CONF_FILE = "/etc/dnsmasq-awg.conf"
 _PID_FILE = "/var/run/dnsmasq-awg.pid"
+_STARTUP_WAIT_SECONDS = 2.0
+_PROCESS: Optional[subprocess.Popen] = None
 
 _DEFAULT_ZONE_SETTINGS = {
     "local": {
@@ -140,6 +143,12 @@ async def get_zone_dns(db: AsyncSession, zone: str) -> list[str]:
 
 def is_running() -> bool:
     """Проверяет, запущен ли dnsmasq."""
+    global _PROCESS
+    if _PROCESS is not None:
+        if _PROCESS.poll() is None:
+            return True
+        _PROCESS = None
+
     if not os.path.exists(_PID_FILE):
         return False
     try:
@@ -151,6 +160,8 @@ def is_running() -> bool:
 
 
 def _get_pid() -> Optional[int]:
+    if _PROCESS is not None and _PROCESS.poll() is None:
+        return _PROCESS.pid
     try:
         return int(Path(_PID_FILE).read_text().strip())
     except Exception:
@@ -159,6 +170,7 @@ def _get_pid() -> Optional[int]:
 
 def start() -> None:
     """Запускает dnsmasq (если не запущен)."""
+    global _PROCESS
     if is_running():
         logger.debug("dnsmasq already running (pid=%s)", _get_pid())
         return
@@ -167,16 +179,35 @@ def start() -> None:
         # Минимальный конфиг если вызвали до apply_from_db
         _write_config([], _DEFAULT_ZONE_SETTINGS["local"]["dns_servers"], _DEFAULT_ZONE_SETTINGS["vpn"]["dns_servers"])
 
+    test_cmd = [
+        "dnsmasq",
+        "--test",
+        f"--conf-file={_CONF_FILE}",
+    ]
+    test_result = subprocess.run(test_cmd, capture_output=True, text=True)
+    if test_result.returncode != 0:
+        raise RuntimeError(f"dnsmasq config test failed: {test_result.stderr.strip()}")
+
     cmd = [
         "dnsmasq",
+        "--keep-in-foreground",
         f"--conf-file={_CONF_FILE}",
         f"--pid-file={_PID_FILE}",
         "--log-facility=-",   # логи в stderr/stdout
         "--log-async=5",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"dnsmasq start failed: {result.stderr.strip()}")
+    _PROCESS = subprocess.Popen(cmd)
+
+    deadline = time.monotonic() + _STARTUP_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        if _PROCESS.poll() is not None:
+            raise RuntimeError(f"dnsmasq exited during startup with rc={_PROCESS.returncode}")
+        if is_running():
+            break
+        time.sleep(0.1)
+    else:
+        raise RuntimeError("dnsmasq startup timed out")
+
     logger.info("dnsmasq started (listen=%s,127.0.0.1)", get_awg0_ip())
 
     _patch_resolv_conf()
@@ -199,6 +230,7 @@ def _reload_process() -> None:
 
 def stop() -> None:
     """Останавливает dnsmasq."""
+    global _PROCESS
     pid = _get_pid()
     if pid is None:
         return
@@ -207,6 +239,12 @@ def stop() -> None:
         logger.info("dnsmasq stopped (pid=%d)", pid)
     except OSError:
         pass
+    if _PROCESS is not None:
+        try:
+            _PROCESS.wait(timeout=2)
+        except Exception:
+            pass
+        _PROCESS = None
     try:
         os.unlink(_PID_FILE)
     except OSError:
