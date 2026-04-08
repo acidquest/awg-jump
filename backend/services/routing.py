@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 _GEOIP_IPSET_NAME = "geoip_local"
 _VPN_ROUTE_METRIC_PRIMARY = "100"
 _VPN_ROUTE_METRIC_FALLBACK = "200"
+_DNS_OUTPUT_PROTOCOLS = ("udp", "tcp")
 
 
 def _run(args: list[str]) -> tuple[int, str]:
@@ -221,19 +222,24 @@ def setup_iptables() -> None:
     ])
     logger.info("iptables mangle PREROUTING rules configured")
 
-    # mangle OUTPUT: fwmark для трафика самого контейнера (DNS-запросы dnsmasq и т.д.).
+    # mangle OUTPUT: fwmark только для DNS-трафика самого контейнера.
     # PREROUTING не охватывает locally-generated пакеты — для них нужна цепочка OUTPUT.
-    # Благодаря этому DNS-запросы к 77.88.8.8 (RU) пойдут через eth0,
-    # а к 1.1.1.1/8.8.8.8 — через awg1.
-    _ipt_add("mangle", "OUTPUT", [
-        "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
-        "-j", "MARK", "--set-mark", fwmark_local,
-    ])
-    _ipt_add("mangle", "OUTPUT", [
-        "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
-        "-j", "MARK", "--set-mark", fwmark_vpn,
-    ])
-    logger.info("iptables mangle OUTPUT rules configured (container traffic)")
+    # Ограничиваемся DNS, чтобы не ломать обычный container-to-container трафик
+    # (например nginx -> awg-jump по Docker bridge).
+    for proto in _DNS_OUTPUT_PROTOCOLS:
+        _ipt_add("mangle", "OUTPUT", [
+            "-p", proto,
+            "--dport", "53",
+            "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
+            "-j", "MARK", "--set-mark", fwmark_local,
+        ])
+        _ipt_add("mangle", "OUTPUT", [
+            "-p", proto,
+            "--dport", "53",
+            "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
+            "-j", "MARK", "--set-mark", fwmark_vpn,
+        ])
+    logger.info("iptables mangle OUTPUT rules configured (DNS only)")
 
     # nat POSTROUTING: MASQUERADE исходящего трафика
     _ipt_add("nat", "POSTROUTING", ["-o", phys_iface, "-j", "MASQUERADE"])
@@ -271,14 +277,19 @@ def teardown() -> None:
     ])
 
     # iptables mangle OUTPUT
-    _ipt_del("mangle", "OUTPUT", [
-        "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
-        "-j", "MARK", "--set-mark", fwmark_local,
-    ])
-    _ipt_del("mangle", "OUTPUT", [
-        "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
-        "-j", "MARK", "--set-mark", fwmark_vpn,
-    ])
+    for proto in _DNS_OUTPUT_PROTOCOLS:
+        _ipt_del("mangle", "OUTPUT", [
+            "-p", proto,
+            "--dport", "53",
+            "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
+            "-j", "MARK", "--set-mark", fwmark_local,
+        ])
+        _ipt_del("mangle", "OUTPUT", [
+            "-p", proto,
+            "--dport", "53",
+            "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
+            "-j", "MARK", "--set-mark", fwmark_vpn,
+        ])
 
     # iptables nat (не трогаем — могут использоваться другими процессами)
     logger.info("Routing teardown complete")
@@ -313,13 +324,23 @@ def get_status() -> dict:
         ]),
         "nat_eth0": _ipt_rule_exists("nat", "POSTROUTING", ["-o", phys_iface, "-j", "MASQUERADE"]),
         "nat_awg1": _ipt_rule_exists("nat", "POSTROUTING", ["-o", "awg1", "-j", "MASQUERADE"]),
-        "output_local": _ipt_rule_exists("mangle", "OUTPUT", [
-            "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
-            "-j", "MARK", "--set-mark", settings.fwmark_local,
-        ]),
-        "output_vpn": _ipt_rule_exists("mangle", "OUTPUT", [
-            "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
-            "-j", "MARK", "--set-mark", settings.fwmark_vpn,
-        ]),
+        "output_local": all(
+            _ipt_rule_exists("mangle", "OUTPUT", [
+                "-p", proto,
+                "--dport", "53",
+                "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
+                "-j", "MARK", "--set-mark", settings.fwmark_local,
+            ])
+            for proto in _DNS_OUTPUT_PROTOCOLS
+        ),
+        "output_vpn": all(
+            _ipt_rule_exists("mangle", "OUTPUT", [
+                "-p", proto,
+                "--dport", "53",
+                "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
+                "-j", "MARK", "--set-mark", settings.fwmark_vpn,
+            ])
+            for proto in _DNS_OUTPUT_PROTOCOLS
+        ),
         "physical_iface": phys_iface,
     }
