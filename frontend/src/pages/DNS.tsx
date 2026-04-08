@@ -35,7 +35,7 @@ const ZONE_META: Record<ZoneKey, {
     accent: 'var(--accent)',
   },
   vpn: {
-    title: 'VPN Zone DNS',
+    title: 'Upstream Zone DNS',
     description: 'Used for all other traffic through VPN',
     icon: 'vpn',
     accent: '#60a5fa',
@@ -126,7 +126,7 @@ export default function DNS() {
       <div className="page-header">
         <div>
           <div className="page-title">Split DNS</div>
-          <div className="page-subtitle">dnsmasq — политика разрешения доменных имён</div>
+          <div className="page-subtitle">Policy-based domain name resolution</div>
         </div>
         <div className="flex gap-2">
           <button
@@ -153,18 +153,21 @@ export default function DNS() {
               flexShrink: 0,
             }} />
             <div>
-              <div style={{ fontWeight: 600, fontSize: 14 }}>
+              <div
+                style={{
+                  fontWeight: 600,
+                  fontSize: 14,
+                  color: status?.running ? undefined : 'var(--red)',
+                }}
+              >
                 dnsmasq {status?.running ? 'running' : 'stopped'}
               </div>
-              {status?.pid && (
-                <div className="text-muted text-sm">pid {status.pid}</div>
-              )}
             </div>
           </div>
 
           <InfoChip label="Listen" value={status ? `${status.listen_ip}:53, 127.0.0.1:53` : '—'} />
           <InfoChip label="Local Zone" value={status?.local_zone_dns?.join(', ') ?? '—'} accent />
-          <InfoChip label="VPN Zone" value={status?.vpn_zone_dns?.join(', ') ?? '—'} />
+          <InfoChip label="Upstream Zone" value={status?.vpn_zone_dns?.join(', ') ?? '—'} />
 
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ textAlign: 'center' }}>
@@ -176,21 +179,6 @@ export default function DNS() {
               <div className="text-muted text-sm">total</div>
             </div>
           </div>
-        </div>
-
-        <div style={{
-          marginTop: 14,
-          paddingTop: 14,
-          borderTop: '1px solid var(--border)',
-          fontSize: 12,
-          color: 'var(--text-2)',
-          lineHeight: 1.7,
-        }}>
-          Клиенты AWG используют <span className="text-mono">{status?.listen_ip ?? '...'}</span> как DNS.
-          Домены из local zone резолвятся через <span className="text-mono">{status?.local_zone_dns?.join(', ') ?? '77.88.8.8'}</span>,
-          остальные — через <span className="text-mono">{status?.vpn_zone_dns?.join(', ') ?? '1.1.1.1, 8.8.8.8'}</span>.
-          Трафик DNS-сервера маршрутизируется по GeoIP так же, как клиентский:
-          RU IP → eth0, остальное → awg1.
         </div>
       </div>
 
@@ -239,7 +227,7 @@ export default function DNS() {
       <div className="card">
         <div className="flex items-center justify-between" style={{ marginBottom: 14 }}>
           <div className="card-title">
-            Домены
+            Domains
             {disabledCount > 0 && (
               <span className="text-muted text-sm" style={{ marginLeft: 8, fontWeight: 400 }}>
                 ({disabledCount} disabled)
@@ -292,18 +280,18 @@ export default function DNS() {
       )}
 
       {deleteTarget && (
-        <Modal open title="Удалить домен" onClose={() => setDeleteTarget(null)}>
+        <Modal open title="Delete domain" onClose={() => setDeleteTarget(null)}>
           <div style={{ marginBottom: 16, fontSize: 14 }}>
-            Удалить <span className="text-mono">{deleteTarget.domain}</span> из таблицы split DNS?
+            Delete <span className="text-mono">{deleteTarget.domain}</span> from split DNS?
           </div>
           <div className="modal-actions">
-            <button className="btn btn-secondary" onClick={() => setDeleteTarget(null)}>Отмена</button>
+            <button className="btn btn-secondary" onClick={() => setDeleteTarget(null)}>Cancel</button>
             <button
               className="btn btn-danger"
               onClick={() => deleteMut.mutate(deleteTarget.id)}
               disabled={deleteMut.isPending}
             >
-              {deleteMut.isPending ? <span className="spinner" /> : 'Удалить'}
+              {deleteMut.isPending ? <span className="spinner" /> : 'Delete'}
             </button>
           </div>
         </Modal>
@@ -603,7 +591,7 @@ function UpstreamBadge({ upstream }: { upstream: string }) {
       }}
     >
       {isLocal ? <LocalIcon small /> : <ShieldIcon small />}
-      {isLocal ? 'Local Zone' : 'VPN Zone'}
+      {isLocal ? 'Local Zone' : 'Upstream Zone'}
     </span>
   )
 }
@@ -636,8 +624,8 @@ function AddDomainModal({ onClose, onSaved }: { onClose: () => void; onSaved: ()
           onKeyDown={(e) => { if (e.key === 'Enter') mut.mutate() }}
         />
         <div className="text-muted text-sm" style={{ marginTop: 4 }}>
-          Можно указать TLD (<span className="text-mono">ru</span>), домен (
-          <span className="text-mono">example.ru</span>) или поддомен (
+          You can specify a TLD (<span className="text-mono">ru</span>), a domain (
+          <span className="text-mono">example.ru</span>) or a subdomain (
           <span className="text-mono">sub.example.ru</span>)
         </div>
       </div>
@@ -670,7 +658,7 @@ function AddDomainModal({ onClose, onSaved }: { onClose: () => void; onSaved: ()
               />
               <div>
                 <div style={{ fontWeight: 500 }}>
-                  {u === 'yandex' ? 'Local Zone DNS' : 'VPN Zone DNS'}
+                  {u === 'yandex' ? 'Local Zone DNS' : 'Upstream Zone DNS'}
                 </div>
                 <div className="text-muted" style={{ fontSize: 11 }}>
                   {u === 'yandex'

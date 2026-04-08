@@ -122,6 +122,18 @@ def _make_compose_content(awg_port: int) -> str:
     )
 
 
+def _measure_ping_latency(host: str) -> tuple[bool, Optional[float]]:
+    """Returns ICMP reachability and coarse RTT based on wall clock timing."""
+    t0 = time.monotonic()
+    rc_ping, _ = _run_cmd([
+        "ping", "-c", "1", "-W",
+        str(max(1, int(settings.node_health_check_timeout))),
+        host,
+    ])
+    latency = (time.monotonic() - t0) * 1000
+    return rc_ping == 0, latency if rc_ping == 0 else None
+
+
 async def _get_node(node_id: int, session: AsyncSession) -> UpstreamNode:
     node = await session.get(UpstreamNode, node_id)
     if node is None:
@@ -625,6 +637,9 @@ class NodeDeployer:
                  ).total_seconds() < _GRACE_PERIOD_SEC
         )
 
+        ping_alive, ping_latency = _measure_ping_latency(host)
+        result["latency_ms"] = ping_latency
+
         if is_active and public_key:
             rc, output = _run_cmd(["awg", "show", "awg1", "dump"])
             if rc == 0:
@@ -640,8 +655,9 @@ class NodeDeployer:
                     tx = int(parts[6]) if parts[6].isdigit() else 0
                     age = (now_ts - handshake) if handshake > 0 else 9999
 
-                    # В grace period считаем живой даже без handshake
-                    result["alive"] = age < 180 or in_grace
+                    # В grace period считаем живой даже без handshake.
+                    # ICMP RTT сохраняем отдельно как latency_ms.
+                    result["alive"] = age < 180 or ping_alive or in_grace
                     result["handshake_age_sec"] = age
                     result["rx_bytes"] = rx
                     result["tx_bytes"] = tx
@@ -650,8 +666,9 @@ class NodeDeployer:
                         node_obj = await _get_node(node_id, session)
                         node_obj.rx_bytes = rx
                         node_obj.tx_bytes = tx
+                        node_obj.latency_ms = ping_latency
                         if result["alive"]:
-                            if age < 180:
+                            if age < 180 or ping_alive:
                                 node_obj.last_seen = datetime.now(timezone.utc)
                             if node_obj.status in (NodeStatus.degraded, NodeStatus.offline):
                                 node_obj.status = NodeStatus.online
@@ -663,25 +680,34 @@ class NodeDeployer:
             else:
                 # awg show не работает — может awg1 упал
                 logger.warning("[health] awg show awg1 dump failed (rc=%d)", rc)
-                if in_grace:
-                    result["alive"] = True
+                result["alive"] = ping_alive or in_grace
+                async with AsyncSessionLocal() as session:
+                    node_obj = await _get_node(node_id, session)
+                    node_obj.latency_ms = ping_latency
+                    if result["alive"]:
+                        if ping_alive:
+                            node_obj.last_seen = datetime.now(timezone.utc)
+                        if node_obj.status in (NodeStatus.degraded, NodeStatus.offline):
+                            node_obj.status = NodeStatus.online
+                    else:
+                        node_obj.status = NodeStatus.degraded
+                    node_obj.updated_at = datetime.now(timezone.utc)
+                    await session.commit()
         else:
-            # Неактивные ноды — ICMP ping (AWG использует UDP, TCP connect бесполезен)
-            t0 = time.monotonic()
-            rc_ping, _ = _run_cmd([
-                "ping", "-c", "1", "-W",
-                str(max(1, int(settings.node_health_check_timeout))),
-                host,
-            ])
-            latency = (time.monotonic() - t0) * 1000
-            result["alive"] = rc_ping == 0 or in_grace
-            result["latency_ms"] = latency if rc_ping == 0 else None
+            result["alive"] = ping_alive or in_grace
 
             if result["alive"]:
                 async with AsyncSessionLocal() as session:
                     node_obj = await _get_node(node_id, session)
-                    node_obj.latency_ms = latency if rc_ping == 0 else node_obj.latency_ms
+                    node_obj.latency_ms = ping_latency
                     node_obj.last_seen = datetime.now(timezone.utc)
+                    node_obj.updated_at = datetime.now(timezone.utc)
+                    await session.commit()
+            else:
+                async with AsyncSessionLocal() as session:
+                    node_obj = await _get_node(node_id, session)
+                    node_obj.latency_ms = None
+                    node_obj.status = NodeStatus.offline
                     node_obj.updated_at = datetime.now(timezone.utc)
                     await session.commit()
 
