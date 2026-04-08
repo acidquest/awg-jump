@@ -277,33 +277,39 @@ function RoutingDiagram({
           meta="policy routing"
         />
 
-        <div className="routing-branch-split">
+        <div className="routing-y-diagram">
+          <div className="routing-y-spine" />
+
           <div className="routing-branch routing-branch-local">
-            <div className="routing-branch-label">{localZoneLabel}</div>
-            <div className="routing-branch-line" />
-            <TrafficNode
-              icon={<InternetIcon />}
-              title={physicalIface}
-              meta={localExternalIp ? `external IP ${localExternalIp}` : 'external IP not configured'}
-              accent
-            />
-            <div className="routing-branch-meta">
-              <span>{localMark ? `fwmark ${localMark}` : 'fwmark —'}</span>
-              <span>{localMarked ? 'rule active' : 'rule missing'}</span>
+            <div className="routing-branch-connector routing-branch-connector-up" />
+            <div className="routing-branch-content">
+              <div className="routing-branch-label">{localZoneLabel}</div>
+              <TrafficNode
+                icon={<InternetIcon />}
+                title={physicalIface}
+                meta={localExternalIp ? `external IP ${localExternalIp}` : 'external IP not configured'}
+                accent
+              />
+              <div className="routing-branch-meta">
+                <span>{localMark ? `fwmark ${localMark}` : 'fwmark —'}</span>
+                <span>{localMarked ? 'rule active' : 'rule missing'}</span>
+              </div>
             </div>
           </div>
 
           <div className="routing-branch routing-branch-vpn">
-            <div className="routing-branch-label">{vpnZoneLabel}</div>
-            <div className="routing-branch-line" />
-            <TrafficNode
-              icon={<VpnIcon />}
-              title={activeNodeName ?? 'No active node'}
-              meta={activeNodeExternalIp ? `external IP ${activeNodeExternalIp}` : 'external IP unavailable'}
-            />
-            <div className="routing-branch-meta">
-              <span>{vpnMark ? `fwmark ${vpnMark}` : 'fwmark —'}</span>
-              <span>{vpnMarked ? 'rule active' : 'rule missing'}</span>
+            <div className="routing-branch-connector routing-branch-connector-down" />
+            <div className="routing-branch-content">
+              <div className="routing-branch-label">{vpnZoneLabel}</div>
+              <TrafficNode
+                icon={<VpnIcon />}
+                title={activeNodeName ?? 'No active node'}
+                meta={activeNodeExternalIp ? `external IP ${activeNodeExternalIp}` : 'external IP unavailable'}
+              />
+              <div className="routing-branch-meta">
+                <span>{vpnMark ? `fwmark ${vpnMark}` : 'fwmark —'}</span>
+                <span>{vpnMarked ? 'rule active' : 'rule missing'}</span>
+              </div>
             </div>
           </div>
         </div>

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
 from backend.models.interface import Interface
+from backend.models.routing_settings import RoutingSettings
 from backend.models.upstream_node import UpstreamNode
 from backend.models.upstream_node import NodeStatus
 from backend.models.geoip import GeoipSource
@@ -34,6 +35,11 @@ _LOG_FILES = {
     "uvicorn": "/var/log/supervisor/uvicorn.log",
     "supervisor": "/var/log/supervisor/supervisord.log",
 }
+
+
+async def _get_invert_geoip(session: AsyncSession) -> bool:
+    settings_row = await session.get(RoutingSettings, 1)
+    return settings_row.invert_geoip if settings_row else False
 
 
 @router.get("/status")
@@ -85,7 +91,8 @@ async def get_status(
 
     # Routing
     try:
-        routing_status = routing_svc.get_status()
+        invert_geoip = await _get_invert_geoip(session)
+        routing_status = routing_svc.get_status(invert_geoip=invert_geoip)
     except Exception as e:
         routing_status = {"error": str(e)}
 
@@ -162,6 +169,7 @@ async def restart_routing(
         errors.append(f"teardown: {e}")
 
     try:
+        invert_geoip = await _get_invert_geoip(session)
         active_node = await session.scalar(
             select(UpstreamNode).where(
                 UpstreamNode.is_active == True,  # noqa: E712
@@ -173,9 +181,9 @@ async def restart_routing(
         routing_svc.update_upstream_host_route(
             active_node.awg_address if active_node and active_node.awg_address else None
         )
-        routing_svc.setup_iptables()
+        routing_svc.setup_iptables(invert_geoip=invert_geoip)
     except Exception as e:
         errors.append(f"setup: {e}")
 
-    status = routing_svc.get_status()
+    status = routing_svc.get_status(invert_geoip=invert_geoip if 'invert_geoip' in locals() else False)
     return {"status": "restarted" if not errors else "partial", "errors": errors, **status}
