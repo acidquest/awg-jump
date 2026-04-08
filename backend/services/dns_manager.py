@@ -42,6 +42,14 @@ _DEFAULT_ZONE_SETTINGS = {
 }
 
 
+def _to_dnsmasq_domain(domain: str) -> str:
+    """Преобразует домен к ASCII-форме, совместимой с dnsmasq (IDNA/punycode)."""
+    normalized = domain.strip().strip(".").lower()
+    if not normalized:
+        raise ValueError("Domain cannot be empty")
+    return normalized.encode("idna").decode("ascii")
+
+
 def get_awg0_ip() -> str:
     """Извлекает IP-адрес awg0 из настройки awg0_address (напр. '10.10.0.1/24' → '10.10.0.1')."""
     from backend.config import settings
@@ -76,8 +84,9 @@ def _write_config(domains: list, local_dns: list[str], vpn_dns: list[str]) -> No
         lines.append("")
         lines.append(f"# Local zone domains -> {', '.join(local_dns)}")
         for d in sorted(local_domains, key=lambda x: x.domain):
+            dnsmasq_domain = _to_dnsmasq_domain(d.domain)
             for dns in local_dns:
-                lines.append(f"server=/{d.domain}/{dns}")
+                lines.append(f"server=/{dnsmasq_domain}/{dns}")
 
     Path(_CONF_FILE).write_text("\n".join(lines) + "\n")
     logger.info(
