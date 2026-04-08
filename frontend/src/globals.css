@@ -86,6 +86,7 @@ input, select, textarea {
   display: flex;
   align-items: center;
   justify-content: flex-start;
+  gap: 12px;
 }
 
 .sidebar-mark {
@@ -94,6 +95,24 @@ input, select, textarea {
   display: block;
   border-radius: 7px;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+}
+
+.sidebar-brand {
+  min-width: 0;
+}
+
+.sidebar-brand-title {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+.sidebar-brand-subtitle {
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
 }
 
 .sidebar-nav {

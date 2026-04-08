@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { getRoutingStatus, getSystemMetrics, getSystemStatus, restartRouting, triggerGeoipUpdate } from '../api'
 import { RoutingStatus, SystemMetricsResponse, SystemStatus } from '../types'
 import StatusBadge from '../components/StatusBadge'
+import { formatDateTimeLocal, formatTimeLocal, parseUtcDate } from '../utils/time'
 
 function fmtUptime(sec: number) {
   const d = Math.floor(sec / 86400)
@@ -28,16 +29,15 @@ function fmtPercent(value: number | null | undefined) {
 }
 
 function fmtMetricTime(ts: string, period: '1h' | '24h') {
-  const date = new Date(ts)
-  if (period === '24h') {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  }
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  void period
+  return formatTimeLocal(ts)
 }
 
 function fmtHandshake(ts: string | null) {
   if (!ts) return 'never'
-  const diff = Date.now() - new Date(ts).getTime()
+  const date = parseUtcDate(ts)
+  if (!date) return 'never'
+  const diff = Date.now() - date.getTime()
   const m = Math.floor(diff / 60000)
   if (m < 1) return 'just now'
   if (m < 60) return `${m}m ago`
@@ -348,7 +348,7 @@ export default function Dashboard() {
                   <td className="text-mono">{g.ipset_name}</td>
                   <td>{g.prefix_count?.toLocaleString() ?? 0}</td>
                   <td className="text-muted" style={{ fontSize: 12 }}>
-                    {g.last_updated ? new Date(g.last_updated).toLocaleString() : 'never'}
+                    {g.last_updated ? formatDateTimeLocal(g.last_updated) : 'never'}
                   </td>
                   <td>
                     <StatusBadge status={g.cache_fresh ? 'online' : 'offline'} />
@@ -396,7 +396,7 @@ function MetricsTooltip({
   return (
     <div className="chart-tooltip">
       <div className="chart-tooltip-title">
-        {ts ? new Date(ts).toLocaleString() : label}
+        {ts ? formatDateTimeLocal(ts) : label}
       </div>
       {type === 'cpu' ? (
         <div className="chart-tooltip-row">

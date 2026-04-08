@@ -4,6 +4,7 @@ import { getInterfaces, updateInterface, applyInterface, stopInterface, regenObf
 import { Interface } from '../types'
 import StatusBadge from '../components/StatusBadge'
 import Modal from '../components/Modal'
+import { formatDateLocal } from '../utils/time'
 
 export default function Interfaces() {
   const qc = useQueryClient()
@@ -102,7 +103,7 @@ export default function Interfaces() {
                 <div className="flex gap-2">
                   {iface.obf_generated_at && (
                     <span className="text-muted text-sm">
-                      Generated {new Date(iface.obf_generated_at).toLocaleDateString()}
+                      Generated {formatDateLocal(iface.obf_generated_at)}
                     </span>
                   )}
                   <button

@@ -7,6 +7,7 @@ import {
 import { Interface, Peer } from '../types'
 import StatusBadge from '../components/StatusBadge'
 import Modal from '../components/Modal'
+import { parseUtcDate } from '../utils/time'
 
 function fmtBytes(n: number | null) {
   if (!n) return '0 B'
@@ -18,7 +19,9 @@ function fmtBytes(n: number | null) {
 
 function fmtHandshake(ts: string | null) {
   if (!ts) return 'never'
-  const diff = Date.now() - new Date(ts).getTime()
+  const date = parseUtcDate(ts)
+  if (!date) return 'never'
+  const diff = Date.now() - date.getTime()
   const m = Math.floor(diff / 60000)
   if (m < 1) return 'just now'
   if (m < 60) return `${m}m ago`

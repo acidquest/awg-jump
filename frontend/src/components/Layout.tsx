@@ -26,6 +26,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <aside className="sidebar">
         <div className="sidebar-logo" aria-label="AWG Jump">
           <FaviconMark />
+          <div className="sidebar-brand">
+            <div className="sidebar-brand-title">AWG Jump</div>
+            <div className="sidebar-brand-subtitle">Control Plane</div>
+          </div>
         </div>
         <nav className="sidebar-nav">
           {NAV.map(({ to, label, icon: Icon }) => (

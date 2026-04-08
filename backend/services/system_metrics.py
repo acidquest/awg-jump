@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 RETENTION_HOURS = 24
 ONE_DAY_MINUTES = RETENTION_HOURS * 60
+SAMPLE_INTERVAL_SECONDS = 60
 
 
 def _read_cpu_counters() -> tuple[int, int]:
@@ -71,13 +72,34 @@ async def collect_system_metrics(session: AsyncSession) -> SystemMetric:
     return metric
 
 
-async def get_metrics_history(session: AsyncSession, hours: int) -> tuple[SystemMetric | None, list[SystemMetric]]:
-    bounded_hours = 24 if hours >= 24 else 1
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=bounded_hours)
+def _to_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
+
+async def ensure_recent_system_metrics(session: AsyncSession) -> SystemMetric | None:
     latest = await session.scalar(
         select(SystemMetric).order_by(SystemMetric.collected_at.desc()).limit(1)
     )
+    latest_collected_at = _to_utc(latest.collected_at) if latest else None
+
+    if latest_collected_at is None:
+        return await collect_system_metrics(session)
+
+    now = datetime.now(timezone.utc)
+    if (now - latest_collected_at).total_seconds() >= SAMPLE_INTERVAL_SECONDS:
+        return await collect_system_metrics(session)
+
+    return latest
+
+
+async def get_metrics_history(session: AsyncSession, hours: int) -> tuple[SystemMetric | None, list[SystemMetric]]:
+    bounded_hours = 24 if hours >= 24 else 1
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=bounded_hours)
+    latest = await ensure_recent_system_metrics(session)
     history = (
         await session.execute(
             select(SystemMetric)

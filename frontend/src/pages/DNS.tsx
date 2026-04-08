@@ -14,6 +14,7 @@ import {
 } from '../api'
 import Modal from '../components/Modal'
 import { DnsDomain, DnsStatus, DnsZone } from '../types'
+import { formatDateTimeLocal } from '../utils/time'
 
 type ZoneKey = 'local' | 'vpn'
 type Notice = { type: 'success' | 'error'; message: string } | null
@@ -708,9 +709,8 @@ function getErrorMessage(error: unknown, fallback: string) {
 }
 
 function formatTimestamp(value: string) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return 'recently'
-  return date.toLocaleString()
+  const formatted = formatDateTimeLocal(value)
+  return formatted === '—' ? 'recently' : formatted
 }
 
 function ZoneIcon({ type, color }: { type: 'local' | 'vpn'; color: string }) {
