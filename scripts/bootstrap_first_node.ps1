@@ -61,7 +61,7 @@ function Set-EnvValue {
 
 function Quote-ForSh {
     param([string]$Value)
-    return "'" + ($Value -replace "'", "'\"'\"'") + "'"
+    return "'{0}'" -f ($Value -replace "'", "'""'""'")
 }
 
 Require-Command ssh
@@ -86,8 +86,8 @@ if ([string]::IsNullOrWhiteSpace($RemoteDir)) {
 $DockerNamespace = Prompt-WithDefault "Docker Hub namespace" "your-dockerhub-namespace"
 $ImageTag = Prompt-WithDefault "Docker image tag" "latest"
 
-$ImageJump = "docker.io/$DockerNamespace/awg-jump:$ImageTag"
-$ImageNginx = "docker.io/$DockerNamespace/awg-jump-nginx:$ImageTag"
+$ImageJump = "docker.io/${DockerNamespace}/awg-jump:${ImageTag}"
+$ImageNginx = "docker.io/${DockerNamespace}/awg-jump-nginx:${ImageTag}"
 
 $RemoteRootPrefix = ""
 if ($SshUser -ne "root") {
