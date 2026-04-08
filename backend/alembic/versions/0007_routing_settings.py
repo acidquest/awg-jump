@@ -1,7 +1,7 @@
 """Add routing settings singleton
 
-Revision ID: 0007_routing_settings
-Revises: 0006_dns_zone_settings
+Revision ID: 0007
+Revises: 0006
 Create Date: 2026-04-08 00:00:00.000000
 """
 
@@ -9,8 +9,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0007_routing_settings"
-down_revision = "0006_dns_zone_settings"
+revision = "0007"
+down_revision = "0006"
 branch_labels = None
 depends_on = None
 
