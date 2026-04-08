@@ -70,11 +70,11 @@
 
 ```
 Клиент → awg0 → iptables mangle PREROUTING:
-    dst в ipset geoip_local  →  fwmark RU  →  table 100  →  eth0 (прямой)
+    dst в ipset geoip_local  →  fwmark LOCAL →  table 100  →  eth0 (прямой)
     dst не в geoip_local     →  fwmark VPN →  table 200  →  awg1 (VPN)
 
 Контейнер (DNS-запросы dnsmasq) → iptables mangle OUTPUT:
-    dst в ipset geoip_local  →  fwmark RU  →  table 100  →  eth0
+    dst в ipset geoip_local  →  fwmark LOCAL →  table 100  →  eth0
     dst не в geoip_local     →  fwmark VPN →  table 200  →  awg1
 ```
 
@@ -170,10 +170,10 @@ https://<SERVER_HOST>:443
 
 | Переменная | По умолчанию | Описание |
 |-----------|-------------|----------|
-| `PHYSICAL_IFACE` | `eth0` | Физический интерфейс для RU-трафика |
-| `ROUTING_TABLE_RU` | `100` | Таблица маршрутизации для RU-трафика |
+| `PHYSICAL_IFACE` | `eth0` | Физический интерфейс для local-zone трафика |
+| `ROUTING_TABLE_LOCAL` | `100` | Таблица маршрутизации для local-zone трафика |
 | `ROUTING_TABLE_VPN` | `200` | Таблица маршрутизации для VPN-трафика |
-| `FWMARK_RU` | `0x1` | fwmark для RU-пакетов |
+| `FWMARK_LOCAL` | `0x1` | fwmark для пакетов local zone |
 | `FWMARK_VPN` | `0x2` | fwmark для VPN-пакетов |
 
 ### GeoIP
@@ -238,7 +238,7 @@ https://<SERVER_HOST>:443
 Просмотр текущего состояния политики маршрутизации:
 
 - ip rules (fwmark → таблица).
-- ip routes в таблицах RU и VPN.
+- ip routes в таблицах LOCAL и VPN.
 - Состояние iptables правил (PREROUTING, OUTPUT, NAT).
 - Кнопки **Apply** (пересоздать правила) и **Reset** (удалить).
 
@@ -304,7 +304,7 @@ AmneziaWG — форк WireGuard с поддержкой Junk-пакетов и 
 3. Для каждой страны URL строится автоматически по `country_code` на основе `GEOIP_SOURCE`, если пользователь не задал явный `url`.
 4. Все CIDR-блоки объединяются в один ipset `geoip_local` (atomic swap — без разрыва соединений).
 5. iptables mangle **PREROUTING** маркирует входящие от `awg0` пакеты:
-   - dst в `geoip_local` → `fwmark RU` → таблица 100 → `eth0`
+   - dst в `geoip_local` → `fwmark LOCAL` → таблица 100 → `eth0`
    - dst не в `geoip_local` → `fwmark VPN` → таблица 200 → `awg1`
 6. iptables mangle **OUTPUT** маркирует трафик самого контейнера (DNS-запросы и т.д.) по тем же правилам.
 7. `iptables nat POSTROUTING MASQUERADE` обеспечивает NAT на обоих исходящих интерфейсах.

@@ -48,9 +48,9 @@ def _env_snapshot() -> dict:
             "awg1_allowed_ips": _json_safe_setting("awg1_allowed_ips", "0.0.0.0/0"),
             "awg1_persistent_keepalive": _json_safe_setting("awg1_persistent_keepalive", 25),
             "physical_iface": _json_safe_setting("physical_iface", "eth0"),
-            "routing_table_ru": _json_safe_setting("routing_table_ru", 100),
+            "routing_table_local": _json_safe_setting("routing_table_local", 100),
             "routing_table_vpn": _json_safe_setting("routing_table_vpn", 200),
-            "fwmark_ru": _json_safe_setting("fwmark_ru", "0x1"),
+            "fwmark_local": _json_safe_setting("fwmark_local", "0x1"),
             "fwmark_vpn": _json_safe_setting("fwmark_vpn", "0x2"),
             "geoip_source": _json_safe_setting(
                 "geoip_source", "http://www.ipdeny.com/ipblocks/data/countries/"

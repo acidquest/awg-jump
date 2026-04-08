@@ -47,9 +47,9 @@ class Settings(BaseSettings):
 
     # ── Маршрутизация ────────────────────────────────────────────────────
     physical_iface: str = "eth0"
-    routing_table_ru: int = 100
+    routing_table_local: int = 100
     routing_table_vpn: int = 200
-    fwmark_ru: str = "0x1"
+    fwmark_local: str = "0x1"
     fwmark_vpn: str = "0x2"
 
     # ── GeoIP ────────────────────────────────────────────────────────────

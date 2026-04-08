@@ -70,11 +70,11 @@ Browser (HTTPS:443)
 
 ```
 Client → awg0 → iptables mangle PREROUTING:
-    dst in ipset geoip_local  →  fwmark RU  →  table 100  →  eth0 (direct)
+    dst in ipset geoip_local  →  fwmark LOCAL →  table 100  →  eth0 (direct)
     dst not in geoip_local    →  fwmark VPN →  table 200  →  awg1 (VPN)
 
 Container (dnsmasq DNS queries) → iptables mangle OUTPUT:
-    dst in ipset geoip_local  →  fwmark RU  →  table 100  →  eth0
+    dst in ipset geoip_local  →  fwmark LOCAL →  table 100  →  eth0
     dst not in geoip_local    →  fwmark VPN →  table 200  →  awg1
 ```
 
@@ -170,10 +170,10 @@ On first launch, the container automatically:
 
 | Variable | Default | Description |
 |---------|---------|-------------|
-| `PHYSICAL_IFACE` | `eth0` | Physical interface for Russian traffic |
-| `ROUTING_TABLE_RU` | `100` | Routing table for RU traffic |
+| `PHYSICAL_IFACE` | `eth0` | Physical interface for local-zone traffic |
+| `ROUTING_TABLE_LOCAL` | `100` | Routing table for local-zone traffic |
 | `ROUTING_TABLE_VPN` | `200` | Routing table for VPN traffic |
-| `FWMARK_RU` | `0x1` | fwmark for RU packets |
+| `FWMARK_LOCAL` | `0x1` | fwmark for local-zone packets |
 | `FWMARK_VPN` | `0x2` | fwmark for VPN packets |
 
 ### GeoIP
@@ -304,7 +304,7 @@ AmneziaWG is a WireGuard fork with Junk packet support and header replacement to
 3. For each country, the source URL is built automatically from `country_code` using `GEOIP_SOURCE` unless an explicit `url` is stored.
 4. All CIDR blocks are merged into a single ipset `geoip_local` (atomic swap — no connection disruption).
 5. iptables mangle **PREROUTING** marks incoming packets from `awg0`:
-   - dst in `geoip_local` → `fwmark RU` → table 100 → `eth0`
+   - dst in `geoip_local` → `fwmark LOCAL` → table 100 → `eth0`
    - dst not in `geoip_local` → `fwmark VPN` → table 200 → `awg1`
 6. iptables mangle **OUTPUT** marks the container's own traffic (DNS queries etc.) by the same rules.
 7. `iptables nat POSTROUTING MASQUERADE` provides NAT on both outgoing interfaces.

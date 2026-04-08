@@ -22,7 +22,7 @@ API контейнера `awg-jump` также биндуется на `127.0.0.
 - `SECRET_KEY`: секрет подписи токенов.
 - `AWG0_LISTEN_PORT`, `AWG0_ADDRESS`, `AWG0_DNS`: серверный интерфейс для клиентов.
 - `AWG1_ADDRESS`, `AWG1_ALLOWED_IPS`, `AWG1_PERSISTENT_KEEPALIVE`: клиентский интерфейс jump → upstream node.
-- `PHYSICAL_IFACE`: физический интерфейс для RU-трафика.
+- `PHYSICAL_IFACE`, `ROUTING_TABLE_LOCAL`: физический интерфейс и routing table для local-zone трафика.
 - `NODE_AWG_PORT`, `NODE_VPN_SUBNET`: параметры сети upstream-нод.
 - `GEOIP_SOURCE`, `GEOIP_UPDATE_CRON`: базовый URL источника и расписание обновления GeoIP для локальной зоны.
 
