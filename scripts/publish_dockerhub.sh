@@ -4,31 +4,47 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage:
-  ./scripts/publish_dockerhub.sh <dockerhub-namespace> <tag> [--latest]
+  ./scripts/publish_dockerhub.sh <dockerhub-namespace> <tag> [--latest] [--with-node]
 
 Example:
   ./scripts/publish_dockerhub.sh myorg 2026-04-08 --latest
+  ./scripts/publish_dockerhub.sh myorg 2026-04-08 --latest --with-node
 
-This script builds and pushes three images:
+By default this script builds and pushes two images:
   docker.io/<namespace>/awg-jump:<tag>
   docker.io/<namespace>/awg-jump-nginx:<tag>
+
+If --with-node is passed, it also pushes:
   docker.io/<namespace>/awg-node:<tag>
 EOF
 }
 
-if [[ $# -lt 2 || $# -gt 3 ]]; then
+if [[ $# -lt 2 ]]; then
     usage
     exit 1
 fi
 
 NAMESPACE="$1"
 TAG="$2"
-PUSH_LATEST="${3:-}"
+shift 2
 
-if [[ -n "$PUSH_LATEST" && "$PUSH_LATEST" != "--latest" ]]; then
-    usage
-    exit 1
-fi
+PUSH_LATEST=false
+PUSH_NODE=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --latest)
+            PUSH_LATEST=true
+            ;;
+        --with-node)
+            PUSH_NODE=true
+            ;;
+        *)
+            usage
+            exit 1
+            ;;
+    esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -58,10 +74,12 @@ JUMP_TAGS=(-t "$IMAGE_JUMP")
 NGINX_TAGS=(-t "$IMAGE_NGINX")
 NODE_TAGS=(-t "$IMAGE_NODE")
 
-if [[ "$PUSH_LATEST" == "--latest" ]]; then
+if [[ "$PUSH_LATEST" == true ]]; then
     JUMP_TAGS+=(-t "docker.io/${NAMESPACE}/awg-jump:latest")
     NGINX_TAGS+=(-t "docker.io/${NAMESPACE}/awg-jump-nginx:latest")
-    NODE_TAGS+=(-t "docker.io/${NAMESPACE}/awg-node:latest")
+    if [[ "$PUSH_NODE" == true ]]; then
+        NODE_TAGS+=(-t "docker.io/${NAMESPACE}/awg-node:latest")
+    fi
 fi
 
 echo "Publishing jump image: $IMAGE_JUMP"
@@ -79,13 +97,18 @@ docker buildx build \
     -f "$REPO_ROOT/nginx/Dockerfile" \
     "$REPO_ROOT/nginx"
 
-echo "Publishing node image: $IMAGE_NODE"
-docker buildx build \
-    --platform linux/amd64 \
-    "${NODE_TAGS[@]}" \
-    --push \
-    "$REPO_ROOT/node"
+if [[ "$PUSH_NODE" == true ]]; then
+    echo "Publishing node image: $IMAGE_NODE"
+    docker buildx build \
+        --platform linux/amd64 \
+        "${NODE_TAGS[@]}" \
+        --push \
+        "$REPO_ROOT/node"
+fi
 
 echo
 echo "Published images:"
-printf '  %s\n' "$IMAGE_JUMP" "$IMAGE_NGINX" "$IMAGE_NODE"
+printf '  %s\n' "$IMAGE_JUMP" "$IMAGE_NGINX"
+if [[ "$PUSH_NODE" == true ]]; then
+    printf '  %s\n' "$IMAGE_NODE"
+fi

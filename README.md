@@ -72,5 +72,6 @@ API контейнера `awg-jump` также биндуется на `127.0.0.
   - `docker build -t awg-node ./node`
 - Публикация и image-based deploy:
   - `./scripts/publish_dockerhub.sh <namespace> <tag> --latest`
+  - `./scripts/publish_dockerhub.sh <namespace> <tag> --latest --with-node`
   - `./scripts/bootstrap_first_node.sh`
   - `powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_first_node.ps1`

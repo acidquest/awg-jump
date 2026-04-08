@@ -38,6 +38,12 @@ docker login
 - `docker.io/myteam/awg-jump-nginx:2026-04-08`
 - и теги `latest`, если передан `--latest`
 
+Если нужно также запушить образ upstream-ноды, добавь флаг `--with-node`:
+
+```bash
+./scripts/publish_dockerhub.sh myteam 2026-04-08 --latest --with-node
+```
+
 ## 2. Bootstrap первой пустой ноды
 
 Скрипт ставит Docker на удалённую машину, спрашивает директорию деплоя и раскладывает туда:
