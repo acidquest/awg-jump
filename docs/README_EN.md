@@ -95,7 +95,7 @@ Container (dnsmasq DNS queries) → iptables mangle OUTPUT:
 git clone <repo-url> awg-jump && cd awg-jump
 
 # 2. Create configuration
-cp .env.example .env
+cp .env.en.example .env
 
 # 3. Required changes:
 #   ADMIN_PASSWORD=<strong password>
@@ -180,7 +180,7 @@ On first launch, the container automatically:
 
 | Variable | Default | Description |
 |---------|---------|-------------|
-| `GEOIP_SOURCE_RU` | ipdeny.com | Default URL/template for the initial local-zone source (RU) |
+| `GEOIP_SOURCE` | ipdeny.com | Base GeoIP source URL; the final URL is built as `<base><country_code>.zone` |
 | `GEOIP_UPDATE_CRON` | `0 4 * * *` | Update schedule (UTC cron) |
 | `GEOIP_FETCH_TIMEOUT` | `30` | Download timeout in seconds |
 
@@ -299,14 +299,15 @@ AmneziaWG is a WireGuard fork with Junk packet support and header replacement to
 
 ### How It Works
 
-1. On startup (and on schedule per `GEOIP_UPDATE_CRON`), all enabled GeoIP sources are loaded from the database.
-2. For each country, the source URL is built automatically from `country_code` using the `ipdeny` pattern unless an explicit `url` is stored.
-3. All CIDR blocks are merged into a single ipset `geoip_local` (atomic swap — no connection disruption).
-4. iptables mangle **PREROUTING** marks incoming packets from `awg0`:
+1. On first startup, no predefined GeoIP country is created; the local zone is configured by the user via UI/API.
+2. On schedule per `GEOIP_UPDATE_CRON` and on manual updates, all enabled GeoIP sources are loaded from the database.
+3. For each country, the source URL is built automatically from `country_code` using `GEOIP_SOURCE` unless an explicit `url` is stored.
+4. All CIDR blocks are merged into a single ipset `geoip_local` (atomic swap — no connection disruption).
+5. iptables mangle **PREROUTING** marks incoming packets from `awg0`:
    - dst in `geoip_local` → `fwmark RU` → table 100 → `eth0`
    - dst not in `geoip_local` → `fwmark VPN` → table 200 → `awg1`
-5. iptables mangle **OUTPUT** marks the container's own traffic (DNS queries etc.) by the same rules.
-6. `iptables nat POSTROUTING MASQUERADE` provides NAT on both outgoing interfaces.
+6. iptables mangle **OUTPUT** marks the container's own traffic (DNS queries etc.) by the same rules.
+7. `iptables nat POSTROUTING MASQUERADE` provides NAT on both outgoing interfaces.
 
 ### Updating GeoIP
 
@@ -515,7 +516,8 @@ docker compose restart nginx
 
 ```
 awg-jump/
-├── .env.example            # Configuration template
+├── .env.ru.example         # Configuration template (RU)
+├── .env.en.example         # Configuration template (EN)
 ├── docker-compose.yml      # Three services: awg-jump, nginx, awg-node (optional)
 ├── Dockerfile              # Multi-stage: awg-builder + awg-tools + python + frontend + final
 ├── supervisord.conf        # Manages uvicorn inside the container

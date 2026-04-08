@@ -7,7 +7,9 @@
 
 ## Быстрый старт
 
-1. Создай `.env` из шаблона: `cp .env.example .env`
+1. Создай `.env` из шаблона:
+   - RU: `cp .env.ru.example .env`
+   - EN: `cp .env.en.example .env`
 2. Измени как минимум `ADMIN_PASSWORD`, `SECRET_KEY`, `TLS_COMMON_NAME`.
 3. Подними стек: `docker compose up -d --build`
 4. Открой `https://<host>:${NGINX_HTTPS_PORT:-443}`
@@ -22,9 +24,9 @@ API контейнера `awg-jump` также биндуется на `127.0.0.
 - `AWG1_ADDRESS`, `AWG1_ALLOWED_IPS`, `AWG1_PERSISTENT_KEEPALIVE`: клиентский интерфейс jump → upstream node.
 - `PHYSICAL_IFACE`: физический интерфейс для RU-трафика.
 - `NODE_AWG_PORT`, `NODE_VPN_SUBNET`: параметры сети upstream-нод.
-- `GEOIP_SOURCE_RU`, `GEOIP_UPDATE_CRON`: базовый шаблон/расписание обновления GeoIP для локальной зоны.
+- `GEOIP_SOURCE`, `GEOIP_UPDATE_CRON`: базовый URL источника и расписание обновления GeoIP для локальной зоны.
 
-Полный список и комментарии смотри в [`.env.example`](/opt/awg-jump/.env.example).
+Полный список и комментарии смотри в [`.env.ru.example`](/opt/awg-jump/.env.ru.example) или [`.env.en.example`](/opt/awg-jump/.env.en.example).
 
 ## Nodes и деплой
 

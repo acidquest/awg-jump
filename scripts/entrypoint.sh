@@ -144,21 +144,9 @@ async def init_defaults():
             session.add(awg1)
             print("[init] Created default interface: awg1")
 
-        # ── GeoIP источник ───────────────────────────────────────────────
-        result = await session.execute(select(GeoipSource))
-        geoip = result.scalar_one_or_none()
-        if not geoip:
-            geoip = GeoipSource(
-                name="ipdeny.com RU",
-                display_name="Russia",
-                url=settings.geoip_source_ru,
-                country_code="ru",
-                ipset_name="geoip_local",
-                enabled=True,
-                created_at=datetime.now(timezone.utc),
-            )
-            session.add(geoip)
-            print("[init] Created default GeoIP source: ipdeny.com RU")
+        # ── GeoIP источники ──────────────────────────────────────────────
+        # По умолчанию не создаём преднастроенную страну: local zone
+        # настраивается пользователем через UI/API после первого старта.
 
         # ── Дефолтные DNS домены для split DNS ───────────────────────────
         result = await session.execute(select(DnsDomain))

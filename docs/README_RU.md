@@ -95,7 +95,7 @@
 git clone <repo-url> awg-jump && cd awg-jump
 
 # 2. Создать конфигурацию
-cp .env.example .env
+cp .env.ru.example .env
 
 # 3. Обязательно изменить:
 #   ADMIN_PASSWORD=<сильный пароль>
@@ -180,7 +180,7 @@ https://<SERVER_HOST>:443
 
 | Переменная | По умолчанию | Описание |
 |-----------|-------------|----------|
-| `GEOIP_SOURCE_RU` | ipdeny.com | Дефолтный URL/шаблон для initial local-zone источника (RU) |
+| `GEOIP_SOURCE` | ipdeny.com | Базовый URL источника GeoIP; итоговый URL строится как `<base><country_code>.zone` |
 | `GEOIP_UPDATE_CRON` | `0 4 * * *` | Cron обновления (UTC) |
 | `GEOIP_FETCH_TIMEOUT` | `30` | Таймаут загрузки в секундах |
 
@@ -299,14 +299,15 @@ AmneziaWG — форк WireGuard с поддержкой Junk-пакетов и 
 
 ### Как работает
 
-1. При старте (и по расписанию `GEOIP_UPDATE_CRON`) загружаются все enabled GeoIP-источники из БД.
-2. Для каждой страны URL строится автоматически по `country_code` на основе шаблона `ipdeny`, если пользователь не задал явный `url`.
-3. Все CIDR-блоки объединяются в один ipset `geoip_local` (atomic swap — без разрыва соединений).
-4. iptables mangle **PREROUTING** маркирует входящие от `awg0` пакеты:
+1. При старте преднастроенные GeoIP-страны не создаются; local zone настраивается пользователем через UI/API.
+2. По расписанию `GEOIP_UPDATE_CRON` и при ручном запуске загружаются все enabled GeoIP-источники из БД.
+3. Для каждой страны URL строится автоматически по `country_code` на основе `GEOIP_SOURCE`, если пользователь не задал явный `url`.
+4. Все CIDR-блоки объединяются в один ipset `geoip_local` (atomic swap — без разрыва соединений).
+5. iptables mangle **PREROUTING** маркирует входящие от `awg0` пакеты:
    - dst в `geoip_local` → `fwmark RU` → таблица 100 → `eth0`
    - dst не в `geoip_local` → `fwmark VPN` → таблица 200 → `awg1`
-5. iptables mangle **OUTPUT** маркирует трафик самого контейнера (DNS-запросы и т.д.) по тем же правилам.
-6. `iptables nat POSTROUTING MASQUERADE` обеспечивает NAT на обоих исходящих интерфейсах.
+6. iptables mangle **OUTPUT** маркирует трафик самого контейнера (DNS-запросы и т.д.) по тем же правилам.
+7. `iptables nat POSTROUTING MASQUERADE` обеспечивает NAT на обоих исходящих интерфейсах.
 
 ### Обновление GeoIP
 
@@ -515,7 +516,8 @@ docker compose restart nginx
 
 ```
 awg-jump/
-├── .env.example            # Шаблон конфигурации
+├── .env.ru.example         # Шаблон конфигурации (RU)
+├── .env.en.example         # Configuration template (EN)
 ├── docker-compose.yml      # Три сервиса: awg-jump, nginx, awg-node (optional)
 ├── Dockerfile              # Multi-stage: awg-builder + awg-tools + python + frontend + final
 ├── supervisord.conf        # Управляет uvicorn внутри контейнера

@@ -15,6 +15,8 @@ import StatusBadge from '../components/StatusBadge'
 import { openSSE } from '../sse'
 import { GeoipSource, GeoipStatus } from '../types'
 
+const DEFAULT_GEOIP_SOURCE_BASE = 'https://www.ipdeny.com/ipblocks/data/countries/'
+
 type ProgressLine = { ts: string; msg: string }
 type GeoipCreatePayload = { country_code: string; display_name: string; url?: string | null }
 type GeoipUpdatePayload = { display_name?: string; enabled?: boolean; url?: string | null }
@@ -359,7 +361,7 @@ function AddCountryModal({
   const [error, setError] = useState('')
 
   const normalizedCode = normalizeCountryCode(countryCode)
-  const previewUrl = normalizedCode ? buildDefaultGeoipUrl(normalizedCode) : 'https://www.ipdeny.com/ipblocks/data/countries/{cc}.zone'
+  const previewUrl = normalizedCode ? buildDefaultGeoipUrl(normalizedCode) : `${DEFAULT_GEOIP_SOURCE_BASE}{cc}.zone`
 
   const handleSubmit = async () => {
     setError('')
@@ -528,7 +530,7 @@ function normalizeCountryCode(value: string) {
 }
 
 function buildDefaultGeoipUrl(countryCode: string) {
-  return `https://www.ipdeny.com/ipblocks/data/countries/${countryCode}.zone`
+  return `${DEFAULT_GEOIP_SOURCE_BASE}${countryCode}.zone`
 }
 
 function countryFlag(countryCode: string) {

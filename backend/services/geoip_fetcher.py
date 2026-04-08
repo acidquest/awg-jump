@@ -29,7 +29,8 @@ def _cache_path(country_code: str) -> str:
 
 
 def build_default_url(country_code: str) -> str:
-    return f"https://www.ipdeny.com/ipblocks/data/countries/{country_code}.zone"
+    base = settings.geoip_source.rstrip("/")
+    return f"{base}/{country_code}.zone"
 
 
 def _is_cache_fresh(country_code: str) -> bool:

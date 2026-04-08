@@ -52,8 +52,8 @@ def _env_snapshot() -> dict:
             "routing_table_vpn": _json_safe_setting("routing_table_vpn", 200),
             "fwmark_ru": _json_safe_setting("fwmark_ru", "0x1"),
             "fwmark_vpn": _json_safe_setting("fwmark_vpn", "0x2"),
-            "geoip_source_ru": _json_safe_setting(
-                "geoip_source_ru", "http://www.ipdeny.com/ipblocks/data/countries/ru.zone"
+            "geoip_source": _json_safe_setting(
+                "geoip_source", "http://www.ipdeny.com/ipblocks/data/countries/"
             ),
             "geoip_update_cron": _json_safe_setting("geoip_update_cron", "0 4 * * *"),
             "node_awg_port": _json_safe_setting("node_awg_port", 51821),
