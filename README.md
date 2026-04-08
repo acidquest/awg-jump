@@ -14,7 +14,9 @@
 3. Подними стек: `docker compose up -d --build`
 4. Открой `https://<host>:${NGINX_HTTPS_PORT:-443}`
 
-Для деплоя без локальной сборки через Docker Hub смотри [docs/DEPLOY_DOCKER_HUB_RU.md](/opt/awg-jump/docs/DEPLOY_DOCKER_HUB_RU.md).
+Для деплоя без локальной сборки через Docker Hub смотри:
+- [Deploy via Docker Hub (RU)](/opt/awg-jump/docs/DEPLOY_DOCKER_HUB_RU.md)
+- [Deploy via Docker Hub (EN)](/opt/awg-jump/docs/DEPLOY_DOCKER_HUB_EN.md)
 
 API контейнера `awg-jump` также биндуется на `127.0.0.1:8080` только для локальной диагностики и smoke-тестов. Наружу публикуются `NGINX_HTTPS_PORT`, `NGINX_HTTP_PORT` и AWG UDP-порт.
 
@@ -62,6 +64,8 @@ API контейнера `awg-jump` также биндуется на `127.0.0.
 
 - [Полная документация (RU)](docs/README_RU.md)
 - [Full documentation (EN)](docs/README_EN.md)
+- [Deploy via Docker Hub (RU)](/opt/awg-jump/docs/DEPLOY_DOCKER_HUB_RU.md)
+- [Deploy via Docker Hub (EN)](/opt/awg-jump/docs/DEPLOY_DOCKER_HUB_EN.md)
 
 ## Локальная проверка
 

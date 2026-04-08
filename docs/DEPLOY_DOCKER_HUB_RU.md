@@ -85,6 +85,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_first_node.ps1
 - установлен OpenSSH Client (`ssh`, `scp`)
 - PowerShell 5.1+ или PowerShell 7+
 
+Примечание для Windows:
+
+- если bootstrap запускается из Windows PowerShell с SSH-аутентификацией по паролю, используй пароль сервера без спецсимволов
+- на практике Windows `ssh`/`scp` иногда нестабильно ведут себя со спецсимволами в password prompt
+- предпочтительный вариант: SSH key authentication
+
 ## 3. Первый запуск на сервере
 
 Подключись к серверу и отредактируй как минимум:
