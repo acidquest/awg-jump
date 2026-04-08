@@ -148,7 +148,7 @@ export interface SystemStatus {
     cache_fresh: boolean
   }>
   ipsets: Array<{ name: string; count: number }>
-  routing: Record<string, unknown>
+  routing: Partial<RoutingStatus> & { error?: string }
   active_node: {
     id: number
     name: string

@@ -639,6 +639,214 @@ tr.active-node td:first-child { border-left: 2px solid var(--accent); }
   margin-bottom: 14px;
 }
 
+.routing-diagram {
+  background:
+    radial-gradient(circle at top left, rgba(0, 212, 170, 0.08), transparent 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.01), rgba(255, 255, 255, 0));
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+}
+
+.routing-diagram-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.routing-diagram-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.routing-diagram-subtitle {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  max-width: 720px;
+}
+
+.routing-diagram-intake {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 16px;
+  overflow-x: auto;
+}
+
+.routing-lanes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.routing-lane {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  background: var(--bg-2);
+}
+
+.routing-lane-geoip {
+  background: linear-gradient(180deg, rgba(0, 212, 170, 0.08), rgba(0, 212, 170, 0.02));
+}
+
+.routing-lane-other {
+  background: linear-gradient(180deg, rgba(255, 165, 2, 0.08), rgba(255, 165, 2, 0.02));
+}
+
+.routing-lane-header,
+.routing-lane-footer,
+.routing-lane-badges,
+.traffic-node,
+.traffic-arrow {
+  display: flex;
+  align-items: center;
+}
+
+.routing-lane-header {
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.routing-lane-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.routing-lane-subtitle {
+  font-size: 12px;
+  color: var(--text-2);
+  margin-top: 4px;
+}
+
+.routing-lane-badges {
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.routing-lane-flow {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.routing-lane-footer {
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  color: var(--text-2);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+
+.traffic-node {
+  gap: 12px;
+  min-width: 170px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(13, 17, 23, 0.55);
+}
+
+.traffic-node-accent {
+  border-color: rgba(0, 212, 170, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(0, 212, 170, 0.1);
+}
+
+.traffic-node-geoip .traffic-node-icon {
+  background: rgba(0, 212, 170, 0.14);
+  color: var(--accent);
+}
+
+.traffic-node-other .traffic-node-icon {
+  background: rgba(255, 165, 2, 0.14);
+  color: var(--warning);
+}
+
+.traffic-node-icon {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--bg-4);
+  color: var(--text);
+}
+
+.traffic-node-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.traffic-node-copy {
+  min-width: 0;
+}
+
+.traffic-node-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.traffic-node-meta {
+  font-size: 11px;
+  color: var(--text-2);
+  margin-top: 3px;
+  font-family: var(--font-mono);
+}
+
+.traffic-arrow {
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  min-width: 72px;
+  color: var(--text-2);
+}
+
+.traffic-arrow-line {
+  position: relative;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, var(--border-2), var(--accent));
+}
+
+.traffic-arrow-line::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-top: 2px solid var(--accent);
+  border-right: 2px solid var(--accent);
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.traffic-arrow-label {
+  font-size: 10px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  text-align: center;
+  white-space: nowrap;
+}
+
 /* Login */
 .login-shell {
   position: relative;
@@ -694,10 +902,36 @@ tr.active-node td:first-child { border-left: 2px solid var(--accent); }
   z-index: 1;
 }
 
-.login-panel .card {
-  backdrop-filter: blur(10px);
-  background: rgba(15, 24, 31, 0.82);
-  box-shadow: 0 30px 70px rgba(0, 0, 0, 0.32);
+  .login-panel .card {
+    backdrop-filter: blur(10px);
+    background: rgba(15, 24, 31, 0.82);
+    box-shadow: 0 30px 70px rgba(0, 0, 0, 0.32);
+  }
+
+@media (max-width: 1100px) {
+  .routing-lanes {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 820px) {
+  .page-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .routing-diagram-header,
+  .routing-lane-header,
+  .routing-lane-footer {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .routing-diagram-intake,
+  .routing-lane-flow {
+    padding-bottom: 8px;
+  }
 }
 
 @keyframes login-rain-fall {

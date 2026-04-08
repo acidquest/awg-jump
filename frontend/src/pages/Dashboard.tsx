@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getSystemStatus, restartRouting, triggerGeoipUpdate } from '../api'
-import { SystemStatus } from '../types'
+import { RoutingStatus, SystemStatus } from '../types'
 import StatusBadge from '../components/StatusBadge'
 
 function fmtUptime(sec: number) {
@@ -67,6 +67,7 @@ export default function Dashboard() {
   const awg0 = s.interfaces.find((i) => i.name === 'awg0')
   const awg1 = s.interfaces.find((i) => i.name === 'awg1')
   const totalPrefixes = s.geoip.reduce((a, g) => a + (g.prefix_count || 0), 0)
+  const routing = s.routing
 
   return (
     <>
@@ -205,13 +206,284 @@ export default function Dashboard() {
 
       {/* Routing status */}
       <div className="section">
-        <div className="section-title">Routing Status</div>
-        <div className="card">
-          <pre className="mono text-muted" style={{ fontSize: 11, overflowX: 'auto' }}>
-            {JSON.stringify(s.routing, null, 2)}
-          </pre>
-        </div>
+        <div className="section-title">Routing Diagram</div>
+        {'error' in routing && routing.error ? (
+          <div className="error-box">{routing.error}</div>
+        ) : (
+          <RoutingDiagram
+            routing={routing}
+            activeNodeName={s.active_node?.name ?? null}
+          />
+        )}
       </div>
     </>
+  )
+}
+
+function RoutingDiagram({
+  routing,
+  activeNodeName,
+}: {
+  routing: Partial<RoutingStatus>
+  activeNodeName: string | null
+}) {
+  const geoipDestination = routing.geoip_destination
+  const otherDestination = routing.other_destination
+  const physicalIface = routing.physical_iface ?? 'eth0'
+
+  return (
+    <div className="routing-diagram">
+      <div className="routing-diagram-header">
+        <div>
+          <div className="routing-diagram-title">Live traffic map</div>
+          <div className="routing-diagram-subtitle">
+            {routing.invert_geoip ? 'Inverted mode: GeoIP zone goes to VPN, other traffic goes direct.' : 'Normal mode: GeoIP zone goes direct, other traffic goes to VPN.'}
+          </div>
+        </div>
+        <div className="routing-diagram-mode">
+          <span className={`badge ${routing.invert_geoip ? 'badge-warning' : 'badge-online'}`}>
+            {routing.invert_geoip ? 'inverted' : 'normal'}
+          </span>
+        </div>
+      </div>
+
+      <div className="routing-diagram-intake">
+        <TrafficNode
+          icon={<ClientIcon />}
+          title="Clients"
+          meta="AWG peers"
+        />
+        <TrafficArrow />
+        <TrafficNode
+          icon={<ServerIcon />}
+          title="awg0"
+          meta="entry interface"
+          accent
+        />
+        <TrafficArrow />
+        <TrafficNode
+          icon={<PolicyIcon />}
+          title="Policy engine"
+          meta="ipset + mangle"
+        />
+      </div>
+
+      <div className="routing-lanes">
+        <RoutingLane
+          title="GeoIP Local Zone"
+          tone="geoip"
+          trafficLabel="matched GeoIP CIDRs"
+          mark={routing.geoip_mark}
+          destination={geoipDestination}
+          physicalIface={physicalIface}
+          activeNodeName={activeNodeName}
+          isMarked={routing.prerouting_geoip}
+          hasOutputRule={routing.output_geoip}
+          hasNatLocal={routing.nat_eth0}
+          hasNatVpn={routing.nat_awg1}
+        />
+        <RoutingLane
+          title="Other Traffic"
+          tone="other"
+          trafficLabel="everything else"
+          mark={routing.other_mark}
+          destination={otherDestination}
+          physicalIface={physicalIface}
+          activeNodeName={activeNodeName}
+          isMarked={routing.prerouting_other}
+          hasOutputRule={routing.output_other}
+          hasNatLocal={routing.nat_eth0}
+          hasNatVpn={routing.nat_awg1}
+        />
+      </div>
+    </div>
+  )
+}
+
+function RoutingLane({
+  title,
+  tone,
+  trafficLabel,
+  mark,
+  destination,
+  physicalIface,
+  activeNodeName,
+  isMarked,
+  hasOutputRule,
+  hasNatLocal,
+  hasNatVpn,
+}: {
+  title: string
+  tone: 'geoip' | 'other'
+  trafficLabel: string
+  mark?: string
+  destination?: 'local' | 'vpn'
+  physicalIface: string
+  activeNodeName: string | null
+  isMarked?: boolean
+  hasOutputRule?: boolean
+  hasNatLocal?: boolean
+  hasNatVpn?: boolean
+}) {
+  const isLocal = destination === 'local'
+  const routeIface = isLocal ? physicalIface : 'awg1'
+  const routeTable = isLocal ? 'table 100' : destination === 'vpn' ? 'table 200' : 'table —'
+  const destinationLabel = isLocal ? 'Direct Local' : destination === 'vpn' ? 'Upstream VPN' : 'Unknown'
+  const destinationMeta = isLocal ? `via ${physicalIface}` : activeNodeName ? `${activeNodeName} via awg1` : 'via awg1'
+  const natReady = isLocal ? hasNatLocal : hasNatVpn
+
+  return (
+    <div className={`routing-lane routing-lane-${tone}`}>
+      <div className="routing-lane-header">
+        <div>
+          <div className="routing-lane-title">{title}</div>
+          <div className="routing-lane-subtitle">{trafficLabel}</div>
+        </div>
+        <div className="routing-lane-badges">
+          <span className={`badge ${isMarked ? 'badge-online' : 'badge-error'}`}>
+            {isMarked ? 'marked' : 'no mark'}
+          </span>
+          <span className={`badge ${hasOutputRule ? 'badge-online' : 'badge-warning'}`}>
+            {hasOutputRule ? 'dns rule' : 'dns missing'}
+          </span>
+        </div>
+      </div>
+
+      <div className="routing-lane-flow">
+        <TrafficNode
+          icon={<ZoneIcon />}
+          title={title}
+          meta={trafficLabel}
+          tone={tone}
+        />
+        <TrafficArrow label={mark ? `fwmark ${mark}` : 'fwmark —'} />
+        <TrafficNode
+          icon={<RouteIcon />}
+          title={routeTable}
+          meta="policy route"
+        />
+        <TrafficArrow label={routeIface} />
+        <TrafficNode
+          icon={isLocal ? <InternetIcon /> : <VpnIcon />}
+          title={destinationLabel}
+          meta={destinationMeta}
+          accent={isLocal}
+        />
+      </div>
+
+      <div className="routing-lane-footer">
+        <span>PREROUTING: {isMarked ? 'active' : 'missing'}</span>
+        <span>NAT: {natReady ? 'active' : 'missing'}</span>
+      </div>
+    </div>
+  )
+}
+
+function TrafficNode({
+  icon,
+  title,
+  meta,
+  accent = false,
+  tone,
+}: {
+  icon: React.ReactNode
+  title: string
+  meta: string
+  accent?: boolean
+  tone?: 'geoip' | 'other'
+}) {
+  return (
+    <div className={`traffic-node${accent ? ' traffic-node-accent' : ''}${tone ? ` traffic-node-${tone}` : ''}`}>
+      <div className="traffic-node-icon">{icon}</div>
+      <div className="traffic-node-copy">
+        <div className="traffic-node-title">{title}</div>
+        <div className="traffic-node-meta">{meta}</div>
+      </div>
+    </div>
+  )
+}
+
+function TrafficArrow({ label }: { label?: string }) {
+  return (
+    <div className="traffic-arrow">
+      <div className="traffic-arrow-line" />
+      {label ? <div className="traffic-arrow-label">{label}</div> : null}
+    </div>
+  )
+}
+
+function ClientIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="4" y="5" width="16" height="10" rx="2" />
+      <path d="M8 19h8" />
+      <path d="M12 15v4" />
+    </svg>
+  )
+}
+
+function ServerIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="4" y="4" width="16" height="7" rx="2" />
+      <rect x="4" y="13" width="16" height="7" rx="2" />
+      <path d="M8 8h.01" />
+      <path d="M8 17h.01" />
+      <path d="M12 8h4" />
+      <path d="M12 17h4" />
+    </svg>
+  )
+}
+
+function PolicyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3l7 4v5c0 5-3.5 7.5-7 9-3.5-1.5-7-4-7-9V7l7-4z" />
+      <path d="M9.5 12l1.8 1.8 3.7-4.1" />
+    </svg>
+  )
+}
+
+function ZoneIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 12h18" />
+      <path d="M12 3a15.3 15.3 0 0 1 0 18" />
+      <path d="M12 3a15.3 15.3 0 0 0 0 18" />
+      <circle cx="12" cy="12" r="9" />
+    </svg>
+  )
+}
+
+function RouteIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 6h8" />
+      <path d="M5 12h14" />
+      <path d="M5 18h10" />
+      <path d="M13 4l2 2-2 2" />
+      <path d="M17 10l2 2-2 2" />
+      <path d="M15 16l2 2-2 2" />
+    </svg>
+  )
+}
+
+function InternetIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18" />
+      <path d="M12 3c3 3 4.5 6 4.5 9S15 18 12 21c-3-3-4.5-6-4.5-9S9 6 12 3z" />
+    </svg>
+  )
+}
+
+function VpnIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3l7 4v5c0 5-3.5 7.5-7 9-3.5-1.5-7-4-7-9V7l7-4z" />
+      <path d="M9 12h6" />
+      <path d="M12 9v6" />
+    </svg>
   )
 }
