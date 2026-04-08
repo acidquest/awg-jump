@@ -115,7 +115,7 @@ async def _sync_peer_stats() -> None:
 
 async def _node_health_check() -> None:
     """
-    Проверяет доступность всех задеплоенных нод.
+    Проверяет доступность нод со статусом online/degraded.
     При превышении NODE_FAILOVER_THRESHOLD неудач → failover.
     """
     from sqlalchemy import select
@@ -132,7 +132,6 @@ async def _node_health_check() -> None:
                     UpstreamNode.status.in_([
                         NodeStatus.online,
                         NodeStatus.degraded,
-                        NodeStatus.offline,
                     ]),
                     UpstreamNode.public_key.isnot(None),
                 )

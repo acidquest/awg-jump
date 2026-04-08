@@ -122,13 +122,20 @@ def _make_compose_content(awg_port: int) -> str:
     )
 
 
-def _measure_ping_latency(host: str) -> tuple[bool, Optional[float]]:
+def _get_latency_target(host: str, awg_address: Optional[str]) -> str:
+    """Prefer the internal AWG address for RTT checks; fall back to the external host."""
+    if awg_address:
+        return awg_address.split("/", 1)[0]
+    return host
+
+
+def _measure_ping_latency(target: str) -> tuple[bool, Optional[float]]:
     """Returns ICMP reachability and coarse RTT based on wall clock timing."""
     t0 = time.monotonic()
     rc_ping, _ = _run_cmd([
         "ping", "-c", "1", "-W",
         str(max(1, int(settings.node_health_check_timeout))),
-        host,
+        target,
     ])
     latency = (time.monotonic() - t0) * 1000
     return rc_ping == 0, latency if rc_ping == 0 else None
@@ -620,6 +627,7 @@ class NodeDeployer:
         async with AsyncSessionLocal() as session:
             node = await _get_node(node_id, session)
             host = node.host
+            awg_address = node.awg_address
             awg_port = node.awg_port
             is_active = node.is_active
             public_key = node.public_key
@@ -637,7 +645,8 @@ class NodeDeployer:
                  ).total_seconds() < _GRACE_PERIOD_SEC
         )
 
-        ping_alive, ping_latency = _measure_ping_latency(host)
+        latency_target = _get_latency_target(host, awg_address)
+        ping_alive, ping_latency = _measure_ping_latency(latency_target)
         result["latency_ms"] = ping_latency
 
         if is_active and public_key:
