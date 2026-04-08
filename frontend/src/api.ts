@@ -93,6 +93,8 @@ export const triggerGeoipUpdate = () => api.post('/geoip/update')
 export const getRoutingStatus = () => api.get('/routing/status')
 export const applyRouting = () => api.post('/routing/apply')
 export const resetRouting = () => api.post('/routing/reset')
+export const updateRoutingSettings = (data: { invert_geoip: boolean }) =>
+  api.put('/routing/settings', data)
 
 // ── DNS ───────────────────────────────────────────────────────────────────
 export const getDnsStatus = () => api.get('/dns/status')

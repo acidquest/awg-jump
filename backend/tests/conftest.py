@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from backend.database import Base, get_db
 from backend.models.interface import Interface, InterfaceMode
 from backend.models.geoip import GeoipSource
+from backend.models.routing_settings import RoutingSettings
 
 
 # ── In-memory БД ─────────────────────────────────────────────────────────
@@ -76,6 +77,12 @@ async def _create_test_db() -> None:
             prefix_count=100,
             last_updated=datetime.now(timezone.utc),
             created_at=datetime.now(timezone.utc),
+        ))
+        session.add(RoutingSettings(
+            id=1,
+            invert_geoip=False,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
         ))
         await session.commit()
 

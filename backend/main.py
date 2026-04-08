@@ -23,6 +23,7 @@ from backend.config import settings as _settings, validate_security_settings
 from backend.database import AsyncSessionLocal, engine, Base
 from backend.models.interface import Interface
 from backend.models.geoip import GeoipSource
+from backend.models.routing_settings import RoutingSettings
 from backend.models.upstream_node import NodeStatus, UpstreamNode
 from backend.routers import auth, backup, dns, geoip, interfaces, nodes, peers, routing, system
 from backend.scheduler import scheduler, setup_scheduler
@@ -131,6 +132,8 @@ async def _init_geoip_and_routing() -> None:
     # Policy routing
     try:
         async with AsyncSessionLocal() as session:
+            routing_settings = await session.get(RoutingSettings, 1)
+            invert_geoip = routing_settings.invert_geoip if routing_settings else False
             active_node = await session.scalar(
                 select(UpstreamNode).where(
                     UpstreamNode.is_active == True,  # noqa: E712
@@ -142,7 +145,7 @@ async def _init_geoip_and_routing() -> None:
         routing_svc.update_upstream_host_route(
             active_node.awg_address if active_node and active_node.awg_address else None
         )
-        routing_svc.setup_iptables()
+        routing_svc.setup_iptables(invert_geoip=invert_geoip)
         logger.info("Policy routing configured")
     except Exception as e:
         logger.error("Routing setup failed: %s", e)
