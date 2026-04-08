@@ -695,7 +695,7 @@ tr.active-node td:first-child { border-left: 2px solid var(--accent); }
 .routing-y-diagram {
   position: relative;
   display: grid;
-  grid-template-columns: 34px minmax(280px, 1fr);
+  grid-template-columns: 120px minmax(280px, 1fr);
   grid-template-rows: auto auto;
   column-gap: 14px;
   row-gap: 26px;
@@ -703,20 +703,36 @@ tr.active-node td:first-child { border-left: 2px solid var(--accent); }
   padding-left: 6px;
 }
 
-.routing-y-spine {
+.routing-y-svg {
   grid-column: 1;
   grid-row: 1 / span 2;
-  justify-self: center;
-  width: 2px;
+  width: 120px;
   height: 100%;
-  background: linear-gradient(180deg, rgba(0, 212, 170, 0.18), var(--accent), rgba(255, 165, 2, 0.28));
+  overflow: visible;
+}
+
+.routing-y-path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.routing-y-arrow {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .routing-branch {
-  display: contents;
+  display: block;
 }
 
 .routing-branch-content {
+  display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 10px;
@@ -724,59 +740,13 @@ tr.active-node td:first-child { border-left: 2px solid var(--accent); }
 }
 
 .routing-branch-local {
-  grid-column: 1 / span 2;
+  grid-column: 2;
   grid-row: 1;
 }
 
 .routing-branch-vpn {
-  grid-column: 1 / span 2;
+  grid-column: 2;
   grid-row: 2;
-}
-
-.routing-branch-connector {
-  position: relative;
-  width: 34px;
-  height: 100%;
-  align-self: stretch;
-}
-
-.routing-branch-connector::before {
-  content: '';
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 28px;
-  height: 2px;
-  background: linear-gradient(90deg, var(--border-2), var(--accent));
-  transform-origin: left center;
-}
-
-.routing-branch-connector::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  width: 8px;
-  height: 8px;
-  border-top: 2px solid var(--accent);
-  border-right: 2px solid var(--accent);
-}
-
-.routing-branch-connector-up::before {
-  transform: rotate(-34deg);
-}
-
-.routing-branch-connector-up::after {
-  left: calc(50% + 20px);
-  transform: translateY(-11px) rotate(-45deg);
-}
-
-.routing-branch-connector-down::before {
-  transform: rotate(34deg);
-}
-
-.routing-branch-connector-down::after {
-  left: calc(50% + 20px);
-  transform: translateY(3px) rotate(45deg);
 }
 
 .routing-branch-label {
@@ -994,7 +964,7 @@ tr.active-node td:first-child { border-left: 2px solid var(--accent); }
 
   .routing-y-diagram {
     min-width: 100%;
-    grid-template-columns: 26px minmax(240px, 1fr);
+    grid-template-columns: 90px minmax(240px, 1fr);
     padding-left: 18px;
   }
 
@@ -1002,8 +972,8 @@ tr.active-node td:first-child { border-left: 2px solid var(--accent); }
     min-width: 260px;
   }
 
-  .routing-branch-connector {
-    width: 26px;
+  .routing-y-svg {
+    width: 90px;
   }
 }
 

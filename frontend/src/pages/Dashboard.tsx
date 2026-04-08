@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getSystemStatus, restartRouting, triggerGeoipUpdate } from '../api'
+import { getRoutingStatus, getSystemStatus, restartRouting, triggerGeoipUpdate } from '../api'
 import { RoutingStatus, SystemStatus } from '../types'
 import StatusBadge from '../components/StatusBadge'
 
@@ -51,6 +51,12 @@ export default function Dashboard() {
     refetchInterval: 30_000,
   })
 
+  const { data: routingData } = useQuery<RoutingStatus>({
+    queryKey: ['routing'],
+    queryFn: () => getRoutingStatus().then((r) => r.data),
+    refetchInterval: 30_000,
+  })
+
   const restartMut = useMutation({
     mutationFn: restartRouting,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['system-status'] }),
@@ -67,7 +73,7 @@ export default function Dashboard() {
   const awg0 = s.interfaces.find((i) => i.name === 'awg0')
   const awg1 = s.interfaces.find((i) => i.name === 'awg1')
   const totalPrefixes = s.geoip.reduce((a, g) => a + (g.prefix_count || 0), 0)
-  const routing = s.routing
+  const routing = routingData ?? s.routing
 
   return (
     <>
@@ -278,10 +284,15 @@ function RoutingDiagram({
         />
 
         <div className="routing-y-diagram">
-          <div className="routing-y-spine" />
+          <svg className="routing-y-svg" viewBox="0 0 120 180" preserveAspectRatio="none" aria-hidden="true">
+            <path d="M16 90 H54" className="routing-y-path" />
+            <path d="M54 90 L104 42" className="routing-y-path" />
+            <path d="M54 90 L104 138" className="routing-y-path" />
+            <path d="M95 33 L104 42 L95 51" className="routing-y-arrow" />
+            <path d="M95 129 L104 138 L95 147" className="routing-y-arrow" />
+          </svg>
 
           <div className="routing-branch routing-branch-local">
-            <div className="routing-branch-connector routing-branch-connector-up" />
             <div className="routing-branch-content">
               <div className="routing-branch-label">{localZoneLabel}</div>
               <TrafficNode
@@ -298,7 +309,6 @@ function RoutingDiagram({
           </div>
 
           <div className="routing-branch routing-branch-vpn">
-            <div className="routing-branch-connector routing-branch-connector-down" />
             <div className="routing-branch-content">
               <div className="routing-branch-label">{vpnZoneLabel}</div>
               <TrafficNode
