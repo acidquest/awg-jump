@@ -32,6 +32,7 @@ import backend.services.dns_manager as dns_mgr
 import backend.services.geoip_fetcher as geoip_fetcher
 import backend.services.ipset_manager as ipset_mgr
 import backend.services.routing as routing_svc
+from backend.services.system_metrics import collect_system_metrics
 
 logging.basicConfig(
     level=logging.INFO,
@@ -190,6 +191,13 @@ async def lifespan(app: FastAPI):
 
     # Step 7: Scheduler
     setup_scheduler()
+
+    # Step 8: Initial system metrics sample
+    try:
+        async with AsyncSessionLocal() as session:
+            await collect_system_metrics(session)
+    except Exception as e:
+        logger.error("Initial system metrics sample failed: %s", e)
 
     yield
 

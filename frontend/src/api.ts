@@ -33,6 +33,8 @@ export const logout = () => api.post('/auth/logout')
 
 // ── System ────────────────────────────────────────────────────────────────
 export const getSystemStatus = () => api.get('/system/status')
+export const getSystemMetrics = (period: '1h' | '24h' = '1h') =>
+  api.get('/system/metrics', { params: { period } })
 export const restartRouting = () => api.post('/system/restart-routing')
 export const getLogs = (service = 'uvicorn', lines = 200) =>
   api.get('/system/logs', { params: { service, lines } })
