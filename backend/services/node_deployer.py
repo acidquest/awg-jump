@@ -644,12 +644,14 @@ class NodeDeployer:
             rc, output = _run_cmd(["awg", "show", "awg1", "dump"])
             if rc == 0:
                 now_ts = int(time.time())
+                matched_peer = False
                 for line in output.splitlines():
                     parts = line.strip().split("\t")
                     if len(parts) < 7:
                         continue
                     if parts[0] != public_key:
                         continue
+                    matched_peer = True
                     handshake = int(parts[4]) if parts[4].isdigit() else 0
                     rx = int(parts[5]) if parts[5].isdigit() else 0
                     tx = int(parts[6]) if parts[6].isdigit() else 0
@@ -677,6 +679,25 @@ class NodeDeployer:
                         node_obj.updated_at = datetime.now(timezone.utc)
                         await session.commit()
                     break
+
+                if not matched_peer:
+                    logger.warning(
+                        "[health] active node %d peer not found in awg1 dump; using ICMP result only",
+                        node_id,
+                    )
+                    result["alive"] = ping_alive or in_grace
+                    async with AsyncSessionLocal() as session:
+                        node_obj = await _get_node(node_id, session)
+                        node_obj.latency_ms = ping_latency
+                        if result["alive"]:
+                            if ping_alive:
+                                node_obj.last_seen = datetime.now(timezone.utc)
+                            if node_obj.status in (NodeStatus.degraded, NodeStatus.offline):
+                                node_obj.status = NodeStatus.online
+                        else:
+                            node_obj.status = NodeStatus.degraded
+                        node_obj.updated_at = datetime.now(timezone.utc)
+                        await session.commit()
             else:
                 # awg show не работает — может awg1 упал
                 logger.warning("[health] awg show awg1 dump failed (rc=%d)", rc)
