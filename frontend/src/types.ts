@@ -158,3 +158,24 @@ export interface SystemStatus {
     last_seen: string | null
   } | null
 }
+
+export interface RoutingStatus {
+  rule_local: boolean
+  rule_vpn: boolean
+  route_local: string | null
+  route_vpn: string | null
+  prerouting_geoip: boolean
+  prerouting_other: boolean
+  output_geoip: boolean
+  output_other: boolean
+  nat_eth0: boolean
+  nat_awg1: boolean
+  invert_geoip: boolean
+  geoip_mark: string
+  other_mark: string
+  geoip_destination: 'local' | 'vpn'
+  other_destination: 'local' | 'vpn'
+  physical_iface: string
+  ip_rules: string[]
+  ip_routes: Record<string, string[]>
+}
