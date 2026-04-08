@@ -175,20 +175,20 @@ function RegenConfirmModal({ iface, onClose, onConfirm }: { iface: Interface; on
           </svg>
           <div style={{ fontSize: 13, lineHeight: 1.6 }}>
             <div style={{ fontWeight: 600, marginBottom: 4 }}>
-              После генерации новых параметров все клиенты потеряют соединение.
+              After generating new parameters, all clients will lose connectivity.
             </div>
             <div className="text-muted">
-              Новые параметры обфускации должны совпадать на обоих концах туннеля.
-              Вам потребуется заново раздать конфиги всем клиентам интерфейса <span className="text-mono">{iface.name}</span> и попросить их переподключиться.
+              The new obfuscation parameters must match on both ends of the tunnel.
+              You will need to redistribute configs to all clients of interface <span className="text-mono">{iface.name}</span> and ask them to reconnect.
             </div>
           </div>
         </div>
         <div className="text-muted" style={{ fontSize: 13 }}>
-          Продолжить генерацию новых параметров для <span className="text-mono">{iface.name}</span>?
+          Continue generating new parameters for <span className="text-mono">{iface.name}</span>?
         </div>
       </div>
       <div className="modal-actions">
-        <button className="btn btn-secondary" onClick={onClose}>Отмена</button>
+        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
         <button className="btn btn-danger" onClick={onConfirm}>Regenerate</button>
       </div>
     </Modal>
