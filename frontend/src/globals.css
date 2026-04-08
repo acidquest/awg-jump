@@ -638,3 +638,73 @@ tr.active-node td:first-child { border-left: 2px solid var(--accent); }
   font-size: 12px;
   margin-bottom: 14px;
 }
+
+/* Login */
+.login-shell {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top, rgba(0, 212, 170, 0.12), transparent 34%),
+    linear-gradient(180deg, #08131b 0%, #091017 48%, #060b10 100%);
+}
+
+.login-shell::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(0, 212, 170, 0.03) 0, rgba(0, 212, 170, 0.03) 1px, transparent 1px, transparent 100%),
+    linear-gradient(180deg, rgba(0, 212, 170, 0.02) 0, rgba(0, 212, 170, 0.02) 1px, transparent 1px, transparent 100%);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(circle at center, black 38%, transparent 90%);
+  pointer-events: none;
+}
+
+.login-rain {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.login-rain-column {
+  position: absolute;
+  top: -35%;
+  color: rgba(78, 255, 224, 0.9);
+  text-shadow:
+    0 0 8px rgba(0, 212, 170, 0.35),
+    0 0 20px rgba(0, 212, 170, 0.15);
+  font-family: var(--font-mono);
+  line-height: 1.08;
+  letter-spacing: 1px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: none;
+  animation-name: login-rain-fall;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+.login-panel {
+  position: relative;
+  z-index: 1;
+}
+
+.login-panel .card {
+  backdrop-filter: blur(10px);
+  background: rgba(15, 24, 31, 0.82);
+  box-shadow: 0 30px 70px rgba(0, 0, 0, 0.32);
+}
+
+@keyframes login-rain-fall {
+  from {
+    transform: translate3d(0, -8%, 0);
+  }
+  to {
+    transform: translate3d(0, 148vh, 0);
+  }
+}

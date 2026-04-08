@@ -120,7 +120,7 @@ export default function Dashboard() {
                 <NodeStatusDot status={s.active_node.status} />
                 {' '}{s.active_node.name}
               </div>
-              <div className="stat-label">
+              <div className="stat-label" style={{ marginTop: 8 }}>
                 {fmtLatency(s.active_node.latency_ms, s.active_node.status)}
               </div>
             </>

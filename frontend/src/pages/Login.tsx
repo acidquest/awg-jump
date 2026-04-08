@@ -2,12 +2,32 @@ import { useState, FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { login } from '../api'
 
+const MATRIX_GLYPHS = '01AWGJUMP<>[]{}/*+-'
+
+function makeRainStream(length: number, offset: number) {
+  return Array.from({ length }, (_, index) => {
+    const charIndex = (index * 7 + offset * 11) % MATRIX_GLYPHS.length
+    return MATRIX_GLYPHS[charIndex]
+  }).join('')
+}
+
 export default function Login() {
   const navigate = useNavigate()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [streams] = useState(() =>
+    Array.from({ length: 26 }, (_, index) => ({
+      id: index,
+      text: makeRainStream(30 + (index % 6) * 6, index),
+      duration: 10 + (index % 5) * 2,
+      delay: (index % 7) * -1.6,
+      left: `${index * 3.9}%`,
+      opacity: 0.16 + (index % 4) * 0.05,
+      size: 12 + (index % 3),
+    }))
+  )
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -25,16 +45,26 @@ export default function Login() {
   }
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'var(--bg)',
-      }}
-    >
-      <div style={{ width: 360 }}>
+    <div className="login-shell">
+      <div className="login-rain" aria-hidden="true">
+        {streams.map((stream) => (
+          <div
+            key={stream.id}
+            className="login-rain-column"
+            style={{
+              left: stream.left,
+              animationDuration: `${stream.duration}s`,
+              animationDelay: `${stream.delay}s`,
+              opacity: stream.opacity,
+              fontSize: stream.size,
+            }}
+          >
+            {stream.text}
+          </div>
+        ))}
+      </div>
+
+      <div className="login-panel" style={{ width: 360 }}>
         <div style={{ marginBottom: 28, textAlign: 'center' }}>
           <div
             style={{
