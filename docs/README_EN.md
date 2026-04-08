@@ -261,7 +261,7 @@ View the current policy routing state:
 
 ### Backup
 
-- Download ZIP archive containing `config.db` (all data) + `env_snapshot.json` + `wg_configs/`.
+- Download ZIP archive containing `config.db` (all data) + `env_snapshot.json` + `wg_configs/` + `geoip_cache/`.
 - Upload archive to restore (drag & drop or file browser).
 - After restore — restart container: `docker compose restart awg-jump`.
 
@@ -308,6 +308,15 @@ AmneziaWG is a WireGuard fork with Junk packet support and header replacement to
    - dst not in `geoip_local` → `fwmark VPN` → table 200 → `awg1`
 6. iptables mangle **OUTPUT** marks the container's own traffic (DNS queries etc.) by the same rules.
 7. `iptables nat POSTROUTING MASQUERADE` provides NAT on both outgoing interfaces.
+
+### Routing Inversion
+
+The **Routing** page exposes the `invert_geoip` toggle.
+
+- `invert_geoip = false` (Normal): the GeoIP local zone goes directly through `eth0`, while all other traffic goes through `awg1`.
+- `invert_geoip = true` (Inverted): the logic is reversed, so the GeoIP local zone goes through `awg1`, while all other traffic goes directly through `eth0`.
+
+This affects both client traffic arriving from `awg0` and the container's own outbound traffic, including `dnsmasq` DNS queries.
 
 ### Updating GeoIP
 
@@ -457,10 +466,10 @@ APScheduler checks every `NODE_HEALTH_CHECK_INTERVAL` seconds:
 | `config.db` | All data: interfaces, keys, obfuscation params, peers, nodes, GeoIP sources, routing rules, **split DNS domains and DNS zone settings** |
 | `env_snapshot.json` | Reference snapshot of public parameters (no passwords) |
 | `wg_configs/` | Generated WireGuard config files |
+| `geoip_cache/` | Cached GeoIP CIDR lists for fast ipset recovery after restart |
 
 **Not included:**
 - TLS certificates (auto-generated on startup)
-- GeoIP cache (reloaded via cron)
 - `.env` file (environment passwords and keys)
 
 ### Export

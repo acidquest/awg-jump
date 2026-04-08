@@ -1,8 +1,8 @@
-"""Initial schema — all tables
+"""Baseline schema — all tables
 
 Revision ID: 0001
 Revises:
-Create Date: 2026-04-06
+Create Date: 2026-04-08
 
 """
 from typing import Sequence, Union
@@ -68,6 +68,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("name", sa.String(128), nullable=False, server_default=""),
+        sa.Column("private_key", sa.String(64), nullable=True),
         sa.Column("public_key", sa.String(64), unique=True, nullable=False),
         sa.Column("preshared_key", sa.String(64), nullable=True),
         sa.Column("allowed_ips", sa.String(256), nullable=False, server_default=""),
@@ -86,9 +87,10 @@ def upgrade() -> None:
         "geoip_sources",
         sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
         sa.Column("name", sa.String(128), nullable=False),
+        sa.Column("display_name", sa.String(128), nullable=False, server_default=""),
         sa.Column("url", sa.String(512), nullable=False),
         sa.Column("country_code", sa.String(8), nullable=False, server_default="ru"),
-        sa.Column("ipset_name", sa.String(64), nullable=False, server_default="geoip_ru"),
+        sa.Column("ipset_name", sa.String(64), nullable=False, server_default="geoip_local"),
         sa.Column("last_updated", sa.DateTime, nullable=True),
         sa.Column("prefix_count", sa.Integer, nullable=True, server_default="0"),
         sa.Column("enabled", sa.Boolean, nullable=False, server_default="1"),
@@ -103,8 +105,9 @@ def upgrade() -> None:
         sa.Column("host", sa.String(256), nullable=False),
         sa.Column("ssh_port", sa.Integer, nullable=False, server_default="22"),
         sa.Column("awg_port", sa.Integer, nullable=False, server_default="51821"),
-        sa.Column("awg_address", sa.String(64), nullable=False),
+        sa.Column("awg_address", sa.String(64), nullable=True),
         sa.Column("public_key", sa.String(64), nullable=True),
+        sa.Column("private_key", sa.String(64), nullable=True),
         sa.Column("preshared_key", sa.String(64), nullable=True),
         sa.Column(
             "status",
@@ -147,6 +150,31 @@ def upgrade() -> None:
         sa.Column("log_output", sa.Text, nullable=True, server_default=""),
     )
 
+    # ── dns_domains ──────────────────────────────────────────────────────
+    op.create_table(
+        "dns_domains",
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column("domain", sa.String(253), unique=True, nullable=False),
+        sa.Column(
+            "upstream",
+            sa.Enum("yandex", "default", name="dnsupstream"),
+            nullable=False,
+            server_default="yandex",
+        ),
+        sa.Column("enabled", sa.Boolean, nullable=False, server_default="1"),
+        sa.Column("created_at", sa.DateTime, nullable=True),
+    )
+
+    # ── dns_zone_settings ────────────────────────────────────────────────
+    op.create_table(
+        "dns_zone_settings",
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column("zone", sa.String(length=16), nullable=False, unique=True),
+        sa.Column("dns_servers", sa.Text(), nullable=False),
+        sa.Column("description", sa.String(length=256), nullable=False, server_default=""),
+        sa.Column("updated_at", sa.DateTime(), nullable=False),
+    )
+
     # ── routing_rules ────────────────────────────────────────────────────
     op.create_table(
         "routing_rules",
@@ -162,11 +190,36 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime, nullable=True),
     )
 
+    # ── routing_settings ─────────────────────────────────────────────────
+    op.create_table(
+        "routing_settings",
+        sa.Column("id", sa.Integer(), primary_key=True, nullable=False),
+        sa.Column("invert_geoip", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("created_at", sa.DateTime(), nullable=True),
+        sa.Column("updated_at", sa.DateTime(), nullable=True),
+    )
+
+    op.execute(
+        "INSERT INTO dns_zone_settings (zone, dns_servers, description, updated_at) "
+        "VALUES "
+        "('local', '[\"77.88.8.8\"]', 'DNS for local routing zone (RU/etc)', CURRENT_TIMESTAMP), "
+        "('vpn', '[\"1.1.1.1\", \"8.8.8.8\"]', 'DNS for VPN routing zone', CURRENT_TIMESTAMP)"
+    )
+
+    op.execute(
+        "INSERT INTO routing_settings (id, invert_geoip, created_at, updated_at) "
+        "VALUES (1, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+    )
+
 
 def downgrade() -> None:
+    op.drop_table("routing_settings")
     op.drop_table("routing_rules")
+    op.drop_table("dns_zone_settings")
+    op.drop_table("dns_domains")
     op.drop_table("deploy_logs")
     op.drop_table("upstream_nodes")
     op.drop_table("geoip_sources")
     op.drop_table("peers")
     op.drop_table("interfaces")
+    op.execute("DROP TYPE IF EXISTS dnsupstream")

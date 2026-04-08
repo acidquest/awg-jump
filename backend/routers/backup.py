@@ -1,11 +1,11 @@
 """
-Backup router — экспорт/импорт ZIP-архива с config.db и метаданными.
+Backup router — экспорт/импорт ZIP-архива с config.db и runtime-данными.
 
 Содержимое архива:
-  config.db              — база данных SQLite (все таблицы: interfaces, peers,
-                           upstream_nodes, geoip_sources, routing_rules, dns_domains)
+  config.db              — база данных SQLite (все таблицы приложения)
   env_snapshot.json      — публичные параметры конфигурации (без паролей)
-  wg_configs/            — резервные копии конфигов (если есть)
+  wg_configs/            — сгенерированные WG-конфиги
+  geoip_cache/           — локальный кэш GeoIP-префиксов
 """
 import io
 import json
@@ -66,6 +66,59 @@ def _env_snapshot() -> dict:
     }
 
 
+def _add_dir_to_zip(zf: zipfile.ZipFile, src_dir: str, arc_prefix: str) -> None:
+    if not os.path.isdir(src_dir):
+        return
+    for fname in sorted(os.listdir(src_dir)):
+        fpath = os.path.join(src_dir, fname)
+        if os.path.isfile(fpath):
+            zf.write(fpath, arcname=f"{arc_prefix}/{fname}")
+
+
+def _validate_zip(data: bytes) -> zipfile.ZipFile:
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise ValueError(f"Invalid ZIP file: {exc}") from exc
+
+    names = set(zf.namelist())
+    if "config.db" not in names:
+        zf.close()
+        raise ValueError("Archive must contain config.db")
+    return zf
+
+
+def _safe_archive_file_names(zf: zipfile.ZipFile, prefix: str) -> list[tuple[str, str]]:
+    files: list[tuple[str, str]] = []
+    for name in zf.namelist():
+        if not name.startswith(f"{prefix}/") or name.endswith("/"):
+            continue
+        fname = os.path.basename(name)
+        if not fname or fname.startswith(".") or "/" in fname or "\\" in fname:
+            logger.warning("Skipping suspicious archive entry: %s", name)
+            continue
+        files.append((name, fname))
+    return files
+
+
+def _replace_directory_from_archive(
+    zf: zipfile.ZipFile,
+    archive_prefix: str,
+    dest_dir: str,
+) -> None:
+    os.makedirs(dest_dir, exist_ok=True)
+
+    for fname in os.listdir(dest_dir):
+        fpath = os.path.join(dest_dir, fname)
+        if os.path.isfile(fpath):
+            os.unlink(fpath)
+
+    for arcname, fname in _safe_archive_file_names(zf, archive_prefix):
+        dest = os.path.join(dest_dir, fname)
+        with zf.open(arcname) as src, open(dest, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+
+
 def _build_zip_bytes() -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -84,12 +137,9 @@ def _build_zip_bytes() -> bytes:
         # env_snapshot.json
         zf.writestr("env_snapshot.json", json.dumps(_env_snapshot(), indent=2, default=str))
 
-        # wg_configs/ (если есть)
-        if os.path.isdir(settings.wg_config_dir):
-            for fname in os.listdir(settings.wg_config_dir):
-                fpath = os.path.join(settings.wg_config_dir, fname)
-                if os.path.isfile(fpath):
-                    zf.write(fpath, arcname=f"wg_configs/{fname}")
+        # runtime-файлы, которые нужны после восстановления без повторной генерации
+        _add_dir_to_zip(zf, settings.wg_config_dir, "wg_configs")
+        _add_dir_to_zip(zf, settings.geoip_cache_dir, "geoip_cache")
 
     return buf.getvalue()
 
@@ -155,10 +205,13 @@ async def import_backup(
     data = await file.read()
 
     try:
-        with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            if "config.db" not in zf.namelist():
-                raise HTTPException(status_code=400, detail="Archive must contain config.db")
+        zf = _validate_zip(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    tmp_db_path = settings.db_path + ".import"
+    try:
+        with zf:
             # Бэкап текущей БД
             if os.path.exists(settings.db_path):
                 bak_path = settings.db_path + ".bak"
@@ -167,31 +220,22 @@ async def import_backup(
                 except Exception as e:
                     logger.warning("Could not back up current db: %s", e)
 
-            # Заменить config.db
+            # Атомарно заменить config.db через временный файл
             db_dir = os.path.dirname(settings.db_path)
             os.makedirs(db_dir, exist_ok=True)
-            with zf.open("config.db") as src, open(settings.db_path, "wb") as dst:
-                dst.write(src.read())
+            with zf.open("config.db") as src, open(tmp_db_path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            os.replace(tmp_db_path, settings.db_path)
 
-            # Восстановить wg_configs/ — только безопасные имена файлов
-            os.makedirs(settings.wg_config_dir, exist_ok=True)
-            for name in zf.namelist():
-                if name.startswith("wg_configs/") and not name.endswith("/"):
-                    fname = os.path.basename(name)
-                    if not fname or fname.startswith(".") or "/" in fname or "\\" in fname:
-                        logger.warning("Skipping suspicious archive entry: %s", name)
-                        continue
-                    dest = os.path.join(settings.wg_config_dir, fname)
-                    with zf.open(name) as src, open(dest, "wb") as dst:
-                        dst.write(src.read())
-
-    except zipfile.BadZipFile as e:
-        raise HTTPException(status_code=400, detail=f"Invalid ZIP file: {e}")
+            _replace_directory_from_archive(zf, "wg_configs", settings.wg_config_dir)
+            _replace_directory_from_archive(zf, "geoip_cache", settings.geoip_cache_dir)
     except HTTPException:
         raise
     except Exception as e:
         # Откат если что-то пошло не так
         bak = settings.db_path + ".bak"
+        if os.path.exists(tmp_db_path):
+            os.unlink(tmp_db_path)
         if os.path.exists(bak):
             shutil.copy2(bak, settings.db_path)
         raise HTTPException(status_code=500, detail=f"Import failed: {e}")
