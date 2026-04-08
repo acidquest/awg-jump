@@ -24,9 +24,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="layout">
       <aside className="sidebar">
-        <div className="sidebar-logo">
-          <h1>AWG Jump</h1>
-          <span>AmneziaWG Gateway</span>
+        <div className="sidebar-logo" aria-label="AWG Jump">
+          <FaviconMark />
         </div>
         <nav className="sidebar-nav">
           {NAV.map(({ to, label, icon: Icon }) => (
@@ -54,6 +53,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 }
 
 // ── Inline SVG icons ──────────────────────────────────────────────────────
+function FaviconMark() {
+  return (
+    <svg className="sidebar-mark" viewBox="0 0 64 64" aria-hidden="true">
+      <rect width="64" height="64" rx="14" fill="#0f172a" />
+      <path d="M18 18h11l3 8 3-8h11L35 46h-6L18 18Z" fill="#22c55e" />
+      <path d="M29 38h6l-3 8-3-8Z" fill="#38bdf8" />
+    </svg>
+  )
+}
+
 function GridIcon({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

@@ -81,23 +81,19 @@ input, select, textarea {
 }
 
 .sidebar-logo {
-  padding: 20px 16px 16px;
+  padding: 16px;
   border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
 }
 
-.sidebar-logo h1 {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--accent);
-  font-family: var(--font-mono);
-  letter-spacing: 1px;
-}
-
-.sidebar-logo span {
-  font-size: 11px;
-  color: var(--text-3);
+.sidebar-mark {
+  width: 28px;
+  height: 28px;
   display: block;
-  margin-top: 2px;
+  border-radius: 7px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
 }
 
 .sidebar-nav {
