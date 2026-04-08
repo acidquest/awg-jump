@@ -17,6 +17,7 @@ from backend.models.upstream_node import UpstreamNode
 from backend.models.upstream_node import NodeStatus
 from backend.models.geoip import GeoipSource
 from backend.routers.auth import get_current_user
+from backend.config import settings
 import backend.services.awg as awg_svc
 import backend.services.ipset_manager as ipset_mgr
 import backend.services.routing as routing_svc
@@ -99,6 +100,7 @@ async def get_status(
             "id": active_node.id,
             "name": active_node.name,
             "host": active_node.host,
+            "external_ip": active_node.host,
             "status": active_node.status.value
             if hasattr(active_node.status, "value")
             else active_node.status,
@@ -115,6 +117,7 @@ async def get_status(
         "ipsets": ipset_list,
         "routing": routing_status,
         "active_node": active_node_out,
+        "local_external_ip": settings.server_host or None,
     }
 
 

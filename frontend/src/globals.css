@@ -671,88 +671,112 @@ tr.active-node td:first-child { border-left: 2px solid var(--accent); }
   max-width: 720px;
 }
 
-.routing-diagram-intake {
+.routing-diagram-main {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
   padding: 14px;
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--border);
   border-radius: 10px;
-  margin-bottom: 16px;
   overflow-x: auto;
 }
 
-.routing-lanes {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.routing-lane {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 14px;
-  background: var(--bg-2);
-}
-
-.routing-lane-geoip {
-  background: linear-gradient(180deg, rgba(0, 212, 170, 0.08), rgba(0, 212, 170, 0.02));
-}
-
-.routing-lane-other {
-  background: linear-gradient(180deg, rgba(255, 165, 2, 0.08), rgba(255, 165, 2, 0.02));
-}
-
-.routing-lane-header,
-.routing-lane-footer,
-.routing-lane-badges,
+.routing-branch-split,
+.routing-branch,
+.routing-branch-meta,
 .traffic-node,
 .traffic-arrow {
   display: flex;
   align-items: center;
 }
 
-.routing-lane-header {
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
+.routing-branch-split {
+  flex-direction: column;
+  gap: 18px;
+  min-width: 430px;
+  padding-left: 6px;
 }
 
-.routing-lane-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.routing-lane-subtitle {
-  font-size: 12px;
-  color: var(--text-2);
-  margin-top: 4px;
-}
-
-.routing-lane-badges {
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.routing-lane-flow {
-  display: flex;
-  align-items: stretch;
+.routing-branch {
+  position: relative;
+  flex-direction: column;
+  align-items: flex-start;
   gap: 10px;
-  overflow-x: auto;
-  padding-bottom: 4px;
+  min-width: 300px;
 }
 
-.routing-lane-footer {
-  justify-content: space-between;
+.routing-branch::before {
+  content: '';
+  position: absolute;
+  left: -18px;
+  top: -30px;
+  width: 18px;
+  height: 60px;
+  border-left: 2px solid var(--border-2);
+}
+
+.routing-branch::after {
+  content: '';
+  position: absolute;
+  left: -18px;
+  top: 30px;
+  width: 18px;
+  border-top: 2px solid var(--accent);
+}
+
+.routing-branch-local::before {
+  border-top-left-radius: 14px;
+}
+
+.routing-branch-vpn::before {
+  border-bottom-left-radius: 14px;
+}
+
+.routing-branch-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+}
+
+.routing-branch-line {
+  position: absolute;
+  left: -1px;
+  top: 38px;
+  width: 28px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--border-2), var(--accent));
+}
+
+.routing-branch-line::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-top: 2px solid var(--accent);
+  border-right: 2px solid var(--accent);
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.routing-branch-meta {
   gap: 12px;
-  margin-top: 12px;
+  flex-wrap: wrap;
   color: var(--text-2);
   font-size: 11px;
   font-family: var(--font-mono);
-  text-transform: uppercase;
+}
+
+.routing-branch-local .traffic-node {
+  border-color: rgba(0, 212, 170, 0.45);
+}
+
+.routing-branch-vpn .traffic-node {
+  border-color: rgba(255, 165, 2, 0.45);
 }
 
 .traffic-node {
@@ -767,16 +791,6 @@ tr.active-node td:first-child { border-left: 2px solid var(--accent); }
 .traffic-node-accent {
   border-color: rgba(0, 212, 170, 0.45);
   box-shadow: inset 0 0 0 1px rgba(0, 212, 170, 0.1);
-}
-
-.traffic-node-geoip .traffic-node-icon {
-  background: rgba(0, 212, 170, 0.14);
-  color: var(--accent);
-}
-
-.traffic-node-other .traffic-node-icon {
-  background: rgba(255, 165, 2, 0.14);
-  color: var(--warning);
 }
 
 .traffic-node-icon {
@@ -909,8 +923,8 @@ tr.active-node td:first-child { border-left: 2px solid var(--accent); }
   }
 
 @media (max-width: 1100px) {
-  .routing-lanes {
-    grid-template-columns: 1fr;
+  .routing-diagram-main {
+    flex-direction: column;
   }
 }
 
@@ -922,15 +936,22 @@ tr.active-node td:first-child { border-left: 2px solid var(--accent); }
   }
 
   .routing-diagram-header,
-  .routing-lane-header,
-  .routing-lane-footer {
+  .routing-diagram-main {
     flex-direction: column;
     align-items: flex-start;
   }
 
-  .routing-diagram-intake,
-  .routing-lane-flow {
+  .routing-diagram-main {
     padding-bottom: 8px;
+  }
+
+  .routing-branch-split {
+    min-width: 100%;
+    padding-left: 18px;
+  }
+
+  .routing-branch {
+    min-width: 260px;
   }
 }
 
