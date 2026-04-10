@@ -271,6 +271,59 @@ https://<SERVER_HOST>:443
 
 AmneziaWG — форк WireGuard с поддержкой Junk-пакетов и заменой заголовков для обхода DPI.
 
+### Рекомендуемый режим для первой входящей ноды
+
+Для первой входящей ноды `awg-jump` и для upstream-нод на VPS предпочтителен kernel mode на хостовой машине, если установка kernel module возможна. Этот режим на практике стабильнее, чем userspace `amneziawg-go`, и избавляет от части проблем с `tun`, userspace daemon и ложной детекцией поддержки ядра.
+
+Перед установкой модуля обязательно нужно установить headers именно для текущего ядра:
+
+```bash
+apt-get update
+apt-get install --yes linux-headers-$(uname -r) dkms build-essential
+```
+
+После этого можно установить `amneziawg` и `amneziawg-tools`.
+
+Debian 13 (Trixie, deb822):
+
+```bash
+sudo apt-get install --yes gnupg2 apt-transport-https
+sudo apt-get install --yes linux-headers-$(uname -r) dkms build-essential
+gpg --keyserver keyserver.ubuntu.com --recv-keys 75c9dd72c799870e310542e24166f2c257290828
+gpg --export 75c9dd72c799870e310542e24166f2c257290828 | sudo tee /usr/share/keyrings/amnezia.gpg > /dev/null
+sudo tee /etc/apt/sources.list.d/amnezia.sources <<EOF
+Types: deb deb-src
+URIs: https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu
+Suites: focal
+Components: main
+Signed-By: /usr/share/keyrings/amnezia.gpg
+EOF
+sudo apt-get update
+sudo apt-get install --yes amneziawg amneziawg-tools
+```
+
+Debian 12 (Bookworm, traditional format):
+
+```bash
+sudo apt-get install --yes gnupg2 apt-transport-https
+sudo apt-get install --yes linux-headers-$(uname -r) dkms build-essential
+gpg --keyserver keyserver.ubuntu.com --recv-keys 75c9dd72c799870e310542e24166f2c257290828
+gpg --export 75c9dd72c799870e310542e24166f2c257290828 | sudo tee /usr/share/keyrings/amnezia.gpg > /dev/null
+echo "deb [signed-by=/usr/share/keyrings/amnezia.gpg] https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu focal main" | sudo tee -a /etc/apt/sources.list.d/amnezia.list
+echo "deb-src [signed-by=/usr/share/keyrings/amnezia.gpg] https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu focal main" | sudo tee -a /etc/apt/sources.list.d/amnezia.list
+sudo apt-get update
+sudo apt-get install --yes amneziawg amneziawg-tools
+```
+
+Проверка после установки:
+
+```bash
+sudo modprobe amneziawg
+ip link add awg_probe type amneziawg && ip link del awg_probe
+```
+
+Для upstream-ноды готовые скрипты лежат в `node/scripts/` и при SSH-деплое попадают на хост в `/opt/awg-node/scripts/`.
+
 ### Параметры
 
 | Параметр | Сторона | Описание |

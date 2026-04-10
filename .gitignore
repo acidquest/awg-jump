@@ -35,3 +35,6 @@ frontend/.vite/
 
 # Логи
 *.log
+
+# Dev docs
+dev_docs/

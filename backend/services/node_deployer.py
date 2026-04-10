@@ -321,6 +321,11 @@ class NodeDeployer:
                     proc.stdin.write_eof()
                     await proc.wait()
 
+                await conn.run(
+                    "find /opt/awg-node -path '/opt/awg-node/scripts/*.sh' -o -name entrypoint.sh | xargs -r chmod +x",
+                    check=False,
+                )
+
                 # ── Шаг 8: запись .env ────────────────────────────────────
                 await emit("Writing .env to remote node...")
 
