@@ -3,7 +3,7 @@
 `awg-jump` это контейнеризированный jump-сервер на базе AmneziaWG с веб-панелью, GeoIP policy routing и деплоем upstream-нод по SSH. В репозитории два Docker-образа:
 
 - `awg-jump`: FastAPI + SPA + routing + failover + SSH deployer.
-- `awg-node`: минималистичный upstream-узел с `amneziawg-go`.
+- `awg-node`: минималистичный upstream-узел с AmneziaWG. Предпочтительный режим на VPS-хосте ноды — kernel module `amneziawg`; он стабильнее, чем userspace `amneziawg-go`.
 
 ## Быстрый старт
 
@@ -33,9 +33,11 @@ API контейнера `awg-jump` также биндуется на `127.0.0.
 `awg-node` предназначен для удалённых VPS, которые `awg-jump` разворачивает по SSH из веб-интерфейса. Типовой поток такой:
 
 1. На VPS должен быть установлен Docker Engine и открыт UDP-порт `NODE_AWG_PORT`.
-2. В UI на странице Nodes добавляется нода с SSH host/login/password или ключом.
-3. `awg-jump` собирает или доставляет образ `awg-node`, генерирует конфиг peer'а и поднимает контейнер на удалённой машине.
-4. При активации ноды jump-сервер обновляет `awg1`, а health-check/failover переключает активную ноду при деградации.
+2. Для более стабильной работы upstream-ноды рекомендуется установить на хосте kernel module `amneziawg` вместе с `amneziawg-tools`. Перед установкой модуля обязательно установи headers именно для текущего ядра: `linux-headers-$(uname -r)`.
+3. Готовые host-side скрипты лежат в [node/scripts/install-kernel-module-debian12.sh](/opt/awg-jump/node/scripts/install-kernel-module-debian12.sh) и [node/scripts/install-kernel-module-debian13.sh](/opt/awg-jump/node/scripts/install-kernel-module-debian13.sh). При SSH-деплое ноды директория `node/` целиком доставляется на удалённый хост в `/opt/awg-node`, поэтому эти скрипты будут доступны там же: `/opt/awg-node/scripts/`.
+4. В UI на странице Nodes добавляется нода с SSH host/login/password или ключом.
+5. `awg-jump` собирает или доставляет образ `awg-node`, генерирует конфиг peer'а и поднимает контейнер на удалённой машине.
+6. При активации ноды jump-сервер обновляет `awg1`, а health-check/failover переключает активную ноду при деградации.
 
 Для ручного развёртывания upstream-узла смотри [node/README.md](/opt/awg-jump/node/README.md).
 
