@@ -54,6 +54,7 @@ class GatewaySettings(Base):
     )
     allowed_client_cidrs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     allowed_client_hosts: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    dns_intercept_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     active_entry_node_id: Mapped[int | None] = mapped_column(
         ForeignKey("entry_nodes.id", ondelete="SET NULL"),
         nullable=True,

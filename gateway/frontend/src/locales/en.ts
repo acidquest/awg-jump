@@ -29,6 +29,8 @@ export const en = {
   unavailable: 'unavailable',
   probeIp: 'Probe IP',
   sourceMode: 'Traffic source mode',
+  dnsInterception: 'DNS interception',
+  dnsInterceptionDescription: 'Redirects DNS from the selected sources into the local gateway dnsmasq so FQDN Prefixes can actually populate the ipset.',
   localhost: 'Localhost only',
   selectedCidr: 'Selected CIDR',
   selectedHosts: 'Selected hosts',

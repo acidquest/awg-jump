@@ -5,9 +5,10 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import AdminUser, GatewaySettings, RuntimeMode, TrafficSourceMode
+from app.models import AdminUser, EntryNode, GatewaySettings, RoutingPolicy, RuntimeMode, TrafficSourceMode
 from app.security import get_current_user
 from app.services.runtime import get_kernel_support_status
+from app.services.routing import apply_routing_plan, build_routing_plan
 
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -19,6 +20,7 @@ class GatewaySettingsUpdate(BaseModel):
     traffic_source_mode: str
     allowed_client_cidrs: list[str] = []
     allowed_client_hosts: list[str] = []
+    dns_intercept_enabled: bool = True
 
 
 @router.get("")
@@ -34,6 +36,7 @@ async def get_settings(
         "traffic_source_mode": settings_row.traffic_source_mode,
         "allowed_client_cidrs": settings_row.allowed_client_cidrs,
         "allowed_client_hosts": settings_row.allowed_client_hosts,
+        "dns_intercept_enabled": settings_row.dns_intercept_enabled,
         "kernel_available": kernel_available,
         "kernel_message": kernel_message,
         "active_entry_node_id": settings_row.active_entry_node_id,
@@ -58,6 +61,18 @@ async def update_settings(
     settings_row.traffic_source_mode = payload.traffic_source_mode
     settings_row.allowed_client_cidrs = payload.allowed_client_cidrs
     settings_row.allowed_client_hosts = payload.allowed_client_hosts
+    settings_row.dns_intercept_enabled = payload.dns_intercept_enabled
     db.add(settings_row)
     await db.flush()
-    return {"status": "updated"}
+    policy = await db.get(RoutingPolicy, 1)
+    active_node = await db.get(EntryNode, settings_row.active_entry_node_id) if settings_row.active_entry_node_id else None
+    plan = build_routing_plan(settings_row, policy, active_node) if policy else None
+    if policy and active_node and plan and plan["safe_to_apply"]:
+        try:
+            apply_routing_plan(settings_row, policy, active_node)
+        except RuntimeError as exc:
+            settings_row.tunnel_last_error = str(exc)
+            db.add(settings_row)
+            await db.flush()
+            return {"status": "error", "error": str(exc), "plan": plan}
+    return {"status": "updated", "plan": plan}

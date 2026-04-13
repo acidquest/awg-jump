@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import pwd
 import subprocess
 import time
 from pathlib import Path
@@ -17,6 +18,7 @@ from app.services.routing import fqdn_ipset_name
 logger = logging.getLogger(__name__)
 _DNS_PROCESS: subprocess.Popen | None = None
 _DNS_LAST_ERROR: str | None = None
+_DNS_RUNTIME_USER = "nobody"
 
 
 def config_path() -> Path:
@@ -38,7 +40,15 @@ def status() -> dict:
         "config_path": str(config_path()),
         "pid_path": str(pid_path()),
         "last_error": _DNS_LAST_ERROR,
+        "runtime_user": _DNS_RUNTIME_USER,
     }
+
+
+def runtime_uid() -> int | None:
+    try:
+        return pwd.getpwnam(_DNS_RUNTIME_USER).pw_uid
+    except KeyError:
+        return None
 
 
 async def render_runtime_config(db: AsyncSession) -> str:
@@ -58,6 +68,7 @@ async def restart_dnsmasq(db: AsyncSession) -> dict:
         [
             "dnsmasq",
             "--keep-in-foreground",
+            f"--user={_DNS_RUNTIME_USER}",
             f"--conf-file={config_path()}",
             f"--pid-file={pid_path()}",
         ],

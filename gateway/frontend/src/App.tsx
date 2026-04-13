@@ -68,6 +68,9 @@ type PrefixSourceSummary = {
 
 type PrefixSummary = {
   ipset_name: string
+  geoip_ipset_name?: string
+  manual_ipset_name?: string
+  fqdn_ipset_name?: string
   total_prefixes: number
   configured_prefixes?: number
   resolved_prefixes?: number
@@ -418,7 +421,7 @@ function PolicyPage() {
     prefixes_route_local: true,
     kill_switch_enabled: true,
     strict_mode: true,
-    prefix_summary: { ipset_name: 'routing_prefixes', total_prefixes: 0, configured_prefixes: 0, resolved_prefixes: 0, fallback_default_route: false, sources: [] },
+    prefix_summary: { ipset_name: 'routing_prefixes', geoip_ipset_name: 'routing_prefixes_geoip', manual_ipset_name: 'routing_prefixes_manual', fqdn_ipset_name: 'routing_prefixes_fqdn', total_prefixes: 0, configured_prefixes: 0, resolved_prefixes: 0, fallback_default_route: false, sources: [] },
   })
   const [message, setMessage] = useState('')
   const [countryModalOpen, setCountryModalOpen] = useState(false)
@@ -479,6 +482,9 @@ function PolicyPage() {
             <div className="text-muted text-sm">
               {routing.prefix_summary.sources.map((source) => `${t(source.key)}: ${source.enabled ? source.items_count : 0}`).join(' • ')}
               {routing.prefix_summary.fallback_default_route ? ` • ${t('defaultPrefixApplied')}` : ''}
+            </div>
+            <div className="text-muted text-sm" style={{ marginTop: 6 }}>
+              {routing.prefix_summary.geoip_ipset_name} • {routing.prefix_summary.manual_ipset_name} • {routing.prefix_summary.fqdn_ipset_name}
             </div>
           </div>
         </div>
@@ -940,7 +946,7 @@ function RoutingPage() {
     prefixes_route_local: true,
     kill_switch_enabled: true,
     strict_mode: true,
-    prefix_summary: { ipset_name: 'routing_prefixes', total_prefixes: 0, configured_prefixes: 0, resolved_prefixes: 0, fallback_default_route: false, sources: [] },
+    prefix_summary: { ipset_name: 'routing_prefixes', geoip_ipset_name: 'routing_prefixes_geoip', manual_ipset_name: 'routing_prefixes_manual', fqdn_ipset_name: 'routing_prefixes_fqdn', total_prefixes: 0, configured_prefixes: 0, resolved_prefixes: 0, fallback_default_route: false, sources: [] },
   })
   const { data: plan, reload: reloadPlan } = useLoader<any>('/routing/plan', { commands: [], warnings: [], safe_to_apply: false })
   const [message, setMessage] = useState('')
@@ -1246,6 +1252,7 @@ function SettingsPage() {
     traffic_source_mode: 'localhost',
     allowed_client_cidrs: [],
     allowed_client_hosts: [],
+    dns_intercept_enabled: true,
     kernel_available: false,
     kernel_message: null,
   })
@@ -1268,6 +1275,7 @@ function SettingsPage() {
       traffic_source_mode: data.traffic_source_mode,
       allowed_client_cidrs: cidrs.split(',').map((item: string) => item.trim()).filter(Boolean),
       allowed_client_hosts: hosts.split(',').map((item: string) => item.trim()).filter(Boolean),
+      dns_intercept_enabled: data.dns_intercept_enabled,
     })
     setMessage('Settings saved')
     await reload()
@@ -1322,6 +1330,18 @@ function SettingsPage() {
                 <option value="selected_cidr">{t('selectedCidr')}</option>
                 <option value="selected_hosts">{t('selectedHosts')}</option>
               </select>
+            </div>
+            <div className="form-group">
+              <label className="form-label">{t('dnsInterception')}</label>
+              <label className="toggle" title={t('dnsInterception')}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(data.dns_intercept_enabled)}
+                  onChange={(event) => { data.dns_intercept_enabled = event.target.checked }}
+                />
+                <span className="toggle-slider" />
+              </label>
+              <div className="text-muted text-sm" style={{ marginTop: 8 }}>{t('dnsInterceptionDescription')}</div>
             </div>
             <div className="form-group">
               <label className="form-label">{t('cidrList')}</label>

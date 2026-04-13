@@ -67,6 +67,10 @@ async def _ensure_sqlite_columns() -> None:
             await conn.execute(
                 text("ALTER TABLE gateway_settings ADD COLUMN runtime_mode VARCHAR(16) NOT NULL DEFAULT 'auto'")
             )
+        if "dns_intercept_enabled" not in columns:
+            await conn.execute(
+                text("ALTER TABLE gateway_settings ADD COLUMN dns_intercept_enabled BOOLEAN NOT NULL DEFAULT 1")
+            )
         result = await conn.execute(text("PRAGMA table_info(entry_nodes)"))
         columns = {row[1] for row in result.fetchall()}
         if "probe_ip" not in columns:

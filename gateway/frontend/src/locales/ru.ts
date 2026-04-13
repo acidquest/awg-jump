@@ -29,6 +29,8 @@ export const ru = {
   unavailable: 'недоступен',
   probeIp: 'Probe IP',
   sourceMode: 'Источник трафика',
+  dnsInterception: 'Перехват DNS',
+  dnsInterceptionDescription: 'Перенаправляет DNS выбранных источников в локальный dnsmasq gateway, чтобы FQDN Prefixes реально наполнял ipset.',
   localhost: 'Только localhost',
   selectedCidr: 'Выбранные CIDR',
   selectedHosts: 'Выбранные хосты',

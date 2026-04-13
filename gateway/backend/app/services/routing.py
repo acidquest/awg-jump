@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import pwd
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -18,10 +19,28 @@ MANGLE_OUTPUT_CHAIN = "AWG_GW_OUTPUT"
 FILTER_FORWARD_CHAIN = "AWG_GW_FORWARD"
 FILTER_OUTPUT_CHAIN = "AWG_GW_OUTPUT"
 NAT_POSTROUTING_CHAIN = "AWG_GW_POSTROUTING"
+NAT_DNS_PREROUTING_CHAIN = "AWG_GW_DNS_PREROUTING"
+NAT_DNS_OUTPUT_CHAIN = "AWG_GW_DNS_OUTPUT"
+DNS_RUNTIME_USER = "nobody"
+
+
+def geoip_ipset_name(policy: RoutingPolicy) -> str:
+    return f"{policy.geoip_ipset_name}_geoip"
+
+
+def manual_ipset_name(policy: RoutingPolicy) -> str:
+    return f"{policy.geoip_ipset_name}_manual"
 
 
 def fqdn_ipset_name(policy: RoutingPolicy) -> str:
     return f"{policy.geoip_ipset_name}_fqdn"
+
+
+def _dns_runtime_uid() -> int | None:
+    try:
+        return pwd.getpwnam(DNS_RUNTIME_USER).pw_uid
+    except KeyError:
+        return None
 
 
 def _run(args: list[str]) -> tuple[int, str]:
@@ -54,21 +73,55 @@ def _merge_prefixes(policy: RoutingPolicy) -> list[str]:
     return merged
 
 
-def build_prefix_summary(policy: RoutingPolicy) -> dict:
-    merged = _merge_prefixes(policy)
-    country_prefixes: list[str] = []
+def _country_prefixes(policy: RoutingPolicy) -> list[str]:
+    prefixes: list[str] = []
+    seen: set[str] = set()
     if policy.countries_enabled:
-        seen_countries: set[str] = set()
         for country in policy.geoip_countries:
             for prefix in load_cached_country(country):
-                if prefix not in seen_countries:
-                    country_prefixes.append(prefix)
-                    seen_countries.add(prefix)
+                if prefix not in seen:
+                    prefixes.append(prefix)
+                    seen.add(prefix)
+    return prefixes
 
-    static_live_count = ipset_manager.count(policy.geoip_ipset_name)
+
+def _manual_prefixes(policy: RoutingPolicy) -> list[str]:
+    if not policy.manual_prefixes_enabled:
+        return []
+    return list(dict.fromkeys(policy.manual_prefixes))
+
+
+def _static_match_sets(policy: RoutingPolicy) -> list[str]:
+    sets: list[str] = []
+    if policy.countries_enabled:
+        sets.append(geoip_ipset_name(policy))
+    if policy.manual_prefixes_enabled:
+        sets.append(manual_ipset_name(policy))
+    if not policy.countries_enabled and not policy.manual_prefixes_enabled and not policy.fqdn_prefixes_enabled:
+        sets.append(policy.geoip_ipset_name)
+    return sets
+
+
+def _all_match_sets(policy: RoutingPolicy) -> list[str]:
+    sets = _static_match_sets(policy)
+    if policy.fqdn_prefixes:
+        sets.append(fqdn_ipset_name(policy))
+    return sets
+
+
+def build_prefix_summary(policy: RoutingPolicy) -> dict:
+    merged = _merge_prefixes(policy)
+    country_prefixes = _country_prefixes(policy)
+    manual_prefixes = _manual_prefixes(policy)
+    static_live_count = sum(
+        ipset_manager.count(name)
+        for name in {geoip_ipset_name(policy), manual_ipset_name(policy), policy.geoip_ipset_name}
+    )
     fqdn_live_count = ipset_manager.count(fqdn_ipset_name(policy))
     return {
         "ipset_name": policy.geoip_ipset_name,
+        "geoip_ipset_name": geoip_ipset_name(policy),
+        "manual_ipset_name": manual_ipset_name(policy),
         "fqdn_ipset_name": fqdn_ipset_name(policy),
         "total_prefixes": static_live_count + fqdn_live_count,
         "configured_prefixes": len(merged),
@@ -86,7 +139,7 @@ def build_prefix_summary(policy: RoutingPolicy) -> dict:
                 "key": "manual",
                 "enabled": policy.manual_prefixes_enabled,
                 "items_count": len(policy.manual_prefixes),
-                "prefix_count": len(policy.manual_prefixes),
+                "prefix_count": len(manual_prefixes),
                 "description": f"{len(policy.manual_prefixes)} entries",
             },
             {
@@ -102,8 +155,30 @@ def build_prefix_summary(policy: RoutingPolicy) -> dict:
 
 def sync_prefix_ipset(policy: RoutingPolicy) -> list[str]:
     prefixes = _merge_prefixes(policy)
-    ipset_manager.create_or_update(policy.geoip_ipset_name, prefixes)
-    ipset_manager.create_or_update(fqdn_ipset_name(policy), [])
+    country_prefixes = _country_prefixes(policy)
+    manual_prefixes = _manual_prefixes(policy)
+
+    if policy.countries_enabled:
+        ipset_manager.create_or_update(geoip_ipset_name(policy), country_prefixes)
+    else:
+        ipset_manager.create_or_update(geoip_ipset_name(policy), [])
+
+    if policy.manual_prefixes_enabled:
+        ipset_manager.create_or_update(manual_ipset_name(policy), manual_prefixes)
+    else:
+        ipset_manager.create_or_update(manual_ipset_name(policy), [])
+
+    if not policy.countries_enabled and not policy.manual_prefixes_enabled and not policy.fqdn_prefixes_enabled:
+        ipset_manager.create_or_update(policy.geoip_ipset_name, ["0.0.0.0/0"])
+    else:
+        ipset_manager.create_or_update(policy.geoip_ipset_name, [])
+
+    fqdn_set = fqdn_ipset_name(policy)
+    if policy.fqdn_prefixes_enabled:
+        if not ipset_manager.exists(fqdn_set):
+            ipset_manager.create(fqdn_set)
+    elif not policy.fqdn_prefixes:
+        ipset_manager.create_or_update(fqdn_set, [])
     return prefixes
 
 
@@ -172,7 +247,7 @@ def _physical_interface() -> str:
 
 
 def _ensure_ipset(policy: RoutingPolicy, prefixes: list[str]) -> None:
-    ipset_manager.create_or_update(policy.geoip_ipset_name, prefixes)
+    sync_prefix_ipset(policy)
 
 
 def _iptables_command(table: str, chain: str, rule_args: list[str]) -> str:
@@ -193,10 +268,10 @@ def _build_marking_rules(
 
     destination_action = "RETURN" if policy.prefixes_route_local else "MARK"
     destination_args = [] if policy.prefixes_route_local else ["--set-mark", settings.fwmark_vpn]
-    match_sets = [policy.geoip_ipset_name, fqdn_ipset_name(policy)]
+    match_sets = _all_match_sets(policy)
 
     if gateway_settings.traffic_source_mode == TrafficSourceMode.localhost.value:
-        if prefixes or policy.fqdn_prefixes_enabled:
+        if match_sets:
             for match_set in match_sets:
                 rules.append(
                     (
@@ -211,7 +286,7 @@ def _build_marking_rules(
     for selector in selectors:
         if selector == "127.0.0.1/32":
             continue
-        if prefixes or policy.fqdn_prefixes_enabled:
+        if match_sets:
             for match_set in match_sets:
                 rules.append(
                     (
@@ -222,6 +297,36 @@ def _build_marking_rules(
                 )
         if policy.prefixes_route_local:
             rules.append(("mangle", MANGLE_PREROUTING_CHAIN, ["-s", selector, "-j", "MARK", "--set-mark", settings.fwmark_vpn]))
+
+    return rules
+
+
+def _build_dns_intercept_rules(gateway_settings: GatewaySettings) -> list[tuple[str, str, list[str]]]:
+    if not gateway_settings.dns_intercept_enabled:
+        return []
+
+    rules: list[tuple[str, str, list[str]]] = []
+    dns_uid = _dns_runtime_uid()
+
+    if gateway_settings.traffic_source_mode == TrafficSourceMode.localhost.value:
+        for protocol in ("udp", "tcp"):
+            rule = ["-p", protocol, "--dport", "53"]
+            if dns_uid is not None:
+                rule.extend(["-m", "owner", "!", "--uid-owner", str(dns_uid)])
+            rule.extend(["-j", "REDIRECT", "--to-ports", "53"])
+            rules.append(("nat", NAT_DNS_OUTPUT_CHAIN, rule))
+
+    for selector in _source_selectors(gateway_settings):
+        if selector == "127.0.0.1/32":
+            continue
+        for protocol in ("udp", "tcp"):
+            rules.append(
+                (
+                    "nat",
+                    NAT_DNS_PREROUTING_CHAIN,
+                    ["-s", selector, "-p", protocol, "--dport", "53", "-j", "REDIRECT", "--to-ports", "53"],
+                )
+            )
 
     return rules
 
@@ -252,7 +357,7 @@ def build_routing_plan(
         and default_iface is not None
         and gateway_settings.tunnel_status == TunnelStatus.running.value
         and _interface_exists(settings.tunnel_interface)
-        and (not policy.strict_mode or bool(cached_prefixes))
+        and (not policy.strict_mode or bool(cached_prefixes) or policy.fqdn_prefixes_enabled)
     )
 
     commands: list[str] = [
@@ -262,7 +367,9 @@ def build_routing_plan(
         commands.extend(
             [
                 f"ip route replace default dev {settings.tunnel_interface} table {settings.routing_table_vpn}",
-                f"ipset create/update {policy.geoip_ipset_name} ({len(cached_prefixes)} prefixes)",
+                f"ipset create/update {geoip_ipset_name(policy)} ({len(_country_prefixes(policy))} prefixes)",
+                f"ipset create/update {manual_ipset_name(policy)} ({len(_manual_prefixes(policy))} prefixes)",
+                f"ipset create/update {policy.geoip_ipset_name} ({1 if not policy.countries_enabled and not policy.manual_prefixes_enabled and not policy.fqdn_prefixes_enabled else 0} prefixes)",
                 f"ipset create/update {fqdn_ipset_name(policy)} (dnsmasq-managed)",
                 f"iptables -t nat -A {NAT_POSTROUTING_CHAIN} -o {settings.tunnel_interface} -j MASQUERADE",
                 f"iptables -t filter -A {FILTER_FORWARD_CHAIN} -o {settings.tunnel_interface} -m mark --mark {settings.fwmark_vpn} -j ACCEPT",
@@ -271,6 +378,10 @@ def build_routing_plan(
         commands.extend(
             _iptables_command(table, chain, rule)
             for table, chain, rule in _build_marking_rules(gateway_settings, policy, cached_prefixes, active_node)
+        )
+        commands.extend(
+            _iptables_command(table, chain, rule)
+            for table, chain, rule in _build_dns_intercept_rules(gateway_settings)
         )
         if default_iface is not None:
             for selector in selectors:
@@ -303,6 +414,7 @@ def build_routing_plan(
         "fqdn_prefixes": policy.fqdn_prefixes,
         "kill_switch_enabled": policy.kill_switch_enabled,
         "strict_mode": policy.strict_mode,
+        "dns_intercept_enabled": gateway_settings.dns_intercept_enabled,
         "warnings": warnings,
         "commands": commands,
         "safe_to_apply": safe_to_apply,
@@ -334,13 +446,19 @@ def apply_routing_plan(
     _ensure_chain("filter", FILTER_FORWARD_CHAIN)
     _ensure_chain("filter", FILTER_OUTPUT_CHAIN)
     _ensure_chain("nat", NAT_POSTROUTING_CHAIN)
+    _ensure_chain("nat", NAT_DNS_PREROUTING_CHAIN)
+    _ensure_chain("nat", NAT_DNS_OUTPUT_CHAIN)
     _ensure_jump("mangle", "PREROUTING", MANGLE_PREROUTING_CHAIN)
     _ensure_jump("mangle", "OUTPUT", MANGLE_OUTPUT_CHAIN)
     _ensure_jump("filter", "FORWARD", FILTER_FORWARD_CHAIN)
     _ensure_jump("filter", "OUTPUT", FILTER_OUTPUT_CHAIN)
     _ensure_jump("nat", "POSTROUTING", NAT_POSTROUTING_CHAIN)
+    _ensure_jump("nat", "PREROUTING", NAT_DNS_PREROUTING_CHAIN)
+    _ensure_jump("nat", "OUTPUT", NAT_DNS_OUTPUT_CHAIN)
 
     for table, chain, rule in _build_marking_rules(gateway_settings, policy, prefixes, active_node):
+        _append(table, chain, rule)
+    for table, chain, rule in _build_dns_intercept_rules(gateway_settings):
         _append(table, chain, rule)
 
     _append("nat", NAT_POSTROUTING_CHAIN, ["-o", settings.tunnel_interface, "-j", "MASQUERADE"])

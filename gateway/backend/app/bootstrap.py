@@ -21,7 +21,14 @@ async def ensure_bootstrap_state(db: AsyncSession) -> None:
 
     gateway_settings = await db.get(GatewaySettings, 1)
     if gateway_settings is None:
-        db.add(GatewaySettings(id=1, ui_language=settings.ui_default_language, runtime_mode=RuntimeMode.auto.value))
+        db.add(
+            GatewaySettings(
+                id=1,
+                ui_language=settings.ui_default_language,
+                runtime_mode=RuntimeMode.auto.value,
+                dns_intercept_enabled=True,
+            )
+        )
 
     routing_policy = await db.get(RoutingPolicy, 1)
     if routing_policy is None:
