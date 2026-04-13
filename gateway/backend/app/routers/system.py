@@ -13,6 +13,7 @@ from app.services.runtime import (
     current_pid,
     get_kernel_support_status,
     is_runtime_available,
+    probe_node_latency,
     resolve_live_tunnel_status,
 )
 from app.services.system_metrics import get_metrics_history
@@ -40,6 +41,10 @@ async def status(
     db.add(gateway_settings)
     await db.flush()
     active_node = await db.get(EntryNode, gateway_settings.active_entry_node_id) if gateway_settings.active_entry_node_id else None
+    if active_node is not None:
+        active_node.latest_latency_ms = probe_node_latency(active_node, prefer_tunnel=True)
+        db.add(active_node)
+        await db.flush()
     entry_node_count = await db.scalar(select(func.count()).select_from(EntryNode))
     dns_rule_count = await db.scalar(select(func.count()).select_from(DnsDomainRule))
     return {

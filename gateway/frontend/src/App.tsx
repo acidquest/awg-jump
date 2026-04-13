@@ -288,7 +288,8 @@ function AppLayout() {
 
 function DashboardPage() {
   const { t } = useI18n()
-  const { data, loading, error, reload } = useLoader<SystemStatus>('/system/status', {
+  const [metricsPeriod, setMetricsPeriod] = useState<'1h' | '24h'>('1h')
+  const { data, loading, error } = useLoader<SystemStatus>('/system/status', {
     runtime_available: false,
     tunnel_status: 'unknown',
     tunnel_last_error: null,
@@ -304,8 +305,8 @@ function DashboardPage() {
     geoip_countries: [],
     ipset_name: 'routing_prefixes',
   })
-  const { data: metrics, loading: metricsLoading } = useLoader<SystemMetrics>('/system/metrics?period=24h', {
-    period: '24h',
+  const { data: metrics, loading: metricsLoading } = useLoader<SystemMetrics>(`/system/metrics?period=${metricsPeriod}`, {
+    period: metricsPeriod,
     retention_hours: 24,
     sampling_interval_seconds: 60,
     latest: null,
@@ -321,14 +322,13 @@ function DashboardPage() {
           <div className="page-title">{t('dashboard')}</div>
           <div className="page-subtitle">{t('dashboardSubtitle')}</div>
         </div>
-        <button className="btn btn-secondary btn-sm" onClick={() => void reload()}>{t('refresh')}</button>
       </div>
       {error ? <div className="error-box">{error}</div> : null}
       {!error && !loading && !hideKernelWarning && !data.kernel_available ? <div className="info-box">{t('kernelUnavailable')}{data.kernel_message ? `: ${data.kernel_message}` : ''}</div> : null}
       {!error && !loading && data.tunnel_last_error ? <div className="error-box">{data.tunnel_last_error}</div> : null}
       {loading ? <div style={{ padding: 40, textAlign: 'center' }}><span className="spinner" /></div> : null}
       <div className="card-grid card-grid-4" style={{ marginBottom: 20 }}>
-        <StatCard title={t('tunnel')} value={data.tunnel_status} label={data.runtime_available ? 'runtime ready' : 'runtime missing'} tone={statusTone} />
+        <StatCard title={t('tunnel')} value={data.tunnel_status} label={data.runtime_available ? t('runtimeReady') : t('runtimeMissing')} tone={statusTone} />
         <StatCard title={t('entryNodes')} value={String(data.entry_node_count)} label={t('activeNode')} />
         <StatCard title={t('dnsRules')} value={String(data.dns_rule_count)} label={t('domains')} />
         <StatCard title={t('policy')} value={data.ipset_name} label={data.geoip_countries.join(', ') || t('geoipSummary')} />
@@ -357,7 +357,7 @@ function DashboardPage() {
         </div>
         <div className="card">
           <div className="card-title" style={{ marginBottom: 10 }}>{t('routeSafety')}</div>
-          <div className="stat-value" style={{ fontSize: 20 }}>{data.kill_switch_enabled ? 'protected' : 'relaxed'}</div>
+          <div className="stat-value" style={{ fontSize: 20 }}>{data.kill_switch_enabled ? t('protectedMode') : t('relaxedState')}</div>
           <div className="stat-label">{t('trafficSource')}: {data.traffic_source_mode}</div>
           <div className="text-muted text-sm" style={{ marginTop: 10 }}>
             {data.runtime_mode === 'userspace'
@@ -367,39 +367,45 @@ function DashboardPage() {
         </div>
       </div>
       <div className="section">
-        <div className="section-title">{t('systemLoad')}</div>
+        <div className="section-title">
+          <span>{t('systemLoad')}</span>
+          <div className="segmented-control" role="tablist" aria-label="Metrics period">
+            <button
+              className={`segmented-btn${metricsPeriod === '1h' ? ' active' : ''}`}
+              onClick={() => setMetricsPeriod('1h')}
+              type="button"
+            >
+              1h
+            </button>
+            <button
+              className={`segmented-btn${metricsPeriod === '24h' ? ' active' : ''}`}
+              onClick={() => setMetricsPeriod('24h')}
+              type="button"
+            >
+              24h
+            </button>
+          </div>
+        </div>
         {metricsLoading ? <div style={{ padding: 24, textAlign: 'center' }}><span className="spinner" /></div> : null}
         {!metricsLoading ? (
-          <div className="card-grid card-grid-2">
-            <ChartCard
+          <div className="card-grid card-grid-2 system-metrics-grid">
+            <MetricChartCard
               title={t('cpuLoad')}
               value={fmtPercent(metrics.latest?.cpu_usage_percent)}
-              subtitle={t('last24Hours')}
-              series={[
-                {
-                  label: t('cpuLoad'),
-                  color: 'var(--accent)',
-                  values: metrics.points.map((point) => point.cpu_usage_percent),
-                },
-              ]}
+              subtitle={t('sampledPerMinute')}
+              chip={t('hostCpu')}
+              period={metricsPeriod}
+              points={metrics.points}
+              mode="cpu"
             />
-            <ChartCard
+            <MetricChartCard
               title={t('memoryUsed')}
               value={fmtBytes(metrics.latest?.memory_used_bytes)}
               subtitle={`${t('memoryFree')}: ${fmtBytes(metrics.latest?.memory_free_bytes)} / ${fmtBytes(metrics.latest?.memory_total_bytes)}`}
-              series={[
-                {
-                  label: t('memoryUsed'),
-                  color: 'var(--accent)',
-                  values: metrics.points.map((point) => point.memory_used_bytes),
-                },
-                {
-                  label: t('memoryFree'),
-                  color: 'var(--success)',
-                  values: metrics.points.map((point) => point.memory_free_bytes),
-                },
-              ]}
-              formatter={fmtBytes}
+              chip={t('ram')}
+              period={metricsPeriod}
+              points={metrics.points}
+              mode="memory"
             />
           </div>
         ) : null}
@@ -647,17 +653,17 @@ function NodesPage() {
           <table>
             <thead>
               <tr>
-                <th>Name</th>
+                <th>{t('name')}</th>
                 <th>{t('endpoint')}</th>
                 <th>{t('latency')}</th>
                 <th>{t('udpStatus')}</th>
-                <th>Actions</th>
+                <th>{t('actions')}</th>
                 <th>{t('activeNode')}</th>
               </tr>
             </thead>
             <tbody>
               {data.length === 0 ? (
-                <tr><td colSpan={6} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>No entry nodes imported yet</td></tr>
+                <tr><td colSpan={6} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>{t('noEntryNodes')}</td></tr>
               ) : data.map((node) => (
                 <tr key={node.id} className={node.is_active ? 'active-node' : ''}>
                   <td>{node.name}</td>
@@ -666,8 +672,14 @@ function NodesPage() {
                   <td>{node.is_active ? '—' : renderUdpStatus(node.udp_status, t)}</td>
                   <td>
                     <div className="nodes-actions">
-                      <button className="btn btn-primary btn-sm" onClick={() => void activate(node.id)}>{t('activate')}</button>
-                      <button className="btn btn-ghost btn-sm" onClick={() => setEditNode(node)}>Edit</button>
+                      <button
+                        className={`btn btn-sm ${node.is_active ? 'btn-secondary' : 'btn-primary'}`}
+                        onClick={() => void activate(node.id)}
+                        disabled={node.is_active}
+                      >
+                        {t('activate')}
+                      </button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => setEditNode(node)}>{t('edit')}</button>
                     </div>
                   </td>
                   <td>{node.is_active ? <span className="badge badge-online">{t('active')}</span> : '—'}</td>
@@ -693,7 +705,7 @@ function NodesPage() {
           onClose={() => setEditNode(null)}
           onSaved={async () => {
             setEditNode(null)
-            setMessage('Entry node updated')
+            setMessage(t('entryNodeUpdated'))
             await reload()
           }}
         />
@@ -844,7 +856,7 @@ function NodeEditorModal({
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal modal-xl" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
-          <div className="modal-title">Edit entry node: {node.name}</div>
+          <div className="modal-title">{t('editEntryNode')}: {node.name}</div>
           <button className="btn btn-ghost btn-sm" onClick={onClose}>Close</button>
         </div>
         <div className="tabs">
@@ -902,7 +914,7 @@ function NodeEditorModal({
               <label className="form-label">Preshared key</label>
               <input className="form-input mono" value={visual.preshared_key} onChange={setField('preshared_key')} />
             </div>
-            <div className="info-box">Visual editor preserves the saved obfuscation parameters. Edit raw .conf if you need to change them.</div>
+            <div className="info-box">{t('visualEditorNotice')}</div>
             <div className="modal-actions">
               <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
               <button className="btn btn-primary" onClick={() => void saveVisual()} disabled={saving}>
@@ -951,11 +963,17 @@ function RoutingPage() {
   const { data: plan, reload: reloadPlan } = useLoader<any>('/routing/plan', { commands: [], warnings: [], safe_to_apply: false })
   const [message, setMessage] = useState('')
 
+  useEffect(() => {
+    if (!message) return
+    const timer = window.setTimeout(() => setMessage(''), 2400)
+    return () => window.clearTimeout(timer)
+  }, [message])
+
   async function persistPolicy(nextData: any) {
     setData(nextData)
     await api.put('/routing', nextData)
     const applyResponse = await api.post('/routing/apply')
-    setMessage(applyResponse.data.status === 'applied' ? 'Routing applied' : applyResponse.data.error || 'Routing blocked')
+    setMessage(applyResponse.data.status === 'applied' ? t('routingApplied') : applyResponse.data.error || t('routingBlocked'))
     await reload()
     await reloadPlan()
   }
@@ -972,14 +990,13 @@ function RoutingPage() {
           <div className="page-title">{t('routing')}</div>
           <div className="page-subtitle">{t('routingSubtitle')}</div>
         </div>
-        <button className="btn btn-secondary btn-sm" onClick={() => void reloadPlan()}>{t('refresh')}</button>
-      </div>
+        </div>
       {message ? <div className="info-box">{message}</div> : null}
       {error ? <div className="error-box">{error}</div> : null}
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="card-header" style={{ marginBottom: 10 }}>
           <div>
-            <div className="card-title">Traffic Direction</div>
+            <div className="card-title">{t('trafficDirection')}</div>
             <div className="text-muted text-sm" style={{ marginTop: 6 }}>
               {data.prefixes_route_local ? t('prefixesToLocalDescription') : t('prefixesToTunnelDescription')}
             </div>
@@ -987,18 +1004,16 @@ function RoutingPage() {
         </div>
         <div className="traffic-direction-card">
           <div>
-            <div className="card-title" style={{ marginBottom: 8 }}>{t('routingPrefixes')}</div>
-            <div className="stat-value" style={{ fontSize: 18 }}>{data.geoip_ipset_name}</div>
             <div className="stat-label">{data.prefix_summary.total_prefixes.toLocaleString()} {t('totalPrefixes').toLowerCase()}</div>
           </div>
-          <div className="traffic-toggle-row">
+          <div className={`traffic-toggle-row ${data.prefixes_route_local ? 'traffic-toggle-row-active' : ''}`}>
             <label className="toggle toggle-lg" title={t('routingPrefixes')}>
               <input type="checkbox" checked={data.prefixes_route_local} onChange={(event) => void togglePolicy('prefixes_route_local', event.target.checked)} />
               <span className="toggle-slider" />
             </label>
-            <div>
+            <div className={data.prefixes_route_local ? 'traffic-toggle-copy-active' : ''}>
               <div style={{ fontWeight: 600 }}>{data.prefixes_route_local ? t('sendToLocalInterface') : t('sendToAwgInterface')}</div>
-              <div className="text-muted text-sm">
+              <div className={`text-sm ${data.prefixes_route_local ? 'traffic-toggle-meta-active' : 'text-muted'}`}>
                 {data.prefixes_route_local ? t('stateLocalTranslated') : t('stateTunnelTranslated')}
               </div>
             </div>
@@ -1018,7 +1033,7 @@ function RoutingPage() {
         </div>
       </div>
       <div className="section">
-        <div className="section-title">Policy routing diagram</div>
+        <div className="section-title">{t('policyRoutingDiagram')}</div>
         {loading ? <div style={{ padding: 40, textAlign: 'center' }}><span className="spinner" /></div> : null}
         <div className="routing-diagram">
           <div className="routing-diagram-header">
@@ -1074,14 +1089,7 @@ function RoutingPage() {
 function DnsPage() {
   const { t } = useI18n()
   const { data, loading, error, reload } = useLoader<any>('/dns', { upstreams: [], domains: [], preview: '' })
-  const [domain, setDomain] = useState('')
-
-  async function addDomain(event: FormEvent) {
-    event.preventDefault()
-    await api.post('/dns/domains', { domain, zone: 'local', enabled: true })
-    setDomain('')
-    await reload()
-  }
+  const [domainModalOpen, setDomainModalOpen] = useState(false)
 
   const localUpstream = data.upstreams.find((item: any) => item.zone === 'local')
   const vpnUpstream = data.upstreams.find((item: any) => item.zone === 'vpn')
@@ -1095,7 +1103,7 @@ function DnsPage() {
         </div>
         <div className="flex gap-2">
           <button className="btn btn-secondary btn-sm" onClick={() => void reload()}>{t('refresh')}</button>
-          <button className="btn btn-primary btn-sm" onClick={() => void api.post('/dns/domains', { domain: 'example.com', zone: 'local', enabled: true })}>{t('addDomain')}</button>
+          <button className="btn btn-primary btn-sm" onClick={() => setDomainModalOpen(true)}>{t('addDomain')}</button>
         </div>
       </div>
       {error ? <div className="error-box">{error}</div> : null}
@@ -1124,18 +1132,8 @@ function DnsPage() {
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="card-header">
           <div className="card-title">{t('domains')}</div>
+          <button className="btn btn-primary btn-sm" onClick={() => setDomainModalOpen(true)}>{t('add')}</button>
         </div>
-        <form onSubmit={addDomain} style={{ marginBottom: 14 }}>
-          <div className="form-row form-row-2">
-            <div className="form-group">
-              <label className="form-label">Domain</label>
-              <input className="form-input" value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="example.com" />
-            </div>
-            <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end' }}>
-              <button className="btn btn-primary" type="submit">{t('save')}</button>
-            </div>
-          </div>
-        </form>
         {loading ? <div style={{ padding: 40, textAlign: 'center' }}><span className="spinner" /></div> : null}
         <div className="table-wrap">
           <table>
@@ -1148,7 +1146,7 @@ function DnsPage() {
             </thead>
             <tbody>
               {data.domains.length === 0 ? (
-                <tr><td colSpan={3} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>No domains configured</td></tr>
+                <tr><td colSpan={3} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>{t('noDomainsConfigured')}</td></tr>
               ) : data.domains.map((item: any) => (
                 <tr key={item.id}>
                   <td>{item.domain}</td>
@@ -1169,6 +1167,20 @@ function DnsPage() {
           </div>
         </div>
       </div>
+      {domainModalOpen ? (
+        <ListModal
+          title={t('addDomain')}
+          description={t('domainModalDescription')}
+          placeholder={'example.com\napi.example.com'}
+          submitLabel={t('add')}
+          onClose={() => setDomainModalOpen(false)}
+          onSubmit={async (items) => {
+            await api.post('/dns/domains/bulk', { domains: items, zone: 'local', enabled: true })
+            setDomainModalOpen(false)
+            await reload()
+          }}
+        />
+      ) : null}
     </>
   )
 }
@@ -1246,7 +1258,7 @@ function BackupPage() {
 
 function SettingsPage() {
   const { locale, setLocale, t } = useI18n()
-  const { data, reload } = useLoader<any>('/settings', {
+  const { data, reload, setData } = useLoader<any>('/settings', {
     ui_language: 'en',
     runtime_mode: 'auto',
     traffic_source_mode: 'localhost',
@@ -1267,18 +1279,36 @@ function SettingsPage() {
     setHosts((data.allowed_client_hosts || []).join(', '))
   }, [data.allowed_client_cidrs, data.allowed_client_hosts])
 
-  async function saveSettings(event: FormEvent) {
-    event.preventDefault()
-    await api.put('/settings', {
+  function buildSettingsPayload(overrides: Record<string, unknown> = {}) {
+    return {
       ui_language: locale,
       runtime_mode: data.runtime_mode,
       traffic_source_mode: data.traffic_source_mode,
       allowed_client_cidrs: cidrs.split(',').map((item: string) => item.trim()).filter(Boolean),
       allowed_client_hosts: hosts.split(',').map((item: string) => item.trim()).filter(Boolean),
       dns_intercept_enabled: data.dns_intercept_enabled,
-    })
+      ...overrides,
+    }
+  }
+
+  async function saveSettings(event: FormEvent) {
+    event.preventDefault()
+    await api.put('/settings', buildSettingsPayload())
     setMessage('Settings saved')
     await reload()
+  }
+
+  async function toggleDnsInterception(enabled: boolean) {
+    const previous = Boolean(data.dns_intercept_enabled)
+    setData((current) => ({ ...current, dns_intercept_enabled: enabled }))
+    try {
+      await api.put('/settings', buildSettingsPayload({ dns_intercept_enabled: enabled }))
+      setMessage('DNS interception updated')
+      await reload()
+    } catch (err: any) {
+      setData((current) => ({ ...current, dns_intercept_enabled: previous }))
+      setMessage(err?.response?.data?.detail || err.message || 'Failed to update DNS interception')
+    }
   }
 
   async function changePassword(event: FormEvent) {
@@ -1332,24 +1362,24 @@ function SettingsPage() {
               </select>
             </div>
             <div className="form-group">
-              <label className="form-label">{t('dnsInterception')}</label>
-              <label className="toggle" title={t('dnsInterception')}>
-                <input
-                  type="checkbox"
-                  checked={Boolean(data.dns_intercept_enabled)}
-                  onChange={(event) => { data.dns_intercept_enabled = event.target.checked }}
-                />
-                <span className="toggle-slider" />
-              </label>
-              <div className="text-muted text-sm" style={{ marginTop: 8 }}>{t('dnsInterceptionDescription')}</div>
-            </div>
-            <div className="form-group">
               <label className="form-label">{t('cidrList')}</label>
               <input className="form-input" value={cidrs} onChange={(event) => setCidrs(event.target.value)} />
             </div>
             <div className="form-group">
               <label className="form-label">{t('hostList')}</label>
               <input className="form-input" value={hosts} onChange={(event) => setHosts(event.target.value)} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">{t('dnsInterception')}</label>
+              <label className="toggle" title={t('dnsInterception')}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(data.dns_intercept_enabled)}
+                  onChange={(event) => { void toggleDnsInterception(event.target.checked) }}
+                />
+                <span className="toggle-slider" />
+              </label>
+              <div className="text-muted text-sm" style={{ marginTop: 8 }}>{t('dnsInterceptionDescription')}</div>
             </div>
             <button className="btn btn-primary" type="submit">{t('save')}</button>
           </form>
@@ -1525,18 +1555,22 @@ function ListModal({
   )
 }
 
-function ChartCard({
+function MetricChartCard({
   title,
   value,
   subtitle,
-  series,
-  formatter = (input: number) => `${input.toFixed(1)}`,
+  chip,
+  points,
+  period,
+  mode,
 }: {
   title: string
   value: string
   subtitle: string
-  series: Array<{ label: string; color: string; values: number[] }>
-  formatter?: (value: number) => string
+  chip: string
+  points: MetricsPoint[]
+  period: '1h' | '24h'
+  mode: 'cpu' | 'memory'
 }) {
   return (
     <div className="card metric-card">
@@ -1546,49 +1580,124 @@ function ChartCard({
           <div className="stat-value" style={{ fontSize: 22 }}>{value}</div>
           <div className="stat-label">{subtitle}</div>
         </div>
+        <div className="metric-chip">{chip}</div>
       </div>
-      <MiniLineChart series={series} formatter={formatter} />
+      <div className="metric-chart-wrap">
+        {mode === 'cpu' ? <CpuSvgChart points={points} period={period} /> : <MemorySvgChart points={points} period={period} />}
+      </div>
     </div>
   )
 }
 
-function MiniLineChart({
-  series,
-  formatter,
-}: {
-  series: Array<{ label: string; color: string; values: number[] }>
-  formatter: (value: number) => string
-}) {
-  const width = 520
-  const height = 180
-  const padding = 12
-  const allValues = series.flatMap((item) => item.values)
-  const maxValue = Math.max(...allValues, 1)
-
-  function toPath(values: number[]) {
-    if (values.length === 0) return ''
-    return values.map((value, index) => {
-      const x = padding + (index / Math.max(values.length - 1, 1)) * (width - padding * 2)
-      const y = height - padding - (value / maxValue) * (height - padding * 2)
-      return `${index === 0 ? 'M' : 'L'} ${x} ${y}`
-    }).join(' ')
+function fmtMetricTime(ts: string, period: '1h' | '24h') {
+  const date = new Date(ts)
+  if (Number.isNaN(date.getTime())) return ''
+  if (period === '1h') {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   }
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function buildLinePath(values: number[], width: number, height: number, padding: { top: number; right: number; bottom: number; left: number }, maxValue: number) {
+  if (values.length === 0) return ''
+  const innerWidth = width - padding.left - padding.right
+  const innerHeight = height - padding.top - padding.bottom
+  return values.map((value, index) => {
+    const x = padding.left + (index / Math.max(values.length - 1, 1)) * innerWidth
+    const y = padding.top + innerHeight - (Math.max(value, 0) / Math.max(maxValue, 1)) * innerHeight
+    return `${index === 0 ? 'M' : 'L'} ${x} ${y}`
+  }).join(' ')
+}
+
+function buildAreaPath(values: number[], width: number, height: number, padding: { top: number; right: number; bottom: number; left: number }, maxValue: number) {
+  if (values.length === 0) return ''
+  const line = buildLinePath(values, width, height, padding, maxValue)
+  const innerWidth = width - padding.left - padding.right
+  const baseY = height - padding.bottom
+  const lastX = padding.left + innerWidth
+  return `${line} L ${lastX} ${baseY} L ${padding.left} ${baseY} Z`
+}
+
+function CpuSvgChart({ points, period }: { points: MetricsPoint[]; period: '1h' | '24h' }) {
+  const width = 640
+  const height = 260
+  const padding = { top: 12, right: 16, bottom: 30, left: 42 }
+  const values = points.map((point) => point.cpu_usage_percent)
+  const linePath = buildLinePath(values, width, height, padding, 100)
+  const tickLabels = points.length <= 1
+    ? []
+    : [0, Math.floor((points.length - 1) / 2), points.length - 1]
 
   return (
-    <div className="mini-chart-wrap">
-      <svg viewBox={`0 0 ${width} ${height}`} className="mini-chart" role="img" aria-label="metric chart">
-        <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="var(--border)" />
-        {series.map((item) => <path key={item.label} d={toPath(item.values)} fill="none" stroke={item.color} strokeWidth="3" strokeLinecap="round" />)}
-      </svg>
-      <div className="chart-legend">
-        {series.map((item) => (
-          <div className="chart-legend-item" key={item.label}>
-            <span className="chart-swatch" style={{ background: item.color }} />
-            {item.label} {formatter(item.values[item.values.length - 1] ?? 0)}
-          </div>
-        ))}
-      </div>
-    </div>
+    <svg viewBox={`0 0 ${width} ${height}`} className="mini-chart" role="img" aria-label="cpu chart">
+      <line x1={padding.left} y1={height - padding.bottom} x2={width - padding.right} y2={height - padding.bottom} stroke="rgba(139, 148, 158, 0.18)" />
+      <line x1={padding.left} y1={padding.top} x2={padding.left} y2={height - padding.bottom} stroke="rgba(139, 148, 158, 0.18)" />
+      {[0, 25, 50, 75, 100].map((tick) => {
+        const y = padding.top + (1 - tick / 100) * (height - padding.top - padding.bottom)
+        return (
+          <g key={tick}>
+            <line x1={padding.left} y1={y} x2={width - padding.right} y2={y} stroke="rgba(139, 148, 158, 0.10)" />
+            <text x={padding.left - 8} y={y + 4} textAnchor="end" className="chart-axis-label">{tick}%</text>
+          </g>
+        )
+      })}
+      {tickLabels.map((index) => {
+        const x = padding.left + (index / Math.max(points.length - 1, 1)) * (width - padding.left - padding.right)
+        return <text key={index} x={x} y={height - 8} textAnchor="middle" className="chart-axis-label">{fmtMetricTime(points[index].collected_at, period)}</text>
+      })}
+      <path d={linePath} fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function MemorySvgChart({ points, period }: { points: MetricsPoint[]; period: '1h' | '24h' }) {
+  const width = 640
+  const height = 260
+  const padding = { top: 12, right: 16, bottom: 30, left: 56 }
+  const maxValue = Math.max(...points.map((point) => Math.max(point.memory_total_bytes, point.memory_used_bytes + point.memory_free_bytes)), 1)
+  const usedValues = points.map((point) => point.memory_used_bytes)
+  const freeValues = points.map((point) => point.memory_free_bytes)
+  const usedLinePath = buildLinePath(usedValues, width, height, padding, maxValue)
+  const freeLinePath = buildLinePath(freeValues, width, height, padding, maxValue)
+  const usedAreaPath = buildAreaPath(usedValues, width, height, padding, maxValue)
+  const freeAreaPath = buildAreaPath(freeValues, width, height, padding, maxValue)
+  const tickLabels = points.length <= 1
+    ? []
+    : [0, Math.floor((points.length - 1) / 2), points.length - 1]
+  const memoryTicks = [0, maxValue / 2, maxValue]
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="mini-chart" role="img" aria-label="memory chart">
+      <defs>
+        <linearGradient id="gatewayMemoryUsedFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="rgba(245, 158, 11, 0.38)" />
+          <stop offset="100%" stopColor="rgba(245, 158, 11, 0.05)" />
+        </linearGradient>
+        <linearGradient id="gatewayMemoryFreeFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="rgba(56, 189, 248, 0.30)" />
+          <stop offset="100%" stopColor="rgba(56, 189, 248, 0.04)" />
+        </linearGradient>
+      </defs>
+      <line x1={padding.left} y1={height - padding.bottom} x2={width - padding.right} y2={height - padding.bottom} stroke="rgba(139, 148, 158, 0.18)" />
+      <line x1={padding.left} y1={padding.top} x2={padding.left} y2={height - padding.bottom} stroke="rgba(139, 148, 158, 0.18)" />
+      {memoryTicks.map((tick, index) => {
+        const y = padding.top + (1 - tick / Math.max(maxValue, 1)) * (height - padding.top - padding.bottom)
+        return (
+          <g key={index}>
+            <line x1={padding.left} y1={y} x2={width - padding.right} y2={y} stroke="rgba(139, 148, 158, 0.10)" />
+            <text x={padding.left - 8} y={y + 4} textAnchor="end" className="chart-axis-label">{fmtBytes(tick)}</text>
+          </g>
+        )
+      })}
+      {tickLabels.map((index) => {
+        const x = padding.left + (index / Math.max(points.length - 1, 1)) * (width - padding.left - padding.right)
+        return <text key={index} x={x} y={height - 8} textAnchor="middle" className="chart-axis-label">{fmtMetricTime(points[index].collected_at, period)}</text>
+      })}
+      <path d={freeAreaPath} fill="url(#gatewayMemoryFreeFill)" stroke="none" />
+      <path d={usedAreaPath} fill="url(#gatewayMemoryUsedFill)" stroke="none" />
+      <path d={freeLinePath} fill="none" stroke="var(--success)" strokeWidth="2.5" strokeLinecap="round" />
+      <path d={usedLinePath} fill="none" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" />
+    </svg>
   )
 }
 
@@ -1668,10 +1777,10 @@ function fmtLatency(latencyMs: number | null | undefined) {
 
 function renderUdpStatus(status: string | null | undefined, t: (key: any) => string) {
   if (!status) return '—'
-  if (status === 'open') return t('udpOpen')
-  if (status === 'open_or_filtered') return t('udpOpenOrFiltered')
-  if (status === 'unreachable') return t('udpUnreachable')
-  return status
+  if (status === 'open') return <span className="badge badge-online">{t('udpOpen')}</span>
+  if (status === 'open_or_filtered') return <span className="badge badge-online">{t('udpOpenOrFiltered')}</span>
+  if (status === 'unreachable') return <span className="badge badge-offline">{t('udpUnreachable')}</span>
+  return <span className="badge badge-unknown">{status}</span>
 }
 
 function GridIcon({ size = 16 }: { size?: number }) {

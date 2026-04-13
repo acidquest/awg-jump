@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import shutil
 import socket
 import subprocess
@@ -303,6 +302,7 @@ def probe_latency(node: EntryNode, *, target: str | None = None, interface_name:
     if interface_name:
         command.extend(["-I", interface_name])
     command.append(target)
+    started_at = time.monotonic()
     try:
         proc = subprocess.run(
             command,
@@ -316,12 +316,9 @@ def probe_latency(node: EntryNode, *, target: str | None = None, interface_name:
     if proc.returncode != 0:
         logger.warning("[awg-runtime] latency probe failed target=%s rc=%s output=%s", target, proc.returncode, output.strip())
         return None
-    match = re.search(r"time=([0-9.]+)\s*ms", output)
-    if not match:
-        logger.warning("[awg-runtime] latency probe produced no RTT target=%s output=%s", target, output.strip())
-        return None
-    logger.info("[awg-runtime] latency probe target=%s rtt_ms=%s", target, match.group(1))
-    return float(match.group(1))
+    latency_ms = (time.monotonic() - started_at) * 1000
+    logger.info("[awg-runtime] latency probe target=%s rtt_ms=%.2f", target, latency_ms)
+    return latency_ms
 
 
 def probe_node_latency(node: EntryNode, *, prefer_tunnel: bool = False) -> float | None:

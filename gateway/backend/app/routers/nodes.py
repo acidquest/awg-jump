@@ -99,6 +99,8 @@ async def list_nodes(
     payloads: list[dict] = []
     for node in nodes:
         if node.is_active:
+            _refresh_latency_for_active_tunnel(node)
+            db.add(node)
             payloads.append(_to_payload(node))
             continue
         udp_status, udp_detail = probe_udp_endpoint(node)
@@ -110,6 +112,7 @@ async def list_nodes(
                 latency_ms=probe_node_latency(node),
             )
         )
+    await db.flush()
     return payloads
 
 

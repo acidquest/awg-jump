@@ -27,6 +27,12 @@ class DnsDomainCreate(BaseModel):
     enabled: bool = True
 
 
+class DnsDomainBulkCreate(BaseModel):
+    domains: list[str] = Field(min_length=1)
+    zone: str = "local"
+    enabled: bool = True
+
+
 @router.get("")
 async def get_dns_state(
     db: AsyncSession = Depends(get_db),
@@ -83,6 +89,36 @@ async def create_domain(
     await db.flush()
     await restart_dnsmasq(db)
     return {"id": item.id}
+
+
+@router.post("/domains/bulk", status_code=201)
+async def create_domains_bulk(
+    payload: DnsDomainBulkCreate,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(get_current_user),
+) -> dict:
+    normalized = {
+        item.lower().strip().strip(".")
+        for item in payload.domains
+        if item and item.strip().strip(".")
+    }
+    if not normalized:
+        raise HTTPException(status_code=400, detail="At least one domain is required")
+
+    existing = (
+        await db.execute(select(DnsDomainRule.domain).where(DnsDomainRule.domain.in_(normalized)))
+    ).scalars().all()
+    existing_set = set(existing)
+
+    created_ids: list[int] = []
+    for domain in sorted(normalized - existing_set):
+        item = DnsDomainRule(domain=domain, zone=payload.zone, enabled=payload.enabled)
+        db.add(item)
+        await db.flush()
+        created_ids.append(item.id)
+
+    await restart_dnsmasq(db)
+    return {"status": "added", "created": len(created_ids), "ids": created_ids}
 
 
 @router.delete("/domains/{rule_id}")
