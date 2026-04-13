@@ -1003,9 +1003,6 @@ function RoutingPage() {
           </div>
         </div>
         <div className="traffic-direction-card">
-          <div>
-            <div className="stat-label">{data.prefix_summary.total_prefixes.toLocaleString()} {t('totalPrefixes').toLowerCase()}</div>
-          </div>
           <div className={`traffic-toggle-row ${data.prefixes_route_local ? 'traffic-toggle-row-active' : ''}`}>
             <label className="toggle toggle-lg" title={t('routingPrefixes')}>
               <input type="checkbox" checked={data.prefixes_route_local} onChange={(event) => void togglePolicy('prefixes_route_local', event.target.checked)} />
@@ -1300,13 +1297,13 @@ function SettingsPage() {
 
   async function toggleDnsInterception(enabled: boolean) {
     const previous = Boolean(data.dns_intercept_enabled)
-    setData((current) => ({ ...current, dns_intercept_enabled: enabled }))
+    setData({ ...data, dns_intercept_enabled: enabled })
     try {
       await api.put('/settings', buildSettingsPayload({ dns_intercept_enabled: enabled }))
       setMessage('DNS interception updated')
       await reload()
     } catch (err: any) {
-      setData((current) => ({ ...current, dns_intercept_enabled: previous }))
+      setData({ ...data, dns_intercept_enabled: previous })
       setMessage(err?.response?.data?.detail || err.message || 'Failed to update DNS interception')
     }
   }

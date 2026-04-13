@@ -825,9 +825,9 @@ tr.active-node td:first-child {
 
 .traffic-direction-card {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 16px;
   margin-bottom: 14px;
   flex-wrap: wrap;
 }
@@ -840,6 +840,7 @@ tr.active-node td:first-child {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.015);
+  min-width: min(560px, 100%);
 }
 
 .traffic-toggle-row-active {
@@ -854,6 +855,12 @@ tr.active-node td:first-child {
 
 .traffic-toggle-copy-active {
   color: var(--accent);
+}
+
+.traffic-toggle-row > div:last-child {
+  display: grid;
+  align-content: center;
+  gap: 4px;
 }
 
 .traffic-toggle-meta-active {

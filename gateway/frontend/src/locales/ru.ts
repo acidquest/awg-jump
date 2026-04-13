@@ -62,7 +62,7 @@ export const ru = {
   localZones: 'Локальные routing zones',
   localZonesSubtitle: 'Страны, которые маршрутизируются мимо туннеля через интерфейс хоста',
   uploadConfFile: 'Загрузить .conf файл',
-  manualPrefixes: 'Ручной список IP/CIDR',
+  manualPrefixes: 'Список IP/CIDR',
   fqdnPrefixes: 'FQDN Prefixes',
   addCountry: 'Добавить страну',
   remove: 'Удалить',
