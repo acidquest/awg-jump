@@ -1045,8 +1045,10 @@ tr.active-node td:first-child { border-left: 2px solid var(--accent); }
   font-family: var(--font-mono);
   line-height: 1.08;
   letter-spacing: 1px;
-  white-space: pre-wrap;
-  word-break: break-all;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  white-space: nowrap;
+  word-break: normal;
   user-select: none;
   animation-name: login-rain-fall;
   animation-timing-function: linear;

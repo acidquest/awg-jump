@@ -13,7 +13,7 @@ function makeIpv4(seed: number) {
 }
 
 function makeRainStream(length: number, offset: number) {
-  return Array.from({ length }, (_, index) => makeIpv4(offset * 31 + index)).join('\n')
+  return Array.from({ length }, (_, index) => makeIpv4(offset * 31 + index)).join('  ')
 }
 
 export default function Login() {
