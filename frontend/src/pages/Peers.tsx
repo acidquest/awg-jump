@@ -190,7 +190,7 @@ function CreatePeerModal({ ifaces, onClose, onSaved }: {
     interface_id: ifaces[0]?.id ?? '',
     tunnel_address: '',
     allowed_ips: '0.0.0.0/0',
-    persistent_keepalive: '',
+    persistent_keepalive: '25',
   })
   const [error, setError] = useState('')
 

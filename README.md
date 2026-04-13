@@ -62,6 +62,7 @@ API контейнера `awg-jump` также биндуется на `127.0.0.
 
 - [Полная документация (RU)](docs/README_RU.md)
 - [Full documentation (EN)](docs/README_EN.md)
+- [Gateway-only block](gateway/README.md)
 
 ## Локальная проверка
 

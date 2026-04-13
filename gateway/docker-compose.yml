@@ -1,0 +1,29 @@
+services:
+  awg-gateway:
+    build:
+      context: ..
+      dockerfile: gateway/Dockerfile
+    container_name: awg-gateway
+    ports:
+      - "${GATEWAY_WEB_PORT:-8081}:8081"
+    environment:
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-changeme}"
+      WEB_PORT: 8081
+      DATA_DIR: /data
+      DB_PATH: /data/gateway.db
+      BACKUP_DIR: /data/backups
+      GEOIP_CACHE_DIR: /data/geoip
+      WG_CONFIG_DIR: /data/wg
+      DIAGNOSTICS_DIR: /data/diagnostics
+      RUNTIME_DIR: /var/run/awg-gateway
+    volumes:
+      - ./data:/data
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      - net.ipv4.ip_forward=1
+    restart: unless-stopped

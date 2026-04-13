@@ -44,7 +44,7 @@ class PeerCreate(BaseModel):
     name: str = ""
     tunnel_address: Optional[str] = None   # 10.10.0.x/32
     allowed_ips: str = "0.0.0.0/0"
-    persistent_keepalive: Optional[int] = None
+    persistent_keepalive: Optional[int] = 25
     # Если не указаны — генерируются автоматически
     public_key: Optional[str] = None
     private_key: Optional[str] = None
