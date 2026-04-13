@@ -4,11 +4,13 @@ import { getInterfaces, updateInterface, applyInterface, stopInterface, regenObf
 import { Interface } from '../types'
 import StatusBadge from '../components/StatusBadge'
 import Modal from '../components/Modal'
+import { formatDateLocal } from '../utils/time'
 
 export default function Interfaces() {
   const qc = useQueryClient()
   const [editing, setEditing] = useState<Interface | null>(null)
   const [busy, setBusy] = useState<Record<number, string>>({})
+  const [regenTarget, setRegenTarget] = useState<Interface | null>(null)
 
   const { data: ifaces = [], isLoading } = useQuery<Interface[]>({
     queryKey: ['interfaces'],
@@ -101,12 +103,12 @@ export default function Interfaces() {
                 <div className="flex gap-2">
                   {iface.obf_generated_at && (
                     <span className="text-muted text-sm">
-                      Generated {new Date(iface.obf_generated_at).toLocaleDateString()}
+                      Generated {formatDateLocal(iface.obf_generated_at)}
                     </span>
                   )}
                   <button
                     className="btn btn-secondary btn-sm"
-                    onClick={() => withBusy(iface.id, 'Regenerating', () => regenObfuscation(iface.id))}
+                    onClick={() => setRegenTarget(iface)}
                   >Regenerate</button>
                 </div>
               </div>
@@ -144,7 +146,53 @@ export default function Interfaces() {
           }}
         />
       )}
+
+      {regenTarget && (
+        <RegenConfirmModal
+          iface={regenTarget}
+          onClose={() => setRegenTarget(null)}
+          onConfirm={() => {
+            const target = regenTarget
+            setRegenTarget(null)
+            withBusy(target.id, 'Regenerating', () => regenObfuscation(target.id))
+          }}
+        />
+      )}
     </>
+  )
+}
+
+function RegenConfirmModal({ iface, onClose, onConfirm }: { iface: Interface; onClose: () => void; onConfirm: () => void }) {
+  return (
+    <Modal open title="Regenerate Obfuscation Parameters" onClose={onClose}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{
+          display: 'flex', gap: 12, alignItems: 'flex-start',
+          background: 'var(--bg-3)', borderRadius: 8, padding: '12px 14px',
+        }}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}>
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          <div style={{ fontSize: 13, lineHeight: 1.6 }}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>
+              After generating new parameters, all clients will lose connectivity.
+            </div>
+            <div className="text-muted">
+              The new obfuscation parameters must match on both ends of the tunnel.
+              You will need to redistribute configs to all clients of interface <span className="text-mono">{iface.name}</span> and ask them to reconnect.
+            </div>
+          </div>
+        </div>
+        <div className="text-muted" style={{ fontSize: 13 }}>
+          Continue generating new parameters for <span className="text-mono">{iface.name}</span>?
+        </div>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button className="btn btn-danger" onClick={onConfirm}>Regenerate</button>
+      </div>
+    </Modal>
   )
 }
 

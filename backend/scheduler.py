@@ -172,6 +172,19 @@ async def _node_health_check() -> None:
         logger.error("[node_health] Health check task error: %s", exc)
 
 
+# ── System metrics sampling ──────────────────────────────────────────────
+
+async def _system_metrics_sample() -> None:
+    from backend.database import AsyncSessionLocal
+    from backend.services.system_metrics import collect_system_metrics
+
+    try:
+        async with AsyncSessionLocal() as session:
+            await collect_system_metrics(session)
+    except Exception as exc:
+        logger.error("[scheduler] System metrics sampling error: %s", exc)
+
+
 # ── Инициализация ─────────────────────────────────────────────────────────
 
 def setup_scheduler() -> None:
@@ -218,9 +231,17 @@ def setup_scheduler() -> None:
         name="Upstream node health check",
     )
 
+    scheduler.add_job(
+        _system_metrics_sample,
+        trigger=IntervalTrigger(minutes=1),
+        id="system_metrics_sample",
+        replace_existing=True,
+        name="System metrics sampling",
+    )
+
     scheduler.start()
     logger.info(
-        "[scheduler] Started: geoip=%s, awg_check=60s, node_check=%ds",
+        "[scheduler] Started: geoip=%s, awg_check=60s, node_check=%ds, metrics=60s",
         settings.geoip_update_cron,
         settings.node_health_check_interval,
     )

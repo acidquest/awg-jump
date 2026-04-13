@@ -8,6 +8,7 @@ import { Node, NodeStats, DeployLog } from '../types'
 import StatusBadge from '../components/StatusBadge'
 import Modal from '../components/Modal'
 import { openSSE } from '../sse'
+import { formatDateTimeLocal } from '../utils/time'
 
 function fmtBytes(n: number | null) {
   if (!n) return '0'
@@ -18,9 +19,7 @@ function fmtBytes(n: number | null) {
 }
 
 function fmtDate(s: string | null) {
-  if (!s) return '—'
-  const utc = s.endsWith('Z') || s.includes('+') ? s : s + 'Z'
-  return new Date(utc).toLocaleString()
+  return formatDateTimeLocal(s)
 }
 
 function fmtLatency(latencyMs: number | null | undefined, status?: string | null) {

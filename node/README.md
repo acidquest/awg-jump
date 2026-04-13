@@ -76,6 +76,12 @@ services:
       - "51821:51821/udp"
 ```
 
+Если нода запускается из готового registry image, замени `build:` на:
+
+```yaml
+image: docker.io/<your-namespace>/awg-node:latest
+```
+
 ## Подключение к `awg-jump` вручную
 
 1. На `awg-jump` получи публичный ключ `awg1` и адрес VPN-подсети для связи jump ↔ node.

@@ -14,6 +14,7 @@ import Modal from '../components/Modal'
 import StatusBadge from '../components/StatusBadge'
 import { openSSE } from '../sse'
 import { GeoipSource, GeoipStatus } from '../types'
+import { formatDateTimeLocal, parseUtcDate } from '../utils/time'
 
 const DEFAULT_GEOIP_SOURCE_BASE = 'https://www.ipdeny.com/ipblocks/data/countries/'
 
@@ -543,7 +544,8 @@ function countryFlag(countryCode: string) {
 function formatRelativeTime(value: string | null | undefined) {
   if (!value) return 'Never'
 
-  const date = new Date(value)
+  const date = parseUtcDate(value)
+  if (!date) return 'Never'
   const diffMs = Date.now() - date.getTime()
   const diffSec = Math.max(0, Math.round(diffMs / 1000))
 
@@ -551,7 +553,7 @@ function formatRelativeTime(value: string | null | undefined) {
   if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`
   if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`
   if (diffSec < 604800) return `${Math.floor(diffSec / 86400)}d ago`
-  return date.toLocaleString()
+  return formatDateTimeLocal(value)
 }
 
 function latestUpdatedAt(sources: GeoipSource[]) {

@@ -1,7 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getRoutingStatus, getSystemStatus, restartRouting, triggerGeoipUpdate } from '../api'
-import { RoutingStatus, SystemStatus } from '../types'
+import { Area, AreaChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { useState } from 'react'
+import { getRoutingStatus, getSystemMetrics, getSystemStatus, restartRouting, triggerGeoipUpdate } from '../api'
+import { RoutingStatus, SystemMetricsResponse, SystemStatus } from '../types'
 import StatusBadge from '../components/StatusBadge'
+import { formatDateTimeLocal, formatTimeLocal, parseUtcDate } from '../utils/time'
 
 function fmtUptime(sec: number) {
   const d = Math.floor(sec / 86400)
@@ -14,16 +17,27 @@ function fmtUptime(sec: number) {
 
 function fmtBytes(bytes: number | null | undefined) {
   if (!bytes) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
   let v = bytes
   let i = 0
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
   return `${v.toFixed(1)} ${units[i]}`
 }
 
+function fmtPercent(value: number | null | undefined) {
+  return `${(value ?? 0).toFixed(1)}%`
+}
+
+function fmtMetricTime(ts: string, period: '1h' | '24h') {
+  void period
+  return formatTimeLocal(ts)
+}
+
 function fmtHandshake(ts: string | null) {
   if (!ts) return 'never'
-  const diff = Date.now() - new Date(ts).getTime()
+  const date = parseUtcDate(ts)
+  if (!date) return 'never'
+  const diff = Date.now() - date.getTime()
   const m = Math.floor(diff / 60000)
   if (m < 1) return 'just now'
   if (m < 60) return `${m}m ago`
@@ -44,6 +58,7 @@ function fmtLatency(latencyMs: number | null | undefined, status?: string | null
 
 export default function Dashboard() {
   const qc = useQueryClient()
+  const [metricsPeriod, setMetricsPeriod] = useState<'1h' | '24h'>('1h')
 
   const { data, isLoading } = useQuery<SystemStatus>({
     queryKey: ['system-status'],
@@ -54,6 +69,12 @@ export default function Dashboard() {
   const { data: routingData } = useQuery<RoutingStatus>({
     queryKey: ['routing'],
     queryFn: () => getRoutingStatus().then((r) => r.data),
+    refetchInterval: 30_000,
+  })
+
+  const { data: metricsData } = useQuery<SystemMetricsResponse>({
+    queryKey: ['system-metrics', metricsPeriod],
+    queryFn: () => getSystemMetrics(metricsPeriod).then((r) => r.data),
     refetchInterval: 30_000,
   })
 
@@ -74,6 +95,11 @@ export default function Dashboard() {
   const awg1 = s.interfaces.find((i) => i.name === 'awg1')
   const totalPrefixes = s.geoip.reduce((a, g) => a + (g.prefix_count || 0), 0)
   const routing = routingData ?? s.routing
+  const latestMetrics = metricsData?.latest
+  const metricPoints = metricsData?.points.map((point) => ({
+    ...point,
+    label: fmtMetricTime(point.collected_at, metricsPeriod),
+  })) ?? []
 
   return (
     <>
@@ -175,6 +201,130 @@ export default function Dashboard() {
         </div>
       </div>
 
+      <div className="section">
+        <div className="section-title">
+          <span>System Load</span>
+          <div className="segmented-control" role="tablist" aria-label="Metrics period">
+            <button
+              className={`segmented-btn${metricsPeriod === '1h' ? ' active' : ''}`}
+              onClick={() => setMetricsPeriod('1h')}
+              type="button"
+            >
+              1h
+            </button>
+            <button
+              className={`segmented-btn${metricsPeriod === '24h' ? ' active' : ''}`}
+              onClick={() => setMetricsPeriod('24h')}
+              type="button"
+            >
+              24h
+            </button>
+          </div>
+        </div>
+        <div className="card-grid card-grid-2 system-metrics-grid">
+          <div className="card metric-card">
+            <div className="metric-card-header">
+              <div>
+                <div className="card-title" style={{ marginBottom: 10 }}>CPU Load</div>
+                <div className="stat-value text-accent">{fmtPercent(latestMetrics?.cpu_usage_percent)}</div>
+                <div className="stat-label">sampled every minute, retained for 24 hours</div>
+              </div>
+              <div className="metric-chip">host CPU</div>
+            </div>
+            <div className="metric-chart-wrap">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={metricPoints}>
+                  <CartesianGrid stroke="rgba(139, 148, 158, 0.12)" vertical={false} />
+                  <XAxis
+                    dataKey="label"
+                    minTickGap={28}
+                    stroke="var(--text-3)"
+                    tick={{ fontSize: 11, fill: 'var(--text-3)' }}
+                  />
+                  <YAxis
+                    domain={[0, 100]}
+                    tickFormatter={(value) => `${value}%`}
+                    stroke="var(--text-3)"
+                    tick={{ fontSize: 11, fill: 'var(--text-3)' }}
+                    width={42}
+                  />
+                  <Tooltip content={<MetricsTooltip type="cpu" />} />
+                  <Line
+                    type="monotone"
+                    dataKey="cpu_usage_percent"
+                    stroke="var(--accent)"
+                    strokeWidth={2.5}
+                    dot={false}
+                    activeDot={{ r: 4, strokeWidth: 0, fill: 'var(--accent)' }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="card metric-card">
+            <div className="metric-card-header">
+              <div>
+                <div className="card-title" style={{ marginBottom: 10 }}>Memory</div>
+                <div className="stat-value">{fmtBytes(latestMetrics?.memory_used_bytes)}</div>
+                <div className="stat-label">
+                  free {fmtBytes(latestMetrics?.memory_free_bytes)} of {fmtBytes(latestMetrics?.memory_total_bytes)}
+                </div>
+              </div>
+              <div className="metric-chip">RAM</div>
+            </div>
+            <div className="metric-chart-wrap">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={metricPoints}>
+                  <defs>
+                    <linearGradient id="memoryUsedFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="rgba(0, 212, 170, 0.45)" />
+                      <stop offset="100%" stopColor="rgba(0, 212, 170, 0.04)" />
+                    </linearGradient>
+                    <linearGradient id="memoryFreeFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="rgba(56, 189, 248, 0.30)" />
+                      <stop offset="100%" stopColor="rgba(56, 189, 248, 0.03)" />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="rgba(139, 148, 158, 0.12)" vertical={false} />
+                  <XAxis
+                    dataKey="label"
+                    minTickGap={28}
+                    stroke="var(--text-3)"
+                    tick={{ fontSize: 11, fill: 'var(--text-3)' }}
+                  />
+                  <YAxis
+                    tickFormatter={(value) => fmtBytes(value)}
+                    stroke="var(--text-3)"
+                    tick={{ fontSize: 11, fill: 'var(--text-3)' }}
+                    width={56}
+                  />
+                  <Tooltip content={<MetricsTooltip type="memory" />} />
+                  <Area
+                    type="monotone"
+                    dataKey="memory_free_bytes"
+                    stackId="memory"
+                    stroke="#38bdf8"
+                    fill="url(#memoryFreeFill)"
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="memory_used_bytes"
+                    stackId="memory"
+                    stroke="var(--accent)"
+                    fill="url(#memoryUsedFill)"
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* GeoIP sources */}
       <div className="section">
         <div className="section-title">GeoIP Sources</div>
@@ -198,7 +348,7 @@ export default function Dashboard() {
                   <td className="text-mono">{g.ipset_name}</td>
                   <td>{g.prefix_count?.toLocaleString() ?? 0}</td>
                   <td className="text-muted" style={{ fontSize: 12 }}>
-                    {g.last_updated ? new Date(g.last_updated).toLocaleString() : 'never'}
+                    {g.last_updated ? formatDateTimeLocal(g.last_updated) : 'never'}
                   </td>
                   <td>
                     <StatusBadge status={g.cache_fresh ? 'online' : 'offline'} />
@@ -225,6 +375,48 @@ export default function Dashboard() {
         )}
       </div>
     </>
+  )
+}
+
+function MetricsTooltip({
+  active,
+  payload,
+  label,
+  type,
+}: {
+  active?: boolean
+  payload?: Array<{ dataKey?: string; value?: number; payload?: { collected_at: string } }>
+  label?: string
+  type: 'cpu' | 'memory'
+}) {
+  if (!active || !payload?.length) return null
+
+  const ts = payload[0]?.payload?.collected_at
+
+  return (
+    <div className="chart-tooltip">
+      <div className="chart-tooltip-title">
+        {ts ? formatDateTimeLocal(ts) : label}
+      </div>
+      {type === 'cpu' ? (
+        <div className="chart-tooltip-row">
+          <span className="chart-swatch cpu" />
+          CPU {fmtPercent(Number(payload[0]?.value ?? 0))}
+        </div>
+      ) : (
+        <>
+          {payload
+            .slice()
+            .reverse()
+            .map((entry) => (
+              <div key={entry.dataKey} className="chart-tooltip-row">
+                <span className={`chart-swatch ${entry.dataKey === 'memory_used_bytes' ? 'used' : 'free'}`} />
+                {entry.dataKey === 'memory_used_bytes' ? 'Used' : 'Free'} {fmtBytes(Number(entry.value ?? 0))}
+              </div>
+            ))}
+        </>
+      )}
+    </div>
   )
 }
 

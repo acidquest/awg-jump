@@ -14,6 +14,10 @@
 3. Подними стек: `docker compose up -d --build`
 4. Открой `https://<host>:${NGINX_HTTPS_PORT:-443}`
 
+Для деплоя без локальной сборки через Docker Hub смотри:
+- [Deploy via Docker Hub (RU)](docs/DEPLOY_DOCKER_HUB_RU.md)
+- [Deploy via Docker Hub (EN)](docs/DEPLOY_DOCKER_HUB_EN.md)
+
 API контейнера `awg-jump` также биндуется на `127.0.0.1:8080` только для локальной диагностики и smoke-тестов. Наружу публикуются `NGINX_HTTPS_PORT`, `NGINX_HTTP_PORT` и AWG UDP-порт.
 
 ## Основные переменные
@@ -26,7 +30,7 @@ API контейнера `awg-jump` также биндуется на `127.0.0.
 - `NODE_AWG_PORT`, `NODE_VPN_SUBNET`: параметры сети upstream-нод.
 - `GEOIP_SOURCE`, `GEOIP_UPDATE_CRON`: базовый URL источника и расписание обновления GeoIP для локальной зоны.
 
-Полный список и комментарии смотри в [`.env.ru.example`](/opt/awg-jump/.env.ru.example) или [`.env.en.example`](/opt/awg-jump/.env.en.example).
+Полный список и комментарии смотри в [`.env.ru.example`](.env.ru.example) или [`.env.en.example`](.env.en.example).
 
 ## Nodes и деплой
 
@@ -39,7 +43,7 @@ API контейнера `awg-jump` также биндуется на `127.0.0.
 5. `awg-jump` собирает или доставляет образ `awg-node`, генерирует конфиг peer'а и поднимает контейнер на удалённой машине.
 6. При активации ноды jump-сервер обновляет `awg1`, а health-check/failover переключает активную ноду при деградации.
 
-Для ручного развёртывания upstream-узла смотри [node/README.md](/opt/awg-jump/node/README.md).
+Для ручного развёртывания upstream-узла смотри [node/README.md](node/README.md).
 
 ## Split DNS
 
@@ -62,6 +66,8 @@ API контейнера `awg-jump` также биндуется на `127.0.0.
 
 - [Полная документация (RU)](docs/README_RU.md)
 - [Full documentation (EN)](docs/README_EN.md)
+- [Deploy via Docker Hub (RU)](docs/DEPLOY_DOCKER_HUB_RU.md)
+- [Deploy via Docker Hub (EN)](docs/DEPLOY_DOCKER_HUB_EN.md)
 
 ## Локальная проверка
 
@@ -70,3 +76,8 @@ API контейнера `awg-jump` также биндуется на `127.0.0.
 - Сборка образов:
   - `docker build -t awg-jump .`
   - `docker build -t awg-node ./node`
+- Публикация и image-based deploy:
+  - `./scripts/publish_dockerhub.sh <namespace> <tag> --latest`
+  - `./scripts/publish_dockerhub.sh <namespace> <tag> --latest --with-node`
+  - `./scripts/bootstrap_first_node.sh`
+  - `powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_first_node.ps1`
