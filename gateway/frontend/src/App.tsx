@@ -15,6 +15,10 @@ type NodeItem = {
   private_key: string
   preshared_key: string | null
   latest_latency_ms: number | null
+  latest_latency_at?: string | null
+  latest_latency_target?: string | null
+  latest_latency_via_interface?: string | null
+  latest_latency_method?: string | null
   udp_status: string | null
   udp_detail: string | null
   is_active: boolean
@@ -43,7 +47,15 @@ type SystemStatus = {
   runtime_available: boolean
   tunnel_status: string
   tunnel_last_error: string | null
-  active_entry_node: { id: number; name: string; endpoint: string; latest_latency_ms: number | null } | null
+  active_entry_node: {
+    id: number
+    name: string
+    endpoint: string
+    latest_latency_ms: number | null
+    latest_latency_target?: string | null
+    latest_latency_via_interface?: string | null
+    latest_latency_method?: string | null
+  } | null
   entry_node_count: number
   dns_rule_count: number
   traffic_source_mode: string
@@ -390,7 +402,11 @@ function DashboardPage() {
             <>
               <div className="stat-value" style={{ fontSize: 20 }}>{data.active_entry_node.name}</div>
               <div className="stat-label">{data.active_entry_node.endpoint}</div>
-              <div className="text-muted text-sm" style={{ marginTop: 10 }}>{t('latency')}: {fmtLatency(data.active_entry_node.latest_latency_ms)}</div>
+              <div className="text-muted text-sm" style={{ marginTop: 10 }}>
+                {t('latency')}: {fmtLatency(data.active_entry_node.latest_latency_ms)}
+                <br />
+                {fmtLatencyProbe(data.active_entry_node.latest_latency_target, data.active_entry_node.latest_latency_via_interface, t)}
+              </div>
             </>
           ) : (
             <>
@@ -716,7 +732,12 @@ function NodesPage() {
                 <tr key={node.id} className={node.is_active ? 'active-node' : ''}>
                   <td>{node.name}</td>
                   <td className="text-mono">{node.endpoint}</td>
-                  <td className="text-mono">{fmtLatency(node.latest_latency_ms)}</td>
+                  <td className="text-mono">
+                    {fmtLatency(node.latest_latency_ms)}
+                    <div className="text-muted" style={{ fontSize: 11, marginTop: 4 }}>
+                      {fmtLatencyProbe(node.latest_latency_target, node.latest_latency_via_interface, t)}
+                    </div>
+                  </td>
                   <td>{node.is_active ? '—' : renderUdpStatus(node.udp_status, t)}</td>
                   <td>
                     <div className="nodes-actions">
@@ -2119,6 +2140,16 @@ function fmtPercent(value: number | null | undefined) {
 function fmtLatency(latencyMs: number | null | undefined) {
   if (latencyMs == null) return '—'
   return `${latencyMs.toFixed(0)} ms`
+}
+
+function fmtLatencyProbe(
+  target: string | null | undefined,
+  viaInterface: string | null | undefined,
+  t: (key: any) => string,
+) {
+  if (!target) return t('latencyTargetUnknown')
+  if (viaInterface) return `${t('latencyProbeLabel')} ${target} ${t('latencyProbeVia')} ${viaInterface}`
+  return `${t('latencyProbeLabel')} ${target} ${t('latencyProbeVia')} ${t('defaultRoute')}`
 }
 
 function renderUdpStatus(status: string | null | undefined, t: (key: any) => string) {

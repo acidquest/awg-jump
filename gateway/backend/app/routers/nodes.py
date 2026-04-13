@@ -17,7 +17,7 @@ from app.security import get_current_user
 from app.services.conf_parser import parse_peer_conf, render_peer_conf, split_endpoint
 from app.services.first_node_bootstrap import bootstrap_first_node, cleanup_bootstrap_queue, get_bootstrap_queue
 from app.services.routing import apply_routing_plan
-from app.services.runtime import probe_node_latency, probe_udp_endpoint, resolve_live_tunnel_status, start_tunnel, stop_tunnel
+from app.services.runtime import probe_node_latency, probe_node_latency_details, probe_udp_endpoint, resolve_live_tunnel_status, start_tunnel, stop_tunnel
 
 
 router = APIRouter(prefix="/api/nodes", tags=["entry-nodes"])
@@ -82,6 +82,9 @@ def _to_payload(
     udp_status: str | None = None,
     udp_detail: str | None = None,
     latency_ms: float | None = None,
+    latency_target: str | None = None,
+    latency_via_interface: str | None = None,
+    latency_method: str | None = None,
 ) -> dict:
     return {
         "id": node.id,
@@ -101,6 +104,9 @@ def _to_payload(
         "obfuscation": node.obfuscation,
         "latest_latency_ms": node.latest_latency_ms if latency_ms is None else latency_ms,
         "latest_latency_at": node.latest_latency_at.isoformat() if node.latest_latency_at else None,
+        "latest_latency_target": latency_target,
+        "latest_latency_via_interface": latency_via_interface,
+        "latest_latency_method": latency_method,
         "last_error": node.last_error,
         "udp_status": udp_status,
         "udp_detail": udp_detail,
@@ -114,8 +120,9 @@ def _refresh_latency_for_active_tunnel(node: EntryNode) -> None:
         node.latest_latency_ms = None
         node.last_error = None
         return
-    latency_ms = probe_node_latency(node, prefer_tunnel=True)
-    node.latest_latency_ms = latency_ms
+    probe = probe_node_latency_details(node, prefer_tunnel=True)
+    latency_ms = probe["latency_ms"]
+    node.latest_latency_ms = latency_ms if isinstance(latency_ms, float) else None
     node.latest_latency_at = datetime.now(timezone.utc)
     node.last_error = None if latency_ms is not None else "Latency probe failed"
 
@@ -129,17 +136,29 @@ async def list_nodes(
     payloads: list[dict] = []
     for node in nodes:
         if node.is_active:
+            probe = probe_node_latency_details(node, prefer_tunnel=True)
             _refresh_latency_for_active_tunnel(node)
             db.add(node)
-            payloads.append(_to_payload(node))
+            payloads.append(
+                _to_payload(
+                    node,
+                    latency_target=probe["target"] if isinstance(probe["target"], str) else None,
+                    latency_via_interface=probe["via_interface"] if isinstance(probe["via_interface"], str) else None,
+                    latency_method=probe["method"] if isinstance(probe["method"], str) else None,
+                )
+            )
             continue
         udp_status, udp_detail = probe_udp_endpoint(node)
+        probe = probe_node_latency_details(node)
         payloads.append(
             _to_payload(
                 node,
                 udp_status=udp_status,
                 udp_detail=udp_detail,
-                latency_ms=probe_node_latency(node),
+                latency_ms=probe["latency_ms"] if isinstance(probe["latency_ms"], float) else None,
+                latency_target=probe["target"] if isinstance(probe["target"], str) else None,
+                latency_via_interface=probe["via_interface"] if isinstance(probe["via_interface"], str) else None,
+                latency_method=probe["method"] if isinstance(probe["method"], str) else None,
             )
         )
     await db.flush()

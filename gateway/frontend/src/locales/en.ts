@@ -205,4 +205,8 @@ export const en = {
   bootstrapNextStep1b: 'Fill in at least ADMIN_PASSWORD and SECRET_KEY.',
   bootstrapNextStep2a: '2. Start the stack from',
   copyLog: 'Copy log',
+  latencyProbeLabel: 'Ping to',
+  latencyProbeVia: 'via',
+  latencyTargetUnknown: 'Probe target is not available',
+  defaultRoute: 'default route',
 }

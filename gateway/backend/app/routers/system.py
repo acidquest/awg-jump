@@ -13,7 +13,7 @@ from app.services.runtime import (
     current_pid,
     get_kernel_support_status,
     is_runtime_available,
-    probe_node_latency,
+    probe_node_latency_details,
     resolve_live_tunnel_status,
 )
 from app.services.system_metrics import get_metrics_history
@@ -42,7 +42,9 @@ async def status(
     await db.flush()
     active_node = await db.get(EntryNode, gateway_settings.active_entry_node_id) if gateway_settings.active_entry_node_id else None
     if active_node is not None:
-        active_node.latest_latency_ms = probe_node_latency(active_node, prefer_tunnel=True)
+        probe = probe_node_latency_details(active_node, prefer_tunnel=True)
+        latency_ms = probe["latency_ms"]
+        active_node.latest_latency_ms = latency_ms if isinstance(latency_ms, float) else None
         db.add(active_node)
         await db.flush()
     entry_node_count = await db.scalar(select(func.count()).select_from(EntryNode))
@@ -57,6 +59,9 @@ async def status(
             "name": active_node.name,
             "endpoint": active_node.endpoint,
             "latest_latency_ms": active_node.latest_latency_ms,
+            "latest_latency_target": probe["target"] if isinstance(probe["target"], str) else None,
+            "latest_latency_via_interface": probe["via_interface"] if isinstance(probe["via_interface"], str) else None,
+            "latest_latency_method": probe["method"] if isinstance(probe["method"], str) else None,
         } if active_node else None,
         "entry_node_count": entry_node_count,
         "dns_rule_count": dns_rule_count,

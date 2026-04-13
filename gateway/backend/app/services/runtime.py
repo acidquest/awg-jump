@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -20,6 +21,7 @@ _PROCESS: subprocess.Popen | None = None
 _KERNEL_MODE: bool | None = None
 _KERNEL_PROBE_MESSAGE: str | None = None
 logger = logging.getLogger(__name__)
+_PING_TIME_RE = re.compile(r"time[=<]([0-9]+(?:\.[0-9]+)?)")
 
 
 def _stream_process_logs(proc: subprocess.Popen, node_name: str) -> None:
@@ -316,12 +318,13 @@ def probe_latency(node: EntryNode, *, target: str | None = None, interface_name:
     if proc.returncode != 0:
         logger.warning("[awg-runtime] latency probe failed target=%s rc=%s output=%s", target, proc.returncode, output.strip())
         return None
-    latency_ms = (time.monotonic() - started_at) * 1000
+    match = _PING_TIME_RE.search(output)
+    latency_ms = float(match.group(1)) if match else (time.monotonic() - started_at) * 1000
     logger.info("[awg-runtime] latency probe target=%s rtt_ms=%.2f", target, latency_ms)
     return latency_ms
 
 
-def probe_node_latency(node: EntryNode, *, prefer_tunnel: bool = False) -> float | None:
+def probe_node_latency_details(node: EntryNode, *, prefer_tunnel: bool = False) -> dict[str, str | float | None]:
     candidates: list[tuple[str, str | None]] = []
     if prefer_tunnel and node.probe_ip:
         candidates.append((node.probe_ip, settings.tunnel_interface))
@@ -338,8 +341,24 @@ def probe_node_latency(node: EntryNode, *, prefer_tunnel: bool = False) -> float
         seen.add(key)
         latency_ms = probe_latency(node, target=target, interface_name=interface_name)
         if latency_ms is not None:
-            return latency_ms
-    return None
+            return {
+                "latency_ms": latency_ms,
+                "target": target,
+                "via_interface": interface_name,
+                "method": "icmp_ping",
+            }
+    return {
+        "latency_ms": None,
+        "target": candidates[0][0] if candidates else None,
+        "via_interface": candidates[0][1] if candidates else None,
+        "method": "icmp_ping",
+    }
+
+
+def probe_node_latency(node: EntryNode, *, prefer_tunnel: bool = False) -> float | None:
+    details = probe_node_latency_details(node, prefer_tunnel=prefer_tunnel)
+    latency_ms = details["latency_ms"]
+    return latency_ms if isinstance(latency_ms, float) else None
 
 
 def probe_udp_endpoint(node: EntryNode, *, timeout_sec: float = 1.0) -> tuple[str, str | None]:

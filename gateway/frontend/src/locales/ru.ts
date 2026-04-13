@@ -205,4 +205,8 @@ export const ru = {
   bootstrapNextStep1b: 'Заполняете как минимум ADMIN_PASSWORD и SECRET_KEY.',
   bootstrapNextStep2a: '2. Запускаете стек из',
   copyLog: 'Скопировать лог',
+  latencyProbeLabel: 'Пинг до',
+  latencyProbeVia: 'через',
+  latencyTargetUnknown: 'Цель проверки недоступна',
+  defaultRoute: 'маршрут по умолчанию',
 }
