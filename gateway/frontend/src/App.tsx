@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import api from './api'
 import { useI18n } from './i18n'
@@ -23,6 +23,20 @@ type NodeItem = {
   allowed_ips: string[]
   persistent_keepalive: number | null
   obfuscation: Record<string, string | number>
+}
+
+type FirstNodeBootstrapLog = {
+  id: number
+  target_host: string
+  ssh_user: string
+  ssh_port: number
+  remote_dir: string
+  docker_namespace: string
+  image_tag: string
+  status: string
+  log_output: string
+  finished_at: string | null
+  created_at: string
 }
 
 type SystemStatus = {
@@ -78,6 +92,12 @@ type PrefixSummary = {
   sources: PrefixSourceSummary[]
 }
 
+type DeployStep = {
+  ts: string
+  msg: string
+  type: 'info' | 'success' | 'error' | 'default'
+}
+
 type RoutingPolicyData = {
   countries_enabled: boolean
   geoip_countries: string[]
@@ -118,6 +138,30 @@ function useLoader<T>(url: string, fallback: T) {
 
   useEffect(() => { void reload() }, [url])
   return { data, loading, error, reload, setData }
+}
+
+function openEventStream(
+  path: string,
+  onMessage: (payload: any) => void,
+  onDone?: () => void,
+  onError?: () => void,
+) {
+  const token = localStorage.getItem('gateway-token')
+  const streamUrl = token ? `${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : path
+  const source = new EventSource(streamUrl)
+  source.onmessage = (event) => {
+    const payload = JSON.parse(event.data)
+    onMessage(payload)
+    if (payload.finished || payload.status === 'done' || payload.message === '__done__') {
+      source.close()
+      onDone?.()
+    }
+  }
+  source.onerror = () => {
+    source.close()
+    onError?.()
+  }
+  return () => source.close()
 }
 
 function LoginPage() {
@@ -609,9 +653,12 @@ function PolicyPage() {
 function NodesPage() {
   const { t } = useI18n()
   const { data, loading, error, reload } = useLoader<NodeItem[]>('/nodes', [])
+  const { data: bootstrapLogs, reload: reloadBootstrapLogs } = useLoader<FirstNodeBootstrapLog[]>('/nodes/bootstrap-first/logs', [])
   const [message, setMessage] = useState('')
   const [editNode, setEditNode] = useState<NodeItem | null>(null)
   const [showAddNode, setShowAddNode] = useState(false)
+  const [showBootstrapModal, setShowBootstrapModal] = useState(false)
+  const [selectedBootstrapLog, setSelectedBootstrapLog] = useState<FirstNodeBootstrapLog | null>(null)
 
   async function activate(nodeId: number) {
     await api.post(`/nodes/${nodeId}/activate`)
@@ -639,6 +686,7 @@ function NodesPage() {
           <div className="page-subtitle">{t('nodesSubtitle')}</div>
         </div>
         <div className="flex gap-2">
+          <button className="btn btn-primary btn-sm" onClick={() => setShowBootstrapModal(true)}>{t('deployNode')}</button>
           <button className="btn btn-primary btn-sm" onClick={() => setShowAddNode(true)}>{t('add')}</button>
           <button className="btn btn-secondary btn-sm" onClick={() => void startTunnel()}>{t('startTunnel')}</button>
           <button className="btn btn-secondary btn-sm" onClick={() => void stopTunnel()}>{t('stopTunnel')}</button>
@@ -689,6 +737,37 @@ function NodesPage() {
           </table>
         </div>
       </div>
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-title" style={{ marginBottom: 14 }}>{t('bootstrapHistory')}</div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>{t('host')}</th>
+                <th>{t('dockerImages')}</th>
+                <th>{t('status')}</th>
+                <th>{t('createdAt')}</th>
+                <th>{t('actions')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bootstrapLogs.length === 0 ? (
+                <tr><td colSpan={5} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>{t('noBootstrapLogs')}</td></tr>
+              ) : bootstrapLogs.map((log) => (
+                <tr key={log.id}>
+                  <td className="text-mono">{log.target_host}:{log.ssh_port}</td>
+                  <td className="text-mono">{log.docker_namespace}:{log.image_tag}</td>
+                  <td>{renderBootstrapStatus(log.status, t)}</td>
+                  <td className="text-mono">{new Date(log.created_at).toLocaleString()}</td>
+                  <td>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setSelectedBootstrapLog(log)}>{t('viewLog')}</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
       {showAddNode ? (
         <NodeImportModal
           onClose={() => setShowAddNode(false)}
@@ -696,6 +775,16 @@ function NodesPage() {
             setShowAddNode(false)
             setMessage(`${t('imported')} ${nodeName}`)
             await reload()
+          }}
+        />
+      ) : null}
+      {showBootstrapModal ? (
+        <FirstNodeBootstrapModal
+          onClose={() => setShowBootstrapModal(false)}
+          onDone={async () => {
+            setShowBootstrapModal(false)
+            setMessage(t('firstNodeBootstrapCompleted'))
+            await reloadBootstrapLogs()
           }}
         />
       ) : null}
@@ -710,7 +799,267 @@ function NodesPage() {
           }}
         />
       ) : null}
+      {selectedBootstrapLog ? (
+        <LogViewerModal
+          title={t('deployLog')}
+          logOutput={selectedBootstrapLog.log_output}
+          onClose={() => setSelectedBootstrapLog(null)}
+        />
+      ) : null}
     </>
+  )
+}
+
+function renderBootstrapStatus(status: string, t: (key: any) => string) {
+  if (status === 'success') return <span className="badge badge-online">{t('completed')}</span>
+  if (status === 'failed') return <span className="badge badge-error">{t('failed')}</span>
+  return <span className="badge badge-pending">{t('running')}</span>
+}
+
+function classifyStep(message: string): DeployStep['type'] {
+  const normalized = message.toLowerCase()
+  if (normalized.startsWith('error') || normalized.includes('failed')) return 'error'
+  if (normalized.includes('complete') || normalized.includes('success')) return 'success'
+  if (normalized.startsWith('[')) return 'info'
+  return 'default'
+}
+
+function LogViewerModal({ title, logOutput, onClose }: { title: string; logOutput: string; onClose: () => void }) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal modal-xl" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">{title}</div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>Close</button>
+        </div>
+        <div className="terminal" style={{ minHeight: 220 }}>
+          <pre style={{ margin: 0, color: '#a8b5c2', whiteSpace: 'pre-wrap' }}>{logOutput || '(empty)'}</pre>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function FirstNodeBootstrapModal({
+  onClose,
+  onDone,
+}: {
+  onClose: () => void
+  onDone: () => Promise<void>
+}) {
+  const { t } = useI18n()
+  const [phase, setPhase] = useState<'form' | 'deploying' | 'done'>('form')
+  const [form, setForm] = useState(() => {
+    const saved = localStorage.getItem('gateway-first-node-bootstrap-form')
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved) as { docker_namespace?: string; image_tag?: string; remote_dir?: string }
+        return {
+          host: '',
+          ssh_user: 'root',
+          ssh_port: '22',
+          ssh_password: '',
+          remote_dir: parsed.remote_dir || '/opt/awg-jump',
+          docker_namespace: parsed.docker_namespace || '',
+          image_tag: parsed.image_tag || 'latest',
+        }
+      } catch {}
+    }
+    return {
+      host: '',
+      ssh_user: 'root',
+      ssh_port: '22',
+      ssh_password: '',
+      remote_dir: '/opt/awg-jump',
+      docker_namespace: '',
+      image_tag: 'latest',
+    }
+  })
+  const [lines, setLines] = useState<DeployStep[]>([])
+  const [error, setError] = useState('')
+  const [progress, setProgress] = useState(0)
+  const [logOutput, setLogOutput] = useState('')
+  const termRef = useRef<HTMLDivElement | null>(null)
+  const cleanupRef = useRef<(() => void) | null>(null)
+
+  useEffect(() => {
+    localStorage.setItem(
+      'gateway-first-node-bootstrap-form',
+      JSON.stringify({
+        remote_dir: form.remote_dir,
+        docker_namespace: form.docker_namespace,
+        image_tag: form.image_tag,
+      }),
+    )
+  }, [form.remote_dir, form.docker_namespace, form.image_tag])
+
+  useEffect(() => {
+    if (termRef.current) {
+      termRef.current.scrollTop = termRef.current.scrollHeight
+    }
+  }, [lines])
+
+  useEffect(() => () => { cleanupRef.current?.() }, [])
+
+  const setField = (key: keyof typeof form) => (event: React.ChangeEvent<HTMLInputElement>) =>
+    setForm((current) => ({ ...current, [key]: event.target.value }))
+
+  const addLine = (message: string) => {
+    setLines((current) => [...current, { ts: new Date().toLocaleTimeString(), msg: message, type: classifyStep(message) }])
+    setLogOutput((current) => `${current}${message}\n`)
+  }
+
+  async function startBootstrap() {
+    setError('')
+    setLines([])
+    setLogOutput('')
+    setProgress(5)
+    setPhase('deploying')
+
+    try {
+      const response = await api.post('/nodes/bootstrap-first', {
+        host: form.host,
+        ssh_user: form.ssh_user,
+        ssh_password: form.ssh_password,
+        ssh_port: Number(form.ssh_port),
+        remote_dir: form.remote_dir,
+        docker_namespace: form.docker_namespace,
+        image_tag: form.image_tag,
+      })
+      const logId = response.data.bootstrap_log_id as number
+      let stepCount = 0
+      cleanupRef.current = openEventStream(
+        `/api/nodes/bootstrap-first/${logId}/stream`,
+        (payload) => {
+          const message = String(payload.message ?? '')
+          if (message && message !== '__done__') {
+            addLine(message)
+          }
+          stepCount += message.startsWith('[') ? 1 : 0
+          setProgress(Math.min(10 + stepCount * 12, 92))
+          if (payload.status === 'error') {
+            cleanupRef.current?.()
+            setProgress(100)
+            setPhase('form')
+            setError(message || t('bootstrapFailed'))
+          }
+          if (payload.finished || payload.status === 'done') {
+            setProgress(100)
+            setPhase('done')
+          }
+        },
+        () => {
+          setProgress(100)
+          setPhase((current) => current === 'form' ? current : 'done')
+        },
+        () => {
+          setError(t('streamDisconnected'))
+        },
+      )
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || err.message || t('bootstrapFailed'))
+      setProgress(0)
+      setPhase('form')
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={() => { cleanupRef.current?.(); onClose() }}>
+      <div className="modal modal-xl" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">{t('deployFirstNode')}</div>
+          <button className="btn btn-ghost btn-sm" onClick={() => { cleanupRef.current?.(); onClose() }}>Close</button>
+        </div>
+        {phase === 'form' ? (
+          <>
+            {error ? <div className="error-box">{error}</div> : null}
+            <div className="form-row form-row-2">
+              <div className="form-group">
+                <label className="form-label">{t('host')}</label>
+                <input className="form-input mono" value={form.host} onChange={setField('host')} placeholder="203.0.113.10" />
+              </div>
+              <div className="form-group">
+                <label className="form-label">{t('remoteDir')}</label>
+                <input className="form-input mono" value={form.remote_dir} onChange={setField('remote_dir')} />
+              </div>
+            </div>
+            <div className="form-row form-row-3">
+              <div className="form-group">
+                <label className="form-label">{t('sshUser')}</label>
+                <input className="form-input mono" value={form.ssh_user} onChange={setField('ssh_user')} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">{t('sshPort')}</label>
+                <input className="form-input mono" value={form.ssh_port} onChange={setField('ssh_port')} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">{t('imageTag')}</label>
+                <input className="form-input mono" value={form.image_tag} onChange={setField('image_tag')} />
+              </div>
+            </div>
+            <div className="form-row form-row-2">
+              <div className="form-group">
+                <label className="form-label">{t('sshPassword')}</label>
+                <input className="form-input" type="password" value={form.ssh_password} onChange={setField('ssh_password')} autoComplete="new-password" />
+              </div>
+              <div className="form-group">
+                <label className="form-label">{t('dockerNamespace')}</label>
+                <input className="form-input mono" value={form.docker_namespace} onChange={setField('docker_namespace')} placeholder="your-dockerhub-namespace" />
+              </div>
+            </div>
+            <div className="info-box">
+              {t('bootstrapFormNotice')}
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-secondary" onClick={onClose}>{t('cancel')}</button>
+              <button
+                className="btn btn-primary"
+                onClick={() => void startBootstrap()}
+                disabled={!form.host || !form.ssh_user || !form.ssh_password || !form.docker_namespace}
+              >
+                {t('deploy')}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ marginBottom: 12 }}>
+              <div className="progress-bar">
+                <div className="progress-bar-fill" style={{ width: `${progress}%` }} />
+              </div>
+            </div>
+            <div className="terminal" ref={termRef}>
+              {lines.map((line, index) => (
+                <div key={`${line.ts}-${index}`} className={`terminal-line ${line.type}`}>
+                  <span className="ts">{line.ts}</span>
+                  <span className="msg">{line.msg}</span>
+                </div>
+              ))}
+              {phase === 'deploying' ? (
+                <div className="terminal-line">
+                  <span className="ts" />
+                  <span className="msg"><span className="spinner" /></span>
+                </div>
+              ) : null}
+            </div>
+            {phase === 'done' ? (
+              <>
+                <div className="info-box" style={{ marginTop: 16 }}>
+                  <strong>{t('nextSteps')}</strong><br />
+                  {t('bootstrapNextStep1a')} <span className="text-mono">{form.remote_dir}/.env</span>. {t('bootstrapNextStep1b')}
+                  <br />
+                  {t('bootstrapNextStep2a')} <span className="text-mono">{form.remote_dir}</span>: <span className="text-mono">docker compose -f docker-compose.yml pull && docker compose -f docker-compose.yml up -d</span>
+                </div>
+                <div className="modal-actions">
+                  <button className="btn btn-secondary" onClick={() => navigator.clipboard.writeText(logOutput)}>{t('copyLog')}</button>
+                  <button className="btn btn-primary" onClick={() => void onDone()}>{t('done')}</button>
+                </div>
+              </>
+            ) : null}
+          </>
+        )}
+      </div>
+    </div>
   )
 }
 

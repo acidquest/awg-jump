@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
-from app.models import AdminUser, AuditEvent, EntryNode, GatewaySettings, RoutingPolicy
+from app.models import AdminUser, AuditEvent, EntryNode, FirstNodeBootstrapLog, FirstNodeBootstrapStatus, GatewaySettings, RoutingPolicy
 from app.security import get_current_user
 from app.services.conf_parser import parse_peer_conf, render_peer_conf, split_endpoint
+from app.services.first_node_bootstrap import bootstrap_first_node, cleanup_bootstrap_queue, get_bootstrap_queue
 from app.services.routing import apply_routing_plan
 from app.services.runtime import probe_node_latency, probe_udp_endpoint, resolve_live_tunnel_status, start_tunnel, stop_tunnel
 
@@ -44,6 +48,32 @@ class EntryNodeVisualUpdate(BaseModel):
     dns_servers: list[str] = []
     allowed_ips: list[str] = []
     persistent_keepalive: int | None = None
+
+
+class FirstNodeBootstrapRequest(BaseModel):
+    host: str = Field(min_length=1, max_length=255)
+    ssh_user: str = Field(min_length=1, max_length=128)
+    ssh_password: str = Field(min_length=1, max_length=512)
+    ssh_port: int = Field(default=22, ge=1, le=65535)
+    remote_dir: str = Field(default="/opt/awg-jump", min_length=1, max_length=512)
+    docker_namespace: str = Field(min_length=1, max_length=255)
+    image_tag: str = Field(default="latest", min_length=1, max_length=128)
+
+
+def _serialize_bootstrap_log(log: FirstNodeBootstrapLog) -> dict:
+    return {
+        "id": log.id,
+        "target_host": log.target_host,
+        "ssh_user": log.ssh_user,
+        "ssh_port": log.ssh_port,
+        "remote_dir": log.remote_dir,
+        "docker_namespace": log.docker_namespace,
+        "image_tag": log.image_tag,
+        "status": log.status,
+        "log_output": log.log_output,
+        "finished_at": log.finished_at.isoformat() if log.finished_at else None,
+        "created_at": log.created_at.isoformat(),
+    }
 
 
 def _to_payload(
@@ -114,6 +144,87 @@ async def list_nodes(
         )
     await db.flush()
     return payloads
+
+
+@router.get("/bootstrap-first/logs")
+async def list_first_node_bootstrap_logs(
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(get_current_user),
+) -> list[dict]:
+    logs = (
+        await db.execute(select(FirstNodeBootstrapLog).order_by(FirstNodeBootstrapLog.id.desc()).limit(20))
+    ).scalars().all()
+    return [_serialize_bootstrap_log(log) for log in logs]
+
+
+@router.post("/bootstrap-first")
+async def start_first_node_bootstrap(
+    payload: FirstNodeBootstrapRequest,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(get_current_user),
+) -> dict:
+    log = FirstNodeBootstrapLog(
+        target_host=payload.host.strip(),
+        ssh_user=payload.ssh_user.strip(),
+        ssh_port=payload.ssh_port,
+        remote_dir=payload.remote_dir.strip(),
+        docker_namespace=payload.docker_namespace.strip(),
+        image_tag=payload.image_tag.strip(),
+        status=FirstNodeBootstrapStatus.running.value,
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(log)
+    await db.flush()
+    db.add(
+        AuditEvent(
+            event_type="entry_node.bootstrap_first_started",
+            payload={"bootstrap_log_id": log.id, "target_host": log.target_host},
+        )
+    )
+    await db.flush()
+    asyncio.create_task(
+        bootstrap_first_node(
+            log_id=log.id,
+            host=payload.host.strip(),
+            ssh_user=payload.ssh_user.strip(),
+            ssh_password=payload.ssh_password,
+            ssh_port=payload.ssh_port,
+            remote_dir=payload.remote_dir.strip(),
+            docker_namespace=payload.docker_namespace.strip(),
+            image_tag=payload.image_tag.strip(),
+        )
+    )
+    return {"bootstrap_log_id": log.id}
+
+
+@router.get("/bootstrap-first/{log_id}/stream")
+async def stream_first_node_bootstrap_log(
+    log_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(get_current_user),
+) -> StreamingResponse:
+    log = await db.get(FirstNodeBootstrapLog, log_id)
+    if log is None:
+        raise HTTPException(status_code=404, detail="Bootstrap log not found")
+    queue = get_bootstrap_queue(log_id)
+
+    async def event_stream():
+        existing_lines = [line for line in (log.log_output or "").splitlines() if line.strip()]
+        step = 0
+        for line in existing_lines:
+            if line.startswith("[") and "] " in line:
+                step += 1
+            payload = {"step": step, "message": line, "status": log.status}
+            yield f"data: {json.dumps(payload)}\n\n"
+        while True:
+            item = await queue.get()
+            if item is None:
+                yield "data: {\"finished\": true, \"status\": \"done\", \"message\": \"__done__\"}\n\n"
+                cleanup_bootstrap_queue(log_id)
+                break
+            yield f"data: {item}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.get("/{node_id}")

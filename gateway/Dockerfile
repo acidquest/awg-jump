@@ -57,6 +57,9 @@ COPY --from=awg-tools-builder /out/usr/bin/awg /usr/local/bin/awg
 COPY --from=python-builder /opt/venv /opt/venv
 COPY --from=frontend-builder /frontend/dist /app/gateway/frontend/dist
 COPY gateway/backend /app/gateway/backend
+COPY deploy /app/deploy
+COPY .env.ru.example /app/.env.ru.example
+COPY .env.en.example /app/.env.en.example
 
 WORKDIR /app
 

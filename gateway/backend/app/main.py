@@ -99,6 +99,25 @@ async def _ensure_sqlite_columns() -> None:
             await conn.execute(
                 text("CREATE INDEX IF NOT EXISTS ix_system_metrics_collected_at ON system_metrics (collected_at)")
             )
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS first_node_bootstrap_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_host VARCHAR(256) NOT NULL,
+                    ssh_user VARCHAR(128) NOT NULL,
+                    ssh_port INTEGER NOT NULL DEFAULT 22,
+                    remote_dir VARCHAR(512) NOT NULL,
+                    docker_namespace VARCHAR(256) NOT NULL,
+                    image_tag VARCHAR(128) NOT NULL,
+                    status VARCHAR(32) NOT NULL DEFAULT 'running',
+                    log_output TEXT NOT NULL DEFAULT '',
+                    finished_at DATETIME,
+                    created_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
 
 
 async def _restore_runtime_state(session: AsyncSession) -> None:

@@ -94,6 +94,28 @@ class EntryNode(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class FirstNodeBootstrapStatus(str, Enum):
+    running = "running"
+    success = "success"
+    failed = "failed"
+
+
+class FirstNodeBootstrapLog(Base):
+    __tablename__ = "first_node_bootstrap_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    target_host: Mapped[str] = mapped_column(String(256), nullable=False)
+    ssh_user: Mapped[str] = mapped_column(String(128), nullable=False)
+    ssh_port: Mapped[int] = mapped_column(Integer, nullable=False, default=22)
+    remote_dir: Mapped[str] = mapped_column(String(512), nullable=False)
+    docker_namespace: Mapped[str] = mapped_column(String(256), nullable=False)
+    image_tag: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default=FirstNodeBootstrapStatus.running.value, nullable=False)
+    log_output: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
 class RoutingPolicy(Base):
     __tablename__ = "routing_policies"
 

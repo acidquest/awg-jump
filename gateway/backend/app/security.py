@@ -5,7 +5,7 @@ import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,15 +67,17 @@ def _get_session(token: str) -> dict[str, str | datetime] | None:
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_security),
+    token: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> AdminUser:
-    if credentials is None:
+    raw_token = credentials.credentials if credentials is not None else token
+    if raw_token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    session = _get_session(credentials.credentials)
+    session = _get_session(raw_token)
     if session is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
