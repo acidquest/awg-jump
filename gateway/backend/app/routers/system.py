@@ -8,7 +8,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import AdminUser, DnsDomainRule, EntryNode, GatewaySettings, RoutingPolicy
 from app.security import get_current_user
-from app.services.runtime import current_pid, is_runtime_available
+from app.services.runtime import current_pid, get_kernel_support_status, is_runtime_available
 
 
 router = APIRouter(prefix="/api/system", tags=["system"])
@@ -24,6 +24,7 @@ async def status(
     db: AsyncSession = Depends(get_db),
     user: AdminUser = Depends(get_current_user),
 ) -> dict:
+    kernel_available, kernel_message = get_kernel_support_status()
     gateway_settings = await db.get(GatewaySettings, 1)
     routing_policy = await db.get(RoutingPolicy, 1)
     active_node = await db.get(EntryNode, gateway_settings.active_entry_node_id) if gateway_settings.active_entry_node_id else None
@@ -43,6 +44,8 @@ async def status(
         "dns_rule_count": dns_rule_count,
         "traffic_source_mode": gateway_settings.traffic_source_mode,
         "runtime_mode": gateway_settings.runtime_mode,
+        "kernel_available": kernel_available,
+        "kernel_message": kernel_message,
         "ui_language": gateway_settings.ui_language,
         "kill_switch_enabled": routing_policy.kill_switch_enabled,
         "geoip_countries": routing_policy.geoip_countries,

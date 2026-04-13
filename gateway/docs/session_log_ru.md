@@ -30,6 +30,9 @@
 
 - Изменено: `gateway/backend/app/services/runtime.py`, `routers/system.py`, `routers/nodes.py`.
 - Что заработало: runtime foundation под `amneziawg-go`, генерация runtime-конфига, запуск/остановка туннеля, `latency` probe.
+- Дополнительно после отладки: `latency` теперь измеряется автоматически при активации entry node и перед запуском туннеля; отдельная кнопка ручного измерения из UI убрана.
+- Уточнение после реального запуска: при закрытом ICMP на публичном endpoint измерение переведено на `probe_ip` активной ноды через поднятый AWG-туннель; для неактивных нод latency в UI не показывается.
+- Для неактивных нод в списке добавлен отдельный UDP-статус публичного endpoint как best-effort проверка `open/open_or_filtered/unreachable`, без подмены его latency.
 - Что сознательно не реализовано: auto-failover, внешняя телеметрия, command channel.
 - Проверки: backend compile, ручной обзор runtime-веток.
 - Риски: фактический runtime не проверялся в контейнере в этой сессии; для боевого режима нужен запуск под Linux с правами сети.
@@ -38,6 +41,7 @@
 
 - Изменено: `gateway/backend/app/services/geoip.py`, `routing.py`, `dns.py`, `routers/routing.py`, `routers/dns.py`.
 - Что заработало: GeoIP refresh с кэшем, reuse `ipset_manager` из текущего `awg-jump`, routing plan с kill switch и безопасной блокировкой, `dns split` preview и локальные зоны.
+- Дополнительно после доводки: `/routing/apply` теперь реально применяет `ip rule`, `iptables` и `MASQUERADE` внутри контейнера; в UI переключатели `GeoIP enabled`, `Kill switch` и `Strict mode` обновляются и применяются сразу, без кнопки `Save`.
 - Что сознательно не реализовано: молчаливый fallback на прямой трафик; plan блокируется, если active node/GeoIP не готовы.
 - Проверки: unit test `test_routing_plan.py`.
 - Риски: фактическое применение iptables/ip rule пока оформлено как безопасный plan/apply-контур без полной Linux smoke-проверки.
@@ -62,6 +66,7 @@
 
 - Изменено: `gateway/Dockerfile`, `gateway/docker-compose.yml`, `gateway/.env.example`, `gateway/README.md`.
 - Что заработало: build scaffold, healthcheck, Linux-only run instructions, required capabilities, явный `net.ipv4.ip_forward=1` для `gateway`.
+- Дополнительно после реального запуска: при старте контейнера `gateway` автоматически восстанавливает AWG runtime и routing apply, если ранее уже была выбрана активная entry node.
 - Что сознательно не реализовано: публичная публикация образа и полноценные smoke-тесты внутри контейнера.
 - Проверки: backend compile/tests; docker-файлы подготовлены, но образ не собирался в этой сессии.
 - Риски: `npm install` и сборка образа не запускались локально; фактическая сборка может потребовать дополнительной доводки зависимостей.

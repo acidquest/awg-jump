@@ -8,11 +8,7 @@ import httpx
 
 from app.config import settings
 from app.models import RoutingPolicy
-
-try:
-    from backend.services import ipset_manager as shared_ipset_manager
-except Exception:  # pragma: no cover
-    shared_ipset_manager = None
+from app.services import ipset_manager
 
 
 def cache_path(country_code: str) -> Path:
@@ -64,13 +60,12 @@ async def refresh_policy_geoip(policy: RoutingPolicy) -> dict:
     for prefix in policy.manual_prefixes:
         merged.add(prefix)
 
-    if shared_ipset_manager is not None:
-        await asyncio.get_running_loop().run_in_executor(
-            None,
-            shared_ipset_manager.create_or_update,
-            policy.geoip_ipset_name,
-            sorted(merged),
-        )
+    await asyncio.get_running_loop().run_in_executor(
+        None,
+        ipset_manager.create_or_update,
+        policy.geoip_ipset_name,
+        sorted(merged),
+    )
 
     return {
         "countries": fetched,

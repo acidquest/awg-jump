@@ -12,7 +12,7 @@ from app.database import get_db
 from app.models import AdminUser, EntryNode, GatewaySettings, RoutingPolicy
 from app.security import get_current_user
 from app.services.geoip import refresh_policy_geoip
-from app.services.routing import build_routing_plan
+from app.services.routing import apply_routing_plan, build_routing_plan
 
 
 router = APIRouter(prefix="/api/routing", tags=["routing"])
@@ -175,7 +175,19 @@ async def apply_plan(
     active_node = await db.get(EntryNode, settings_row.active_entry_node_id) if settings_row.active_entry_node_id else None
     plan = build_routing_plan(settings_row, policy, active_node)
     policy.last_applied_at = datetime.now(timezone.utc)
-    policy.last_error = None if plan["safe_to_apply"] else "Routing plan is not safe to apply"
+    if not plan["safe_to_apply"]:
+        policy.last_error = "Routing plan is not safe to apply"
+        db.add(policy)
+        await db.flush()
+        return {"status": "blocked", "plan": plan}
+    try:
+        plan = apply_routing_plan(settings_row, policy, active_node)
+        policy.last_error = None
+    except RuntimeError as exc:
+        policy.last_error = str(exc)
+        db.add(policy)
+        await db.flush()
+        return {"status": "error", "error": policy.last_error, "plan": plan}
     db.add(policy)
     await db.flush()
-    return {"status": "applied" if plan["safe_to_apply"] else "blocked", "plan": plan}
+    return {"status": "applied", "plan": plan}

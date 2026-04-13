@@ -34,9 +34,11 @@
 
 1. Создай env: `cp gateway/.env.example gateway/.env`
 2. Собери и запусти: `docker compose -f gateway/docker-compose.yml up -d --build`
-3. Открой `http://<host>:8081`
+3. Открой `http://<host>:${GATEWAY_WEB_PORT:-8081}`
 
-Для runtime-режимов требуются Linux, `NET_ADMIN`, `NET_RAW`, `/dev/net/tun` и `net.ipv4.ip_forward=1` внутри контейнера.
+Контейнер запускается в `network_mode: host`, чтобы работать как реальный gateway и применять policy routing/NAT в сетевом namespace хоста.
+
+Для runtime-режимов требуются Linux, `NET_ADMIN`, `NET_RAW`, `/dev/net/tun` и `net.ipv4.ip_forward=1` на хосте. При `network_mode: host` этот sysctl нельзя задавать через `docker-compose` внутри контейнера.
 
 ## Backend checks
 

@@ -43,6 +43,7 @@ ENV PATH=/opt/venv/bin:$PATH \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    dnsmasq \
     iproute2 \
     ipset \
     iptables \
@@ -61,6 +62,6 @@ WORKDIR /app
 
 EXPOSE 8081/tcp
 
-HEALTHCHECK --interval=20s --timeout=3s --retries=5 CMD curl -fsS http://127.0.0.1:8081/api/system/health || exit 1
+HEALTHCHECK --interval=20s --timeout=3s --retries=5 CMD sh -c 'curl -fsS "http://127.0.0.1:${WEB_PORT:-8081}/api/system/health" || exit 1'
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8081"]
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port \"${WEB_PORT:-8081}\""]

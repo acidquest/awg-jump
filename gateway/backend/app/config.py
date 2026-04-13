@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     wg_config_dir: str = "/data/wg"
     diagnostics_dir: str = "/data/diagnostics"
     runtime_dir: str = "/var/run/awg-gateway"
+    dns_runtime_dir: str = "/data/dns"
 
     tunnel_interface: str = "awg-gw0"
     amneziawg_go_binary: str = "amneziawg-go"
@@ -53,5 +54,6 @@ def ensure_directories() -> None:
         settings.wg_config_dir,
         settings.diagnostics_dir,
         settings.runtime_dir,
+        settings.dns_runtime_dir,
     ]:
         Path(path).mkdir(parents=True, exist_ok=True)

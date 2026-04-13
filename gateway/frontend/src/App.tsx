@@ -10,10 +10,13 @@ type NodeItem = {
   endpoint: string
   endpoint_host: string
   endpoint_port: number
+  probe_ip: string | null
   public_key: string
   private_key: string
   preshared_key: string | null
   latest_latency_ms: number | null
+  udp_status: string | null
+  udp_detail: string | null
   is_active: boolean
   tunnel_address: string
   dns_servers: string[]
@@ -29,6 +32,9 @@ type SystemStatus = {
   entry_node_count: number
   dns_rule_count: number
   traffic_source_mode: string
+  runtime_mode: string
+  kernel_available: boolean
+  kernel_message: string | null
   ui_language: string
   kill_switch_enabled: boolean
   geoip_countries: string[]
@@ -237,6 +243,9 @@ function DashboardPage() {
     entry_node_count: 0,
     dns_rule_count: 0,
     traffic_source_mode: 'localhost',
+    runtime_mode: 'auto',
+    kernel_available: false,
+    kernel_message: null,
     ui_language: 'en',
     kill_switch_enabled: true,
     geoip_countries: [],
@@ -252,6 +261,7 @@ function DashboardPage() {
         <button className="btn btn-secondary btn-sm" onClick={() => void reload()}>{t('refresh')}</button>
       </div>
       {error ? <div className="error-box">{error}</div> : null}
+      {!error && !loading && !data.kernel_available ? <div className="info-box">{t('kernelUnavailable')}{data.kernel_message ? `: ${data.kernel_message}` : ''}</div> : null}
       {loading ? <div style={{ padding: 40, textAlign: 'center' }}><span className="spinner" /></div> : null}
       <div className="card-grid card-grid-4" style={{ marginBottom: 20 }}>
         <StatCard title={t('tunnel')} value={data.tunnel_status} label={data.runtime_available ? 'runtime ready' : 'runtime missing'} accent />
@@ -279,6 +289,9 @@ function DashboardPage() {
           <div className="card-title" style={{ marginBottom: 10 }}>{t('routeSafety')}</div>
           <div className="stat-value" style={{ fontSize: 20 }}>{data.kill_switch_enabled ? 'protected' : 'relaxed'}</div>
           <div className="stat-label">{t('trafficSource')}: {data.traffic_source_mode}</div>
+          <div className="text-muted text-sm" style={{ marginTop: 10 }}>
+            {t('kernelModeStatus')}: {data.kernel_available ? t('available') : t('unavailable')}
+          </div>
         </div>
       </div>
     </>
@@ -379,7 +392,7 @@ function GeoipPage() {
             </div>
           </div>
         </form>
-        <div className="table-wrap">
+        <div className="table-wrap nodes-table-wrap">
           <table>
             <thead>
               <tr>
@@ -452,49 +465,25 @@ function GeoipPage() {
 function NodesPage() {
   const { t } = useI18n()
   const { data, loading, error, reload } = useLoader<NodeItem[]>('/nodes', [])
-  const [name, setName] = useState('')
-  const [confText, setConfText] = useState('')
   const [message, setMessage] = useState('')
   const [editNode, setEditNode] = useState<NodeItem | null>(null)
-
-  async function loadConfFile(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
-    if (!file) return
-    const text = await file.text()
-    setConfText(text)
-    if (!name) {
-      const baseName = file.name.replace(/\.conf$/i, '')
-      setName(baseName)
-    }
-  }
-
-  async function importConf(event: FormEvent) {
-    event.preventDefault()
-    const response = await api.post('/nodes/import', { name: name || null, conf_text: confText })
-    setMessage(`${t('imported')} ${response.data.name}`)
-    setName('')
-    setConfText('')
-    await reload()
-  }
+  const [showAddNode, setShowAddNode] = useState(false)
 
   async function activate(nodeId: number) {
     await api.post(`/nodes/${nodeId}/activate`)
     await reload()
   }
 
-  async function probe(nodeId: number) {
-    await api.post(`/nodes/${nodeId}/probe`)
-    await reload()
-  }
-
   async function startTunnel() {
     await api.post('/nodes/runtime/start')
     setMessage(t('tunnelStartRequested'))
+    await reload()
   }
 
   async function stopTunnel() {
     await api.post('/nodes/runtime/stop')
     setMessage(t('tunnelStopRequested'))
+    await reload()
   }
 
   return (
@@ -505,70 +494,60 @@ function NodesPage() {
           <div className="page-subtitle">{t('nodesSubtitle')}</div>
         </div>
         <div className="flex gap-2">
+          <button className="btn btn-primary btn-sm" onClick={() => setShowAddNode(true)}>{t('add')}</button>
           <button className="btn btn-secondary btn-sm" onClick={() => void startTunnel()}>{t('startTunnel')}</button>
           <button className="btn btn-secondary btn-sm" onClick={() => void stopTunnel()}>{t('stopTunnel')}</button>
         </div>
       </div>
       {message ? <div className="info-box">{message}</div> : null}
       {error ? <div className="error-box">{error}</div> : null}
-      <div className="card-grid card-grid-2" style={{ marginBottom: 20 }}>
-        <div className="card">
-          <div className="card-title" style={{ marginBottom: 14 }}>{t('importConf')}</div>
-          <form onSubmit={importConf}>
-            <div className="form-group">
-              <label className="form-label">Name</label>
-              <input className="form-input" value={name} onChange={(event) => setName(event.target.value)} placeholder={t('optionalDisplayName')} />
-            </div>
-            <div className="form-group">
-              <label className="form-label">.conf</label>
-              <textarea className="form-input mono" rows={15} value={confText} onChange={(event) => setConfText(event.target.value)} placeholder="[Interface]" />
-            </div>
-            <div className="flex gap-2">
-              <label className="btn btn-secondary">
-                {t('uploadConfFile')}
-                <input type="file" accept=".conf,text/plain" hidden onChange={loadConfFile} />
-              </label>
-              <button className="btn btn-primary" type="submit">{t('save')}</button>
-            </div>
-          </form>
-        </div>
-        <div className="card">
-          <div className="card-title" style={{ marginBottom: 14 }}>{t('savedNodes')}</div>
-          {loading ? <div style={{ padding: 40, textAlign: 'center' }}><span className="spinner" /></div> : null}
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>{t('activeNode')}</th>
-                  <th>Name</th>
-                  <th>{t('endpoint')}</th>
-                  <th>{t('latency')}</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.length === 0 ? (
-                  <tr><td colSpan={5} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>No entry nodes imported yet</td></tr>
-                ) : data.map((node) => (
-                  <tr key={node.id} className={node.is_active ? 'active-node' : ''}>
-                    <td>{node.is_active ? <span className="badge badge-online">{t('active')}</span> : '—'}</td>
-                    <td>{node.name}</td>
-                    <td className="text-mono">{node.endpoint}</td>
-                    <td className="text-mono">{fmtLatency(node.latest_latency_ms)}</td>
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-title" style={{ marginBottom: 14 }}>{t('savedNodes')}</div>
+        {loading ? <div style={{ padding: 40, textAlign: 'center' }}><span className="spinner" /></div> : null}
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>{t('activeNode')}</th>
+                <th>Name</th>
+                <th>{t('endpoint')}</th>
+                <th>{t('latency')}</th>
+                <th>{t('udpStatus')}</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.length === 0 ? (
+                <tr><td colSpan={6} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>No entry nodes imported yet</td></tr>
+              ) : data.map((node) => (
+                <tr key={node.id} className={node.is_active ? 'active-node' : ''}>
+                  <td>{node.is_active ? <span className="badge badge-online">{t('active')}</span> : '—'}</td>
+                  <td>{node.name}</td>
+                  <td className="text-mono">{node.endpoint}</td>
+                  <td className="text-mono">{node.is_active ? fmtLatency(node.latest_latency_ms) : t('unavailable')}</td>
+                  <td>{node.is_active ? '—' : renderUdpStatus(node.udp_status, t)}</td>
                     <td>
-                      <div className="flex gap-2">
-                        <button className="btn btn-secondary btn-sm" onClick={() => void probe(node.id)}>{t('latency')}</button>
+                      <div className="nodes-actions">
                         <button className="btn btn-primary btn-sm" onClick={() => void activate(node.id)}>{t('activate')}</button>
                         <button className="btn btn-ghost btn-sm" onClick={() => setEditNode(node)}>Edit</button>
                       </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
+      {showAddNode ? (
+        <NodeImportModal
+          onClose={() => setShowAddNode(false)}
+          onSaved={async (nodeName) => {
+            setShowAddNode(false)
+            setMessage(`${t('imported')} ${nodeName}`)
+            await reload()
+          }}
+        />
+      ) : null}
       {editNode ? (
         <NodeEditorModal
           node={editNode}
@@ -584,6 +563,76 @@ function NodesPage() {
   )
 }
 
+function NodeImportModal({
+  onClose,
+  onSaved,
+}: {
+  onClose: () => void
+  onSaved: (nodeName: string) => Promise<void>
+}) {
+  const { t } = useI18n()
+  const [name, setName] = useState('')
+  const [confText, setConfText] = useState('')
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  async function loadConfFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) return
+    const text = await file.text()
+    setConfText(text)
+    if (!name) {
+      setName(file.name.replace(/\.conf$/i, ''))
+    }
+  }
+
+  async function importConf(event: FormEvent) {
+    event.preventDefault()
+    setSaving(true)
+    setError('')
+    try {
+      const response = await api.post('/nodes/import', { name: name || null, conf_text: confText })
+      await onSaved(response.data.name)
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || err.message || 'Failed to import entry node')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal modal-xl" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">{t('importConf')}</div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>Close</button>
+        </div>
+        {error ? <div className="error-box">{error}</div> : null}
+        <form onSubmit={importConf}>
+          <div className="form-group">
+            <label className="form-label">Name</label>
+            <input className="form-input" value={name} onChange={(event) => setName(event.target.value)} placeholder={t('optionalDisplayName')} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">.conf</label>
+            <textarea className="form-input mono" rows={18} value={confText} onChange={(event) => setConfText(event.target.value)} placeholder="[Interface]" />
+          </div>
+          <div className="modal-actions">
+            <label className="btn btn-secondary">
+              {t('uploadConfFile')}
+              <input type="file" accept=".conf,text/plain" hidden onChange={loadConfFile} />
+            </label>
+            <button className="btn btn-secondary" type="button" onClick={onClose}>Cancel</button>
+            <button className="btn btn-primary" type="submit" disabled={saving}>
+              {saving ? <span className="spinner" /> : t('save')}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 function NodeEditorModal({
   node,
   onClose,
@@ -593,6 +642,7 @@ function NodeEditorModal({
   onClose: () => void
   onSaved: () => Promise<void>
 }) {
+  const { t } = useI18n()
   const [tab, setTab] = useState<'raw' | 'visual'>('visual')
   const [error, setError] = useState('')
   const [rawName, setRawName] = useState(node.name)
@@ -600,6 +650,7 @@ function NodeEditorModal({
   const [visual, setVisual] = useState({
     name: node.name,
     endpoint: node.endpoint,
+    probe_ip: node.probe_ip ?? '',
     public_key: node.public_key,
     private_key: node.private_key,
     preshared_key: node.preshared_key ?? '',
@@ -633,6 +684,7 @@ function NodeEditorModal({
       await api.put(`/nodes/${node.id}/visual`, {
         name: visual.name,
         endpoint: visual.endpoint,
+        probe_ip: visual.probe_ip || null,
         public_key: visual.public_key,
         private_key: visual.private_key,
         preshared_key: visual.preshared_key || null,
@@ -672,6 +724,10 @@ function NodeEditorModal({
                 <label className="form-label">Endpoint</label>
                 <input className="form-input mono" value={visual.endpoint} onChange={setField('endpoint')} />
               </div>
+            </div>
+            <div className="form-group">
+              <label className="form-label">{t('probeIp')}</label>
+              <input className="form-input mono" value={visual.probe_ip} onChange={setField('probe_ip')} placeholder="10.77.7.1" />
             </div>
             <div className="form-row form-row-2">
               <div className="form-group">
@@ -740,7 +796,7 @@ function NodeEditorModal({
 
 function RoutingPage() {
   const { t } = useI18n()
-  const { data, loading, error, reload } = useLoader<any>('/routing', {
+  const { data, loading, error, reload, setData } = useLoader<any>('/routing', {
     geoip_enabled: true,
     geoip_countries: ['ru'],
     invert_geoip: false,
@@ -750,17 +806,25 @@ function RoutingPage() {
   })
   const { data: plan, reload: reloadPlan } = useLoader<any>('/routing/plan', { commands: [], warnings: [], safe_to_apply: false })
   const [countries, setCountries] = useState('ru')
+  const [message, setMessage] = useState('')
 
   useEffect(() => setCountries((data.geoip_countries || ['ru']).join(',')), [data.geoip_countries])
 
-  async function savePolicy(event: FormEvent) {
-    event.preventDefault()
+  async function persistPolicy(nextData: any) {
+    setData(nextData)
     await api.put('/routing', {
-      ...data,
+      ...nextData,
       geoip_countries: countries.split(',').map((item) => item.trim()).filter(Boolean),
     })
+    const applyResponse = await api.post('/routing/apply')
+    setMessage(applyResponse.data.status === 'applied' ? 'Routing applied' : applyResponse.data.error || 'Routing blocked')
     await reload()
     await reloadPlan()
+  }
+
+  async function togglePolicy(key: 'geoip_enabled' | 'kill_switch_enabled' | 'strict_mode', value: boolean) {
+    const nextData = { ...data, [key]: value }
+    await persistPolicy(nextData)
   }
 
   return (
@@ -775,6 +839,7 @@ function RoutingPage() {
           <button className="btn btn-primary btn-sm" onClick={() => void reloadPlan()}>{t('buildPlan')}</button>
         </div>
       </div>
+      {message ? <div className="info-box">{message}</div> : null}
       {error ? <div className="error-box">{error}</div> : null}
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="card-header" style={{ marginBottom: 10 }}>
@@ -785,36 +850,33 @@ function RoutingPage() {
             </div>
           </div>
         </div>
-        <form onSubmit={savePolicy}>
-          <div className="form-row form-row-2">
-            <div className="form-group">
-              <label className="form-label">{t('geoipCountries')}</label>
-              <input className="form-input" value={countries} onChange={(event) => setCountries(event.target.value)} />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Default policy</label>
-              <input className="form-input" value={data.default_policy} readOnly />
-            </div>
+        <div className="form-row form-row-2">
+          <div className="form-group">
+            <label className="form-label">{t('geoipCountries')}</label>
+            <input className="form-input" value={countries} onChange={(event) => setCountries(event.target.value)} readOnly />
           </div>
-          <div className="flex gap-4" style={{ marginBottom: 14 }}>
-            <label className="toggle" title={t('geoipEnabled')}>
-              <input type="checkbox" checked={data.geoip_enabled} onChange={(event) => { data.geoip_enabled = event.target.checked }} />
-              <span className="toggle-slider" />
-            </label>
-            <span className="text-sm">{t('geoipEnabled')}</span>
-            <label className="toggle" title={t('killSwitch')}>
-              <input type="checkbox" checked={data.kill_switch_enabled} onChange={(event) => { data.kill_switch_enabled = event.target.checked }} />
-              <span className="toggle-slider" />
-            </label>
-            <span className="text-sm">{t('killSwitch')}</span>
-            <label className="toggle" title={t('strictMode')}>
-              <input type="checkbox" checked={data.strict_mode} onChange={(event) => { data.strict_mode = event.target.checked }} />
-              <span className="toggle-slider" />
-            </label>
-            <span className="text-sm">{t('strictMode')}</span>
+          <div className="form-group">
+            <label className="form-label">Default policy</label>
+            <input className="form-input" value={data.default_policy} readOnly />
           </div>
-          <button className="btn btn-primary" type="submit">{t('save')}</button>
-        </form>
+        </div>
+        <div className="flex gap-4" style={{ marginBottom: 14 }}>
+          <label className="toggle" title={t('geoipEnabled')}>
+            <input type="checkbox" checked={data.geoip_enabled} onChange={(event) => void togglePolicy('geoip_enabled', event.target.checked)} />
+            <span className="toggle-slider" />
+          </label>
+          <span className="text-sm">{t('geoipEnabled')}</span>
+          <label className="toggle" title={t('killSwitch')}>
+            <input type="checkbox" checked={data.kill_switch_enabled} onChange={(event) => void togglePolicy('kill_switch_enabled', event.target.checked)} />
+            <span className="toggle-slider" />
+          </label>
+          <span className="text-sm">{t('killSwitch')}</span>
+          <label className="toggle" title={t('strictMode')}>
+            <input type="checkbox" checked={data.strict_mode} onChange={(event) => void togglePolicy('strict_mode', event.target.checked)} />
+            <span className="toggle-slider" />
+          </label>
+          <span className="text-sm">{t('strictMode')}</span>
+        </div>
       </div>
       <div className="section">
         <div className="section-title">Policy routing diagram</div>
@@ -1055,6 +1117,8 @@ function SettingsPage() {
     traffic_source_mode: 'localhost',
     allowed_client_cidrs: [],
     allowed_client_hosts: [],
+    kernel_available: false,
+    kernel_message: null,
   })
   const [cidrs, setCidrs] = useState('')
   const [hosts, setHosts] = useState('')
@@ -1115,6 +1179,12 @@ function SettingsPage() {
                 <option value="kernel">{t('runtimeModeKernel')}</option>
                 <option value="userspace">{t('runtimeModeUserspace')}</option>
               </select>
+              <div className="text-muted text-sm" style={{ marginTop: 8 }}>
+                {t('kernelModeStatus')}: {data.kernel_available ? t('available') : t('unavailable')}
+              </div>
+              {!data.kernel_available && data.kernel_message ? (
+                <div className="text-muted text-sm" style={{ marginTop: 4 }}>{data.kernel_message}</div>
+              ) : null}
             </div>
             <div className="form-group">
               <label className="form-label">{t('sourceMode')}</label>
@@ -1207,6 +1277,14 @@ function ZoneCard({ title, description, value }: { title: string; description: s
 function fmtLatency(latencyMs: number | null | undefined) {
   if (latencyMs == null) return '—'
   return `${latencyMs.toFixed(0)} ms`
+}
+
+function renderUdpStatus(status: string | null | undefined, t: (key: any) => string) {
+  if (!status) return t('unavailable')
+  if (status === 'open') return t('udpOpen')
+  if (status === 'open_or_filtered') return t('udpOpenOrFiltered')
+  if (status === 'unreachable') return t('udpUnreachable')
+  return status
 }
 
 function GridIcon({ size = 16 }: { size?: number }) {

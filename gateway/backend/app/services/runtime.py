@@ -4,8 +4,10 @@ import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +19,7 @@ from app.models import EntryNode, GatewaySettings, RuntimeMode, TunnelStatus
 
 _PROCESS: subprocess.Popen | None = None
 _KERNEL_MODE: bool | None = None
+_KERNEL_PROBE_MESSAGE: str | None = None
 logger = logging.getLogger(__name__)
 
 
@@ -57,7 +60,7 @@ def _run_check(args: list[str], *, context: str) -> tuple[int, str]:
 
 
 def _detect_kernel_support() -> bool:
-    global _KERNEL_MODE
+    global _KERNEL_MODE, _KERNEL_PROBE_MESSAGE
     if _KERNEL_MODE is not None:
         return _KERNEL_MODE
     rc, _ = _run_check(["ip", "link", "add", "awg_probe_gateway", "type", "amneziawg"], context="kernel-probe")
@@ -65,9 +68,11 @@ def _detect_kernel_support() -> bool:
         _run_check(["ip", "link", "delete", "awg_probe_gateway"], context="kernel-probe-cleanup")
         logger.info("[awg-runtime] kernel mode confirmed for AmneziaWG")
         _KERNEL_MODE = True
+        _KERNEL_PROBE_MESSAGE = None
         return True
     logger.info("[awg-runtime] kernel mode unavailable, falling back to amneziawg-go userspace")
     _KERNEL_MODE = False
+    _KERNEL_PROBE_MESSAGE = "AmneziaWG kernel interface is not available in this container/host runtime"
     return False
 
 
@@ -87,8 +92,24 @@ def _ensure_interface_absent(interface_name: str) -> None:
     _run_check(["ip", "link", "delete", interface_name], context="ip-link-delete")
 
 
+def _wait_for_interface(interface_name: str, *, timeout_sec: float = 3.0, poll_interval_sec: float = 0.1) -> None:
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        rc, _ = _run_check(["ip", "link", "show", "dev", interface_name], context="ip-link-show")
+        if rc == 0:
+            logger.info("[awg-runtime] interface=%s is present", interface_name)
+            return
+        time.sleep(poll_interval_sec)
+    raise RuntimeError(f"Userspace interface {interface_name} did not appear within {timeout_sec:.1f}s")
+
+
 def is_runtime_available() -> bool:
     return shutil.which(settings.amneziawg_go_binary) is not None and shutil.which(settings.awg_binary) is not None
+
+
+def get_kernel_support_status() -> tuple[bool, str | None]:
+    available = _detect_kernel_support()
+    return available, _KERNEL_PROBE_MESSAGE
 
 
 def current_pid() -> int | None:
@@ -153,11 +174,11 @@ async def start_tunnel(db: AsyncSession, node: EntryNode, gateway_settings: Gate
     env["WG_QUICK_USERSPACE_IMPLEMENTATION"] = settings.amneziawg_go_binary
     requested_mode = gateway_settings.runtime_mode or RuntimeMode.auto.value
     logger.info("[awg-runtime] requested runtime mode=%s", requested_mode)
-    use_kernel = _resolve_runtime_mode(requested_mode)
-    logger.info("[awg-runtime] selected %s mode for interface=%s", "kernel" if use_kernel else "userspace", settings.tunnel_interface)
-    _ensure_interface_absent(settings.tunnel_interface)
 
     try:
+        use_kernel = _resolve_runtime_mode(requested_mode)
+        logger.info("[awg-runtime] selected %s mode for interface=%s", "kernel" if use_kernel else "userspace", settings.tunnel_interface)
+        _ensure_interface_absent(settings.tunnel_interface)
         if use_kernel:
             _run_logged(
                 ["ip", "link", "add", settings.tunnel_interface, "type", "amneziawg"],
@@ -179,6 +200,7 @@ async def start_tunnel(db: AsyncSession, node: EntryNode, gateway_settings: Gate
                 args=(proc, node.name),
                 daemon=True,
             ).start()
+            _wait_for_interface(settings.tunnel_interface)
         _run_logged(
             [settings.awg_binary, "setconf", settings.tunnel_interface, config_path],
             context="setconf",
@@ -196,6 +218,11 @@ async def start_tunnel(db: AsyncSession, node: EntryNode, gateway_settings: Gate
     except subprocess.CalledProcessError as exc:
         gateway_settings.tunnel_status = TunnelStatus.error.value
         gateway_settings.tunnel_last_error = (exc.stderr or exc.stdout or str(exc)).strip()
+        logger.exception("[awg-runtime] tunnel start failed for node=%s: %s", node.name, gateway_settings.tunnel_last_error)
+        stop_tunnel_process()
+    except RuntimeError as exc:
+        gateway_settings.tunnel_status = TunnelStatus.error.value
+        gateway_settings.tunnel_last_error = str(exc)
         logger.exception("[awg-runtime] tunnel start failed for node=%s: %s", node.name, gateway_settings.tunnel_last_error)
         stop_tunnel_process()
     gateway_settings.tunnel_last_applied_at = datetime.now(timezone.utc)
@@ -237,19 +264,22 @@ async def stop_tunnel(db: AsyncSession, gateway_settings: GatewaySettings) -> di
     return {"status": gateway_settings.tunnel_status}
 
 
-def probe_latency(node: EntryNode) -> float | None:
-    target = node.endpoint_host
-    logger.info("[awg-runtime] probing latency target=%s", target)
+def probe_latency(node: EntryNode, *, target: str | None = None, interface_name: str | None = None) -> float | None:
+    target = target or node.endpoint_host
+    logger.info("[awg-runtime] probing latency target=%s interface=%s", target, interface_name or "default")
+    command = [
+        "ping",
+        "-c",
+        str(settings.latency_ping_count),
+        "-W",
+        str(settings.latency_ping_timeout_sec),
+    ]
+    if interface_name:
+        command.extend(["-I", interface_name])
+    command.append(target)
     try:
         proc = subprocess.run(
-            [
-                "ping",
-                "-c",
-                str(settings.latency_ping_count),
-                "-W",
-                str(settings.latency_ping_timeout_sec),
-                target,
-            ],
+            command,
             capture_output=True,
             text=True,
             check=False,
@@ -266,3 +296,27 @@ def probe_latency(node: EntryNode) -> float | None:
         return None
     logger.info("[awg-runtime] latency probe target=%s rtt_ms=%s", target, match.group(1))
     return float(match.group(1))
+
+
+def probe_udp_endpoint(node: EntryNode, *, timeout_sec: float = 1.0) -> tuple[str, str | None]:
+    logger.info("[awg-runtime] probing udp endpoint=%s:%s", node.endpoint_host, node.endpoint_port)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout_sec)
+    try:
+        sock.connect((node.endpoint_host, node.endpoint_port))
+        sock.send(b"\x00")
+        try:
+            sock.recv(1)
+            logger.info("[awg-runtime] udp probe endpoint=%s:%s status=open", node.endpoint_host, node.endpoint_port)
+            return "open", None
+        except socket.timeout:
+            logger.info("[awg-runtime] udp probe endpoint=%s:%s status=open_or_filtered", node.endpoint_host, node.endpoint_port)
+            return "open_or_filtered", None
+        except ConnectionRefusedError:
+            logger.warning("[awg-runtime] udp probe endpoint=%s:%s status=unreachable detail=connection refused", node.endpoint_host, node.endpoint_port)
+            return "unreachable", "connection refused"
+    except OSError as exc:
+        logger.warning("[awg-runtime] udp probe endpoint=%s:%s status=unreachable detail=%s", node.endpoint_host, node.endpoint_port, exc)
+        return "unreachable", str(exc)
+    finally:
+        sock.close()

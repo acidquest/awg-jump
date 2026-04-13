@@ -15,7 +15,6 @@ def build_dnsmasq_preview(
     lines = [
         "# AWG Gateway split DNS preview",
         "no-resolv",
-        "bind-interfaces",
         "",
         "# VPN zone default upstreams",
     ]
@@ -30,3 +29,21 @@ def build_dnsmasq_preview(
             lines.append(f"server=/{rule.domain}/{server}")
     lines.append("")
     return "\n".join(lines)
+
+
+def build_dnsmasq_config(
+    upstreams: Iterable[DnsUpstream],
+    domain_rules: Iterable[DnsDomainRule],
+) -> str:
+    preview = build_dnsmasq_preview(upstreams, domain_rules).splitlines()
+    return "\n".join(
+        [
+            "# AWG Gateway dnsmasq runtime config",
+            "port=53",
+            "bind-dynamic",
+            "domain-needed",
+            "bogus-priv",
+            *preview[1:],
+            "",
+        ]
+    )

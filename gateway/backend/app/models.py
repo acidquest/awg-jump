@@ -76,6 +76,7 @@ class EntryNode(Base):
     endpoint: Mapped[str] = mapped_column(String(256), nullable=False)
     endpoint_host: Mapped[str] = mapped_column(String(256), nullable=False)
     endpoint_port: Mapped[int] = mapped_column(Integer, nullable=False)
+    probe_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     public_key: Mapped[str] = mapped_column(String(128), nullable=False)
     private_key: Mapped[str] = mapped_column(String(128), nullable=False)
     preshared_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
