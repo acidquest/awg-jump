@@ -44,6 +44,35 @@ mkdir -p /var/run/amneziawg
 # ── 4. Применить миграции БД ─────────────────────────────────────────────
 echo "[entrypoint] Running database migrations..."
 cd /app
+python3 - << 'PYEOF'
+import os
+import sqlite3
+
+db_path = os.environ.get("DB_PATH", "/data/config.db")
+legacy_revisions = {"0002", "0003", "0004", "0005", "0006", "0007"}
+
+if os.path.exists(db_path):
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version'"
+        )
+        if cur.fetchone():
+            cur.execute("SELECT version_num FROM alembic_version LIMIT 1")
+            row = cur.fetchone()
+            if row and row[0] in legacy_revisions:
+                print(
+                    "[entrypoint] Normalizing legacy alembic revision "
+                    f"{row[0]} -> 0001 for baseline compatibility..."
+                )
+                cur.execute("UPDATE alembic_version SET version_num = '0001'")
+                conn.commit()
+        conn.close()
+    except Exception as exc:
+        print(f"[entrypoint] Could not normalize alembic revision: {exc}")
+        raise
+PYEOF
 python3 -m alembic -c backend/alembic.ini upgrade head
 echo "[entrypoint] Migrations complete."
 

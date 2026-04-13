@@ -161,6 +161,22 @@ export interface SystemStatus {
   } | null
 }
 
+export interface SystemMetricPoint {
+  collected_at: string
+  cpu_usage_percent: number
+  memory_total_bytes: number
+  memory_used_bytes: number
+  memory_free_bytes: number
+}
+
+export interface SystemMetricsResponse {
+  period: '1h' | '24h'
+  retention_hours: number
+  sampling_interval_seconds: number
+  latest: SystemMetricPoint | null
+  points: SystemMetricPoint[]
+}
+
 export interface RoutingStatus {
   rule_local: boolean
   rule_vpn: boolean

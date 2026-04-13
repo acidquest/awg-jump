@@ -23,6 +23,7 @@ import backend.services.awg as awg_svc
 import backend.services.ipset_manager as ipset_mgr
 import backend.services.routing as routing_svc
 import backend.services.geoip_fetcher as geoip_fetcher
+from backend.services.system_metrics import get_metrics_history
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/system", tags=["system"])
@@ -125,6 +126,43 @@ async def get_status(
         "routing": routing_status,
         "active_node": active_node_out,
         "local_external_ip": settings.server_host or None,
+    }
+
+
+@router.get("/metrics")
+async def get_system_metrics(
+    period: str = Query("1h", pattern="^(1h|24h)$"),
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+) -> dict:
+    hours = 24 if period == "24h" else 1
+    latest, history = await get_metrics_history(session, hours=hours)
+
+    latest_out = None
+    if latest:
+        latest_out = {
+            "collected_at": latest.collected_at.isoformat(),
+            "cpu_usage_percent": latest.cpu_usage_percent,
+            "memory_total_bytes": latest.memory_total_bytes,
+            "memory_used_bytes": latest.memory_used_bytes,
+            "memory_free_bytes": latest.memory_free_bytes,
+        }
+
+    return {
+        "period": period,
+        "retention_hours": 24,
+        "sampling_interval_seconds": 60,
+        "latest": latest_out,
+        "points": [
+            {
+                "collected_at": metric.collected_at.isoformat(),
+                "cpu_usage_percent": metric.cpu_usage_percent,
+                "memory_total_bytes": metric.memory_total_bytes,
+                "memory_used_bytes": metric.memory_used_bytes,
+                "memory_free_bytes": metric.memory_free_bytes,
+            }
+            for metric in history
+        ],
     }
 
 
