@@ -8,6 +8,8 @@ from app.models import DnsDomainRule, DnsUpstream
 def build_dnsmasq_preview(
     upstreams: Iterable[DnsUpstream],
     domain_rules: Iterable[DnsDomainRule],
+    fqdn_prefixes: Iterable[str] | None = None,
+    ipset_name: str = "routing_prefixes",
 ) -> str:
     upstream_by_zone = {item.zone: item for item in upstreams}
     local_servers = upstream_by_zone.get("local").servers if upstream_by_zone.get("local") else []
@@ -27,6 +29,12 @@ def build_dnsmasq_preview(
             continue
         for server in local_servers:
             lines.append(f"server=/{rule.domain}/{server}")
+    fqdn_values = sorted({item.strip().lower().strip(".") for item in (fqdn_prefixes or []) if item.strip()})
+    if fqdn_values:
+        lines.append("")
+        lines.append("# FQDN prefixes -> ipset")
+        for fqdn in fqdn_values:
+            lines.append(f"ipset=/{fqdn}/{ipset_name}")
     lines.append("")
     return "\n".join(lines)
 
@@ -34,8 +42,15 @@ def build_dnsmasq_preview(
 def build_dnsmasq_config(
     upstreams: Iterable[DnsUpstream],
     domain_rules: Iterable[DnsDomainRule],
+    fqdn_prefixes: Iterable[str] | None = None,
+    ipset_name: str = "routing_prefixes",
 ) -> str:
-    preview = build_dnsmasq_preview(upstreams, domain_rules).splitlines()
+    preview = build_dnsmasq_preview(
+        upstreams,
+        domain_rules,
+        fqdn_prefixes=fqdn_prefixes,
+        ipset_name=ipset_name,
+    ).splitlines()
     return "\n".join(
         [
             "# AWG Gateway dnsmasq runtime config",

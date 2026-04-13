@@ -99,8 +99,13 @@ class RoutingPolicy(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     geoip_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     geoip_countries: Mapped[list[str]] = mapped_column(JSON, default=lambda: ["ru"], nullable=False)
+    countries_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    manual_prefixes_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     manual_prefixes: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
-    geoip_ipset_name: Mapped[str] = mapped_column(String(64), default="gateway_geoip_local")
+    fqdn_prefixes_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    fqdn_prefixes: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    geoip_ipset_name: Mapped[str] = mapped_column(String(64), default="routing_prefixes")
+    prefixes_route_local: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     invert_geoip: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     default_policy: Mapped[str] = mapped_column(String(16), default="vpn", nullable=False)
     kill_switch_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -150,3 +155,16 @@ class AuditEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class SystemMetric(Base):
+    __tablename__ = "system_metrics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True, nullable=False)
+    cpu_usage_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    cpu_total_ticks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cpu_idle_ticks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    memory_total_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    memory_used_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    memory_free_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

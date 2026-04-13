@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import asyncio
 import ipaddress
 from pathlib import Path
 
@@ -8,7 +6,6 @@ import httpx
 
 from app.config import settings
 from app.models import RoutingPolicy
-from app.services import ipset_manager
 
 
 def cache_path(country_code: str) -> Path:
@@ -59,13 +56,6 @@ async def refresh_policy_geoip(policy: RoutingPolicy) -> dict:
 
     for prefix in policy.manual_prefixes:
         merged.add(prefix)
-
-    await asyncio.get_running_loop().run_in_executor(
-        None,
-        ipset_manager.create_or_update,
-        policy.geoip_ipset_name,
-        sorted(merged),
-    )
 
     return {
         "countries": fetched,

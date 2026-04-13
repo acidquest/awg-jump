@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import subprocess
 
@@ -24,6 +25,22 @@ def _run(args: list[str], input_data: str | None = None) -> tuple[int, str]:
 def exists(name: str) -> bool:
     rc, _ = _run(["ipset", "list", "-n", name])
     return rc == 0
+
+
+def count(name: str) -> int:
+    try:
+        rc, out = _run(["ipset", "list", name])
+    except FileNotFoundError:
+        return 0
+    if rc != 0:
+        return 0
+    for line in out.splitlines():
+        if line.startswith("Number of entries:"):
+            try:
+                return int(line.split(":", 1)[1].strip())
+            except (ValueError, IndexError):
+                return 0
+    return 0
 
 
 def create(name: str) -> None:
@@ -54,7 +71,24 @@ def destroy(name: str) -> None:
 def _populate(name: str, prefixes: list[str]) -> None:
     if not prefixes:
         return
-    restore_input = "\n".join(f"add {name} {prefix}" for prefix in prefixes) + "\n"
+    expanded: list[str] = []
+    for prefix in prefixes:
+        try:
+            network = ipaddress.ip_network(prefix, strict=False)
+        except ValueError:
+            logger.warning("Skipping invalid prefix for ipset %s: %s", name, prefix)
+            continue
+        if network.version != 4:
+            logger.warning("Skipping non-IPv4 prefix for ipset %s: %s", name, prefix)
+            continue
+        # ipset hash:net family inet rejects 0.0.0.0/0, so expand it into two /1 blocks.
+        if str(network) == "0.0.0.0/0":
+            expanded.extend(["0.0.0.0/1", "128.0.0.0/1"])
+            continue
+        expanded.append(str(network))
+    if not expanded:
+        return
+    restore_input = "\n".join(f"add {name} {prefix}" for prefix in expanded) + "\n"
     rc, out = _run(["ipset", "restore"], input_data=restore_input)
     if rc != 0:
         raise RuntimeError(f"ipset restore for {name} failed: {out}")

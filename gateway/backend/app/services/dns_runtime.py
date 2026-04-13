@@ -9,8 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import DnsDomainRule, DnsUpstream
+from app.models import DnsDomainRule, DnsUpstream, RoutingPolicy
 from app.services.dns import build_dnsmasq_config
+from app.services.routing import fqdn_ipset_name
 
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,10 @@ def status() -> dict:
 async def render_runtime_config(db: AsyncSession) -> str:
     upstreams = (await db.execute(select(DnsUpstream).order_by(DnsUpstream.zone))).scalars().all()
     rules = (await db.execute(select(DnsDomainRule).order_by(DnsDomainRule.domain))).scalars().all()
-    return build_dnsmasq_config(upstreams, rules)
+    policy = await db.get(RoutingPolicy, 1)
+    fqdn_prefixes = policy.fqdn_prefixes if policy and policy.fqdn_prefixes_enabled else []
+    ipset_name = fqdn_ipset_name(policy) if policy else "routing_prefixes_fqdn"
+    return build_dnsmasq_config(upstreams, rules, fqdn_prefixes=fqdn_prefixes, ipset_name=ipset_name)
 
 
 async def restart_dnsmasq(db: AsyncSession) -> dict:

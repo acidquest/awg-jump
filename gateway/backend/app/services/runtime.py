@@ -118,6 +118,31 @@ def current_pid() -> int | None:
     return None
 
 
+def interface_exists(interface_name: str | None = None) -> bool:
+    target = interface_name or settings.tunnel_interface
+    rc, _ = _run_check(["ip", "link", "show", "dev", target], context="ip-link-show")
+    return rc == 0
+
+
+def resolve_live_tunnel_status(gateway_settings: GatewaySettings | None) -> tuple[str, str | None]:
+    if gateway_settings is None:
+        return TunnelStatus.stopped.value, None
+
+    iface_up = interface_exists(settings.tunnel_interface)
+    pid = current_pid()
+    requested_mode = gateway_settings.runtime_mode or RuntimeMode.auto.value
+
+    if iface_up:
+        return TunnelStatus.running.value, None
+    if requested_mode == RuntimeMode.userspace.value and gateway_settings.tunnel_status == TunnelStatus.running.value and pid is None:
+        return TunnelStatus.stopped.value, "Userspace runtime process is not running"
+    if gateway_settings.tunnel_status == TunnelStatus.running.value:
+        return TunnelStatus.stopped.value, f"Tunnel interface {settings.tunnel_interface} is missing"
+    if gateway_settings.tunnel_status == TunnelStatus.starting.value and not iface_up:
+        return TunnelStatus.error.value, gateway_settings.tunnel_last_error or "Tunnel startup did not create the interface"
+    return gateway_settings.tunnel_status, gateway_settings.tunnel_last_error
+
+
 def _render_config(node: EntryNode) -> str:
     lines = [
         "[Interface]",
@@ -269,6 +294,7 @@ def probe_latency(node: EntryNode, *, target: str | None = None, interface_name:
     logger.info("[awg-runtime] probing latency target=%s interface=%s", target, interface_name or "default")
     command = [
         "ping",
+        "-n",
         "-c",
         str(settings.latency_ping_count),
         "-W",
@@ -296,6 +322,27 @@ def probe_latency(node: EntryNode, *, target: str | None = None, interface_name:
         return None
     logger.info("[awg-runtime] latency probe target=%s rtt_ms=%s", target, match.group(1))
     return float(match.group(1))
+
+
+def probe_node_latency(node: EntryNode, *, prefer_tunnel: bool = False) -> float | None:
+    candidates: list[tuple[str, str | None]] = []
+    if prefer_tunnel and node.probe_ip:
+        candidates.append((node.probe_ip, settings.tunnel_interface))
+    if node.endpoint_host:
+        candidates.append((node.endpoint_host, None))
+    if node.probe_ip and (node.probe_ip, None) not in candidates:
+        candidates.append((node.probe_ip, None))
+
+    seen: set[tuple[str, str | None]] = set()
+    for target, interface_name in candidates:
+        key = (target, interface_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        latency_ms = probe_latency(node, target=target, interface_name=interface_name)
+        if latency_ms is not None:
+            return latency_ms
+    return None
 
 
 def probe_udp_endpoint(node: EntryNode, *, timeout_sec: float = 1.0) -> tuple[str, str | None]:

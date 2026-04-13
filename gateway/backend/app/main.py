@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -18,6 +19,7 @@ from app.routers import auth, backup, dns, nodes, routing, settings as settings_
 from app.services.dns_runtime import restart_dnsmasq, stop_dnsmasq
 from app.services.routing import apply_routing_plan
 from app.services.runtime import start_tunnel
+from app.services.system_metrics import collect_system_metrics
 
 
 logging.basicConfig(
@@ -36,6 +38,29 @@ async def _ensure_sqlite_columns() -> None:
             await conn.execute(
                 text("ALTER TABLE routing_policies ADD COLUMN manual_prefixes JSON NOT NULL DEFAULT '[]'")
             )
+        if "countries_enabled" not in columns:
+            await conn.execute(
+                text("ALTER TABLE routing_policies ADD COLUMN countries_enabled BOOLEAN NOT NULL DEFAULT 1")
+            )
+        if "manual_prefixes_enabled" not in columns:
+            await conn.execute(
+                text("ALTER TABLE routing_policies ADD COLUMN manual_prefixes_enabled BOOLEAN NOT NULL DEFAULT 0")
+            )
+        if "fqdn_prefixes_enabled" not in columns:
+            await conn.execute(
+                text("ALTER TABLE routing_policies ADD COLUMN fqdn_prefixes_enabled BOOLEAN NOT NULL DEFAULT 0")
+            )
+        if "fqdn_prefixes" not in columns:
+            await conn.execute(
+                text("ALTER TABLE routing_policies ADD COLUMN fqdn_prefixes JSON NOT NULL DEFAULT '[]'")
+            )
+        if "prefixes_route_local" not in columns:
+            await conn.execute(
+                text("ALTER TABLE routing_policies ADD COLUMN prefixes_route_local BOOLEAN NOT NULL DEFAULT 1")
+            )
+        await conn.execute(
+            text("UPDATE routing_policies SET geoip_ipset_name = 'routing_prefixes' WHERE geoip_ipset_name = 'gateway_geoip_local'")
+        )
         result = await conn.execute(text("PRAGMA table_info(gateway_settings)"))
         columns = {row[1] for row in result.fetchall()}
         if "runtime_mode" not in columns:
@@ -47,6 +72,28 @@ async def _ensure_sqlite_columns() -> None:
         if "probe_ip" not in columns:
             await conn.execute(
                 text("ALTER TABLE entry_nodes ADD COLUMN probe_ip VARCHAR(64)")
+            )
+        result = await conn.execute(text("PRAGMA table_info(system_metrics)"))
+        metric_columns = {row[1] for row in result.fetchall()}
+        if not metric_columns:
+            await conn.execute(
+                text(
+                    """
+                    CREATE TABLE system_metrics (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        collected_at DATETIME NOT NULL,
+                        cpu_usage_percent FLOAT NOT NULL DEFAULT 0,
+                        cpu_total_ticks INTEGER NOT NULL DEFAULT 0,
+                        cpu_idle_ticks INTEGER NOT NULL DEFAULT 0,
+                        memory_total_bytes INTEGER NOT NULL DEFAULT 0,
+                        memory_used_bytes INTEGER NOT NULL DEFAULT 0,
+                        memory_free_bytes INTEGER NOT NULL DEFAULT 0
+                    )
+                    """
+                )
+            )
+            await conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_system_metrics_collected_at ON system_metrics (collected_at)")
             )
 
 
@@ -79,8 +126,23 @@ async def _restore_runtime_state(session: AsyncSession) -> None:
         await session.commit()
 
 
+async def _metrics_loop(stop_event: asyncio.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            async with AsyncSessionLocal() as session:
+                await collect_system_metrics(session)
+        except Exception as exc:
+            logger.error("[gateway-metrics] sample failed: %s", exc)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=60)
+        except asyncio.TimeoutError:
+            continue
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    metrics_stop = asyncio.Event()
+    metrics_task: asyncio.Task | None = None
     ensure_directories()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -94,7 +156,11 @@ async def lifespan(app: FastAPI):
             logger.error("[gateway-startup] dnsmasq start failed: %s", exc)
     async with AsyncSessionLocal() as session:
         await _restore_runtime_state(session)
+    metrics_task = asyncio.create_task(_metrics_loop(metrics_stop))
     yield
+    metrics_stop.set()
+    if metrics_task is not None:
+        await metrics_task
     stop_dnsmasq()
 
 

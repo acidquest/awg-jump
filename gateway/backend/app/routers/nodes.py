@@ -13,7 +13,7 @@ from app.models import AdminUser, AuditEvent, EntryNode, GatewaySettings, Routin
 from app.security import get_current_user
 from app.services.conf_parser import parse_peer_conf, render_peer_conf, split_endpoint
 from app.services.routing import apply_routing_plan
-from app.services.runtime import probe_latency, probe_udp_endpoint, start_tunnel, stop_tunnel
+from app.services.runtime import probe_node_latency, probe_udp_endpoint, resolve_live_tunnel_status, start_tunnel, stop_tunnel
 
 
 router = APIRouter(prefix="/api/nodes", tags=["entry-nodes"])
@@ -46,7 +46,13 @@ class EntryNodeVisualUpdate(BaseModel):
     persistent_keepalive: int | None = None
 
 
-def _to_payload(node: EntryNode, *, udp_status: str | None = None, udp_detail: str | None = None) -> dict:
+def _to_payload(
+    node: EntryNode,
+    *,
+    udp_status: str | None = None,
+    udp_detail: str | None = None,
+    latency_ms: float | None = None,
+) -> dict:
     return {
         "id": node.id,
         "name": node.name,
@@ -63,7 +69,7 @@ def _to_payload(node: EntryNode, *, udp_status: str | None = None, udp_detail: s
         "allowed_ips": node.allowed_ips,
         "persistent_keepalive": node.persistent_keepalive,
         "obfuscation": node.obfuscation,
-        "latest_latency_ms": node.latest_latency_ms,
+        "latest_latency_ms": node.latest_latency_ms if latency_ms is None else latency_ms,
         "latest_latency_at": node.latest_latency_at.isoformat() if node.latest_latency_at else None,
         "last_error": node.last_error,
         "udp_status": udp_status,
@@ -78,12 +84,7 @@ def _refresh_latency_for_active_tunnel(node: EntryNode) -> None:
         node.latest_latency_ms = None
         node.last_error = None
         return
-    if not node.probe_ip:
-        node.latest_latency_ms = None
-        node.last_error = "Probe IP is not configured"
-        node.latest_latency_at = datetime.now(timezone.utc)
-        return
-    latency_ms = probe_latency(node, target=node.probe_ip, interface_name=settings.tunnel_interface)
+    latency_ms = probe_node_latency(node, prefer_tunnel=True)
     node.latest_latency_ms = latency_ms
     node.latest_latency_at = datetime.now(timezone.utc)
     node.last_error = None if latency_ms is not None else "Latency probe failed"
@@ -101,7 +102,14 @@ async def list_nodes(
             payloads.append(_to_payload(node))
             continue
         udp_status, udp_detail = probe_udp_endpoint(node)
-        payloads.append(_to_payload(node, udp_status=udp_status, udp_detail=udp_detail))
+        payloads.append(
+            _to_payload(
+                node,
+                udp_status=udp_status,
+                udp_detail=udp_detail,
+                latency_ms=probe_node_latency(node),
+            )
+        )
     return payloads
 
 
@@ -264,11 +272,27 @@ async def activate_node(
     node.latest_latency_at = None
     node.last_error = None if node.probe_ip else "Probe IP is not configured"
     settings_row = await db.get(GatewaySettings, 1)
+    live_status, live_error = resolve_live_tunnel_status(settings_row)
+    settings_row.tunnel_status = live_status
+    settings_row.tunnel_last_error = live_error
     settings_row.active_entry_node_id = node.id
     db.add(node)
     db.add(settings_row)
     db.add(AuditEvent(event_type="entry_node.activated", payload={"entry_node_id": node.id}))
     await db.flush()
+    if live_status == "running":
+        result = await start_tunnel(db, node, settings_row)
+        if result["status"] == "running":
+            _refresh_latency_for_active_tunnel(node)
+            policy = await db.get(RoutingPolicy, 1)
+            try:
+                apply_routing_plan(settings_row, policy, node)
+                settings_row.tunnel_last_error = None
+            except RuntimeError as exc:
+                settings_row.tunnel_last_error = str(exc)
+            db.add(node)
+            db.add(settings_row)
+            await db.flush()
     return _to_payload(node)
 
 

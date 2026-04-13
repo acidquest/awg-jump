@@ -28,6 +28,7 @@ type NodeItem = {
 type SystemStatus = {
   runtime_available: boolean
   tunnel_status: string
+  tunnel_last_error: string | null
   active_entry_node: { id: number; name: string; endpoint: string; latest_latency_ms: number | null } | null
   entry_node_count: number
   dns_rule_count: number
@@ -38,6 +39,54 @@ type SystemStatus = {
   ui_language: string
   kill_switch_enabled: boolean
   geoip_countries: string[]
+  ipset_name: string
+}
+
+type MetricsPoint = {
+  collected_at: string
+  cpu_usage_percent: number
+  memory_total_bytes: number
+  memory_used_bytes: number
+  memory_free_bytes: number
+}
+
+type SystemMetrics = {
+  period: '1h' | '24h'
+  retention_hours: number
+  sampling_interval_seconds: number
+  latest: MetricsPoint | null
+  points: MetricsPoint[]
+}
+
+type PrefixSourceSummary = {
+  key: 'countries' | 'manual' | 'fqdn'
+  enabled: boolean
+  items_count: number
+  prefix_count: number | null
+  description: string
+}
+
+type PrefixSummary = {
+  ipset_name: string
+  total_prefixes: number
+  configured_prefixes?: number
+  resolved_prefixes?: number
+  fallback_default_route: boolean
+  sources: PrefixSourceSummary[]
+}
+
+type RoutingPolicyData = {
+  countries_enabled: boolean
+  geoip_countries: string[]
+  manual_prefixes_enabled: boolean
+  manual_prefixes: string[]
+  fqdn_prefixes_enabled: boolean
+  fqdn_prefixes: string[]
+  geoip_ipset_name: string
+  prefixes_route_local: boolean
+  kill_switch_enabled: boolean
+  strict_mode: boolean
+  prefix_summary: PrefixSummary
 }
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -180,7 +229,7 @@ function AppLayout() {
   }> = [
     { to: '/', label: t('dashboard'), Icon: GridIcon },
     { to: '/nodes', label: t('nodes'), Icon: ServerIcon },
-    { to: '/geoip', label: t('geoip'), Icon: GlobeIcon },
+    { to: '/policy', label: t('policy'), Icon: GlobeIcon },
     { to: '/routing', label: t('routing'), Icon: RouteIcon },
     { to: '/dns', label: t('dns'), Icon: DnsIcon },
     { to: '/backup', label: t('backup'), Icon: ArchiveIcon },
@@ -222,7 +271,7 @@ function AppLayout() {
         <Routes>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/nodes" element={<NodesPage />} />
-          <Route path="/geoip" element={<GeoipPage />} />
+          <Route path="/policy" element={<PolicyPage />} />
           <Route path="/routing" element={<RoutingPage />} />
           <Route path="/dns" element={<DnsPage />} />
           <Route path="/backup" element={<BackupPage />} />
@@ -239,6 +288,7 @@ function DashboardPage() {
   const { data, loading, error, reload } = useLoader<SystemStatus>('/system/status', {
     runtime_available: false,
     tunnel_status: 'unknown',
+    tunnel_last_error: null,
     active_entry_node: null,
     entry_node_count: 0,
     dns_rule_count: 0,
@@ -249,7 +299,17 @@ function DashboardPage() {
     ui_language: 'en',
     kill_switch_enabled: true,
     geoip_countries: [],
+    ipset_name: 'routing_prefixes',
   })
+  const { data: metrics, loading: metricsLoading } = useLoader<SystemMetrics>('/system/metrics?period=24h', {
+    period: '24h',
+    retention_hours: 24,
+    sampling_interval_seconds: 60,
+    latest: null,
+    points: [],
+  })
+  const statusTone = data.tunnel_status === 'running' ? 'online' : data.tunnel_status === 'starting' ? 'warning' : 'offline'
+  const hideKernelWarning = data.runtime_mode === 'userspace'
 
   return (
     <>
@@ -261,13 +321,20 @@ function DashboardPage() {
         <button className="btn btn-secondary btn-sm" onClick={() => void reload()}>{t('refresh')}</button>
       </div>
       {error ? <div className="error-box">{error}</div> : null}
-      {!error && !loading && !data.kernel_available ? <div className="info-box">{t('kernelUnavailable')}{data.kernel_message ? `: ${data.kernel_message}` : ''}</div> : null}
+      {!error && !loading && !hideKernelWarning && !data.kernel_available ? <div className="info-box">{t('kernelUnavailable')}{data.kernel_message ? `: ${data.kernel_message}` : ''}</div> : null}
+      {!error && !loading && data.tunnel_last_error ? <div className="error-box">{data.tunnel_last_error}</div> : null}
       {loading ? <div style={{ padding: 40, textAlign: 'center' }}><span className="spinner" /></div> : null}
       <div className="card-grid card-grid-4" style={{ marginBottom: 20 }}>
-        <StatCard title={t('tunnel')} value={data.tunnel_status} label={data.runtime_available ? 'runtime ready' : 'runtime missing'} accent />
+        <StatCard title={t('tunnel')} value={data.tunnel_status} label={data.runtime_available ? 'runtime ready' : 'runtime missing'} tone={statusTone} />
         <StatCard title={t('entryNodes')} value={String(data.entry_node_count)} label={t('activeNode')} />
         <StatCard title={t('dnsRules')} value={String(data.dns_rule_count)} label={t('domains')} />
-        <StatCard title={t('geoipCountries')} value={data.geoip_countries.join(', ') || '—'} label={data.runtime_mode ?? t('geoipSummary')} />
+        <StatCard title={t('policy')} value={data.ipset_name} label={data.geoip_countries.join(', ') || t('geoipSummary')} />
+      </div>
+      <div className="card-grid card-grid-4" style={{ marginBottom: 20 }}>
+        <StatCard title={t('cpuLoad')} value={fmtPercent(metrics.latest?.cpu_usage_percent)} label={t('sampledPerMinute')} />
+        <StatCard title={t('memoryUsed')} value={fmtBytes(metrics.latest?.memory_used_bytes)} label={`${t('memoryFree')}: ${fmtBytes(metrics.latest?.memory_free_bytes)}`} />
+        <StatCard title={t('killSwitch')} value={data.kill_switch_enabled ? t('enabled') : t('disabled')} label={t('routeSafety')} />
+        <StatCard title={t('runtimeMode')} value={data.runtime_mode} label={data.runtime_mode === 'userspace' ? t('userspaceActive') : t('kernelModeStatus')} />
       </div>
       <div className="card-grid card-grid-2">
         <div className="card">
@@ -290,38 +357,82 @@ function DashboardPage() {
           <div className="stat-value" style={{ fontSize: 20 }}>{data.kill_switch_enabled ? 'protected' : 'relaxed'}</div>
           <div className="stat-label">{t('trafficSource')}: {data.traffic_source_mode}</div>
           <div className="text-muted text-sm" style={{ marginTop: 10 }}>
-            {t('kernelModeStatus')}: {data.kernel_available ? t('available') : t('unavailable')}
+            {data.runtime_mode === 'userspace'
+              ? `${t('runtimeMode')}: ${t('runtimeModeUserspace')}`
+              : `${t('kernelModeStatus')}: ${data.kernel_available ? t('available') : t('unavailable')}`}
           </div>
         </div>
+      </div>
+      <div className="section">
+        <div className="section-title">{t('systemLoad')}</div>
+        {metricsLoading ? <div style={{ padding: 24, textAlign: 'center' }}><span className="spinner" /></div> : null}
+        {!metricsLoading ? (
+          <div className="card-grid card-grid-2">
+            <ChartCard
+              title={t('cpuLoad')}
+              value={fmtPercent(metrics.latest?.cpu_usage_percent)}
+              subtitle={t('last24Hours')}
+              series={[
+                {
+                  label: t('cpuLoad'),
+                  color: 'var(--accent)',
+                  values: metrics.points.map((point) => point.cpu_usage_percent),
+                },
+              ]}
+            />
+            <ChartCard
+              title={t('memoryUsed')}
+              value={fmtBytes(metrics.latest?.memory_used_bytes)}
+              subtitle={`${t('memoryFree')}: ${fmtBytes(metrics.latest?.memory_free_bytes)} / ${fmtBytes(metrics.latest?.memory_total_bytes)}`}
+              series={[
+                {
+                  label: t('memoryUsed'),
+                  color: 'var(--accent)',
+                  values: metrics.points.map((point) => point.memory_used_bytes),
+                },
+                {
+                  label: t('memoryFree'),
+                  color: 'var(--success)',
+                  values: metrics.points.map((point) => point.memory_free_bytes),
+                },
+              ]}
+              formatter={fmtBytes}
+            />
+          </div>
+        ) : null}
       </div>
     </>
   )
 }
 
-function GeoipPage() {
+function PolicyPage() {
   const { t } = useI18n()
-  const { data: routing, loading, error, reload } = useLoader<any>('/routing', {
-    geoip_enabled: true,
+  const { data: routing, loading, error, reload } = useLoader<RoutingPolicyData>('/routing', {
+    countries_enabled: true,
     geoip_countries: ['ru'],
+    manual_prefixes_enabled: false,
     manual_prefixes: [],
-    geoip_ipset_name: 'gateway_geoip_local',
+    fqdn_prefixes_enabled: false,
+    fqdn_prefixes: [],
+    geoip_ipset_name: 'routing_prefixes',
+    prefixes_route_local: true,
+    kill_switch_enabled: true,
+    strict_mode: true,
+    prefix_summary: { ipset_name: 'routing_prefixes', total_prefixes: 0, configured_prefixes: 0, resolved_prefixes: 0, fallback_default_route: false, sources: [] },
   })
-  const { data: diagnostics, reload: reloadDiagnostics } = useLoader<any>('/backup/diagnostics', { routing_plan: {} })
   const [message, setMessage] = useState('')
-  const [countryCode, setCountryCode] = useState('')
-  const [manualPrefix, setManualPrefix] = useState('')
+  const [countryModalOpen, setCountryModalOpen] = useState(false)
+  const [manualModalOpen, setManualModalOpen] = useState(false)
+  const [fqdnModalOpen, setFqdnModalOpen] = useState(false)
 
   async function updateGeoip() {
     await api.post('/routing/refresh-geoip')
     setMessage('GeoIP update requested')
     await reload()
-    await reloadDiagnostics()
   }
 
-  async function addCountry(event: FormEvent) {
-    event.preventDefault()
-    await api.post('/routing/countries', { country_code: countryCode })
-    setCountryCode('')
+  async function toggleBlock(key: 'countries_enabled' | 'manual_prefixes_enabled' | 'fqdn_prefixes_enabled', value: boolean) {
+    await api.put('/routing', { ...routing, [key]: value })
     await reload()
   }
 
@@ -330,33 +441,24 @@ function GeoipPage() {
     await reload()
   }
 
-  async function addManualPrefix(event: FormEvent) {
-    event.preventDefault()
-    await api.post('/routing/manual-prefixes', { prefix: manualPrefix })
-    setManualPrefix('')
-    await reload()
-    await reloadDiagnostics()
-  }
-
   async function removeManualPrefix(prefix: string) {
     await api.delete(`/routing/manual-prefixes/${encodeURIComponent(prefix)}`)
     await reload()
-    await reloadDiagnostics()
   }
 
-  const prefixCount = diagnostics?.routing_plan?.geoip_prefix_count ?? 0
+  async function removeFqdnPrefix(fqdn: string) {
+    await api.delete(`/routing/fqdn-prefixes/${encodeURIComponent(fqdn)}`)
+    await reload()
+  }
 
   return (
     <>
       <div className="page-header">
         <div>
-          <div className="page-title">{t('localZones')}</div>
-          <div className="page-subtitle">{t('localZonesSubtitle')}</div>
+          <div className="page-title">{t('policyTitle')}</div>
+          <div className="page-subtitle">{t('policySubtitle')}</div>
         </div>
-        <div className="flex gap-2">
-          <button className="btn btn-secondary btn-sm" onClick={() => void reload()}>{t('refresh')}</button>
-          <button className="btn btn-primary btn-sm" onClick={() => void updateGeoip()}>{t('updateGeoip')}</button>
-        </div>
+        <button className="btn btn-secondary btn-sm" onClick={() => void reload()}>{t('refresh')}</button>
       </div>
       {message ? <div className="info-box">{message}</div> : null}
       {error ? <div className="error-box">{error}</div> : null}
@@ -365,99 +467,129 @@ function GeoipPage() {
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="flex items-center justify-between" style={{ gap: 16, flexWrap: 'wrap' }}>
           <div>
-            <div style={{ fontSize: 28, fontWeight: 700 }}>{routing.geoip_countries?.length ?? 0}</div>
-            <div className="text-muted text-sm">{t('countries')}</div>
+            <div className="card-title" style={{ marginBottom: 8 }}>{t('totalPrefixes')}</div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--accent)' }}>{routing.prefix_summary.total_prefixes.toLocaleString()}</div>
+            <div className="text-muted text-sm">
+              {routing.geoip_ipset_name}
+              {typeof routing.prefix_summary.configured_prefixes === 'number' ? ` • ${t('configured')}: ${routing.prefix_summary.configured_prefixes}` : ''}
+            </div>
           </div>
-          <div>
-            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--accent)' }}>{prefixCount.toLocaleString()}</div>
-            <div className="text-muted text-sm">{t('totalPrefixes')}</div>
-          </div>
-          <div>
-            <div className="text-muted text-sm">{t('status')}</div>
-            <div style={{ fontSize: 14, fontWeight: 600 }}>{routing.geoip_enabled ? 'enabled' : 'disabled'}</div>
+          <div style={{ minWidth: 280 }}>
+            <div className="card-title" style={{ marginBottom: 8 }}>{t('assembledFrom')}</div>
+            <div className="text-muted text-sm">
+              {routing.prefix_summary.sources.map((source) => `${t(source.key)}: ${source.enabled ? source.items_count : 0}`).join(' • ')}
+              {routing.prefix_summary.fallback_default_route ? ` • ${t('defaultPrefixApplied')}` : ''}
+            </div>
           </div>
         </div>
       </div>
 
-      <div className="section">
-        <div className="section-title">{t('countries')}</div>
-        <form onSubmit={addCountry} style={{ marginBottom: 14 }}>
-          <div className="form-row form-row-2">
-            <div className="form-group">
-              <label className="form-label">{t('addCountry')}</label>
-              <input className="form-input" value={countryCode} onChange={(event) => setCountryCode(event.target.value)} placeholder="ru" />
-            </div>
-            <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end' }}>
-              <button className="btn btn-primary" type="submit">{t('save')}</button>
-            </div>
-          </div>
-        </form>
-        <div className="table-wrap nodes-table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>{t('countries')}</th>
-                <th>IPSet</th>
-                <th>{t('totalPrefixes')}</th>
-                <th>{t('status')}</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(routing.geoip_countries || []).length === 0 ? (
-                <tr><td colSpan={5} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>No GeoIP countries configured</td></tr>
-              ) : (
-                (routing.geoip_countries || []).map((country: string) => (
-                  <tr key={country}>
-                    <td><span className="badge badge-pending">{country.toUpperCase()}</span></td>
-                    <td className="text-mono">{routing.geoip_ipset_name}</td>
-                    <td>{prefixCount.toLocaleString()}</td>
-                    <td><span className={`badge ${routing.geoip_enabled ? 'badge-online' : 'badge-offline'}`}>{routing.geoip_enabled ? 'enabled' : 'disabled'}</span></td>
-                    <td><button className="btn btn-danger btn-sm" onClick={() => void removeCountry(country)}>{t('remove')}</button></td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <PolicyBlock
+        title={t('countries')}
+        description={t('countriesBlockDescription')}
+        enabled={routing.countries_enabled}
+        onToggle={(value) => void toggleBlock('countries_enabled', value)}
+        onAdd={() => setCountryModalOpen(true)}
+        addLabel={t('add')}
+        actions={<button className="btn btn-secondary btn-sm" onClick={() => void updateGeoip()}>{t('updateGeoip')}</button>}
+      >
+        <SimpleTable
+          headers={[t('countries'), t('status'), t('totalPrefixes'), t('actions')]}
+          emptyText={t('noCountriesConfigured')}
+          rows={routing.geoip_countries.map((country) => [
+            <span className="badge badge-pending" key={`${country}-badge`}>{country.toUpperCase()}</span>,
+            <span className={`badge ${routing.countries_enabled ? 'badge-online' : 'badge-offline'}`} key={`${country}-status`}>
+              {routing.countries_enabled ? t('enabled') : t('disabled')}
+            </span>,
+            routing.prefix_summary.sources.find((item) => item.key === 'countries')?.prefix_count?.toLocaleString() ?? '0',
+            <button className="btn btn-danger btn-sm" key={`${country}-remove`} onClick={() => void removeCountry(country)}>{t('remove')}</button>,
+          ])}
+        />
+      </PolicyBlock>
 
-      <div className="section">
-        <div className="section-title">{t('manualPrefixes')}</div>
-        <form onSubmit={addManualPrefix} style={{ marginBottom: 14 }}>
-          <div className="form-row form-row-2">
-            <div className="form-group">
-              <label className="form-label">{t('addPrefix')}</label>
-              <input className="form-input mono" value={manualPrefix} onChange={(event) => setManualPrefix(event.target.value)} placeholder="203.0.113.10 or 203.0.113.0/24" />
-            </div>
-            <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end' }}>
-              <button className="btn btn-primary" type="submit">{t('save')}</button>
-            </div>
-          </div>
-        </form>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>{t('manualPrefixes')}</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(routing.manual_prefixes || []).length === 0 ? (
-                <tr><td colSpan={2} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>No manual prefixes configured</td></tr>
-              ) : (
-                (routing.manual_prefixes || []).map((prefix: string) => (
-                  <tr key={prefix}>
-                    <td className="text-mono">{prefix}</td>
-                    <td><button className="btn btn-danger btn-sm" onClick={() => void removeManualPrefix(prefix)}>{t('remove')}</button></td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+      <PolicyBlock
+        title={t('manualPrefixes')}
+        description={t('manualBlockDescription')}
+        enabled={routing.manual_prefixes_enabled}
+        onToggle={(value) => void toggleBlock('manual_prefixes_enabled', value)}
+        onAdd={() => setManualModalOpen(true)}
+        addLabel={t('add')}
+      >
+        <SimpleTable
+          headers={[t('manualPrefixes'), t('actions')]}
+          emptyText={t('noManualPrefixesConfigured')}
+          rows={routing.manual_prefixes.map((prefix) => [
+            <span className="text-mono" key={`${prefix}-value`}>{prefix}</span>,
+            <button className="btn btn-danger btn-sm" key={`${prefix}-remove`} onClick={() => void removeManualPrefix(prefix)}>{t('remove')}</button>,
+          ])}
+        />
+      </PolicyBlock>
+
+      <PolicyBlock
+        title={t('fqdnPrefixes')}
+        description={t('fqdnBlockDescription')}
+        enabled={routing.fqdn_prefixes_enabled}
+        onToggle={(value) => void toggleBlock('fqdn_prefixes_enabled', value)}
+        onAdd={() => setFqdnModalOpen(true)}
+        addLabel={t('add')}
+      >
+        <div className="text-muted text-sm" style={{ marginBottom: 12 }}>
+          {t('configured')}: {routing.fqdn_prefixes.length} • {t('resolved')}: {routing.prefix_summary.resolved_prefixes ?? 0}
         </div>
-      </div>
+        <SimpleTable
+          headers={[t('fqdnPrefixes'), t('actions')]}
+          emptyText={t('noFqdnPrefixesConfigured')}
+          rows={routing.fqdn_prefixes.map((fqdn) => [
+            <span className="text-mono" key={`${fqdn}-value`}>{fqdn}</span>,
+            <button className="btn btn-danger btn-sm" key={`${fqdn}-remove`} onClick={() => void removeFqdnPrefix(fqdn)}>{t('remove')}</button>,
+          ])}
+        />
+      </PolicyBlock>
+
+      {countryModalOpen ? (
+        <ListModal
+          title={t('addCountry')}
+          description={t('countryModalDescription')}
+          placeholder="ru"
+          submitLabel={t('add')}
+          onClose={() => setCountryModalOpen(false)}
+          onSubmit={async (items) => {
+            for (const item of items) {
+              await api.post('/routing/countries', { country_code: item })
+            }
+            setCountryModalOpen(false)
+            await reload()
+          }}
+        />
+      ) : null}
+      {manualModalOpen ? (
+        <ListModal
+          title={t('addPrefix')}
+          description={t('manualModalDescription')}
+          placeholder={'203.0.113.10\n203.0.113.0/24'}
+          submitLabel={t('add')}
+          onClose={() => setManualModalOpen(false)}
+          onSubmit={async (items) => {
+            await api.post('/routing/manual-prefixes/bulk', { prefixes: items })
+            setManualModalOpen(false)
+            await reload()
+          }}
+        />
+      ) : null}
+      {fqdnModalOpen ? (
+        <ListModal
+          title={t('addFqdn')}
+          description={t('fqdnModalDescription')}
+          placeholder={'example.com\napi.example.com'}
+          submitLabel={t('add')}
+          onClose={() => setFqdnModalOpen(false)}
+          onSubmit={async (items) => {
+            await api.post('/routing/fqdn-prefixes/bulk', { fqdn_list: items })
+            setFqdnModalOpen(false)
+            await reload()
+          }}
+        />
+      ) : null}
     </>
   )
 }
@@ -471,6 +603,7 @@ function NodesPage() {
 
   async function activate(nodeId: number) {
     await api.post(`/nodes/${nodeId}/activate`)
+    setMessage(t('tunnelRebuilt'))
     await reload()
   }
 
@@ -508,12 +641,12 @@ function NodesPage() {
           <table>
             <thead>
               <tr>
-                <th>{t('activeNode')}</th>
                 <th>Name</th>
                 <th>{t('endpoint')}</th>
                 <th>{t('latency')}</th>
                 <th>{t('udpStatus')}</th>
                 <th>Actions</th>
+                <th>{t('activeNode')}</th>
               </tr>
             </thead>
             <tbody>
@@ -521,17 +654,17 @@ function NodesPage() {
                 <tr><td colSpan={6} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>No entry nodes imported yet</td></tr>
               ) : data.map((node) => (
                 <tr key={node.id} className={node.is_active ? 'active-node' : ''}>
-                  <td>{node.is_active ? <span className="badge badge-online">{t('active')}</span> : '—'}</td>
                   <td>{node.name}</td>
                   <td className="text-mono">{node.endpoint}</td>
-                  <td className="text-mono">{node.is_active ? fmtLatency(node.latest_latency_ms) : t('unavailable')}</td>
+                  <td className="text-mono">{fmtLatency(node.latest_latency_ms)}</td>
                   <td>{node.is_active ? '—' : renderUdpStatus(node.udp_status, t)}</td>
-                    <td>
-                      <div className="nodes-actions">
-                        <button className="btn btn-primary btn-sm" onClick={() => void activate(node.id)}>{t('activate')}</button>
-                        <button className="btn btn-ghost btn-sm" onClick={() => setEditNode(node)}>Edit</button>
-                      </div>
+                  <td>
+                    <div className="nodes-actions">
+                      <button className="btn btn-primary btn-sm" onClick={() => void activate(node.id)}>{t('activate')}</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => setEditNode(node)}>Edit</button>
+                    </div>
                   </td>
+                  <td>{node.is_active ? <span className="badge badge-online">{t('active')}</span> : '—'}</td>
                 </tr>
               ))}
             </tbody>
@@ -796,33 +929,32 @@ function NodeEditorModal({
 
 function RoutingPage() {
   const { t } = useI18n()
-  const { data, loading, error, reload, setData } = useLoader<any>('/routing', {
-    geoip_enabled: true,
+  const { data, loading, error, reload, setData } = useLoader<RoutingPolicyData>('/routing', {
+    countries_enabled: true,
     geoip_countries: ['ru'],
-    invert_geoip: false,
-    default_policy: 'vpn',
+    manual_prefixes_enabled: false,
+    manual_prefixes: [],
+    fqdn_prefixes_enabled: false,
+    fqdn_prefixes: [],
+    geoip_ipset_name: 'routing_prefixes',
+    prefixes_route_local: true,
     kill_switch_enabled: true,
     strict_mode: true,
+    prefix_summary: { ipset_name: 'routing_prefixes', total_prefixes: 0, configured_prefixes: 0, resolved_prefixes: 0, fallback_default_route: false, sources: [] },
   })
   const { data: plan, reload: reloadPlan } = useLoader<any>('/routing/plan', { commands: [], warnings: [], safe_to_apply: false })
-  const [countries, setCountries] = useState('ru')
   const [message, setMessage] = useState('')
-
-  useEffect(() => setCountries((data.geoip_countries || ['ru']).join(',')), [data.geoip_countries])
 
   async function persistPolicy(nextData: any) {
     setData(nextData)
-    await api.put('/routing', {
-      ...nextData,
-      geoip_countries: countries.split(',').map((item) => item.trim()).filter(Boolean),
-    })
+    await api.put('/routing', nextData)
     const applyResponse = await api.post('/routing/apply')
     setMessage(applyResponse.data.status === 'applied' ? 'Routing applied' : applyResponse.data.error || 'Routing blocked')
     await reload()
     await reloadPlan()
   }
 
-  async function togglePolicy(key: 'geoip_enabled' | 'kill_switch_enabled' | 'strict_mode', value: boolean) {
+  async function togglePolicy(key: 'prefixes_route_local' | 'kill_switch_enabled' | 'strict_mode', value: boolean) {
     const nextData = { ...data, [key]: value }
     await persistPolicy(nextData)
   }
@@ -834,10 +966,7 @@ function RoutingPage() {
           <div className="page-title">{t('routing')}</div>
           <div className="page-subtitle">{t('routingSubtitle')}</div>
         </div>
-        <div className="flex gap-2">
-          <button className="btn btn-secondary btn-sm" onClick={() => void api.post('/routing/refresh-geoip')}>{t('refreshGeoip')}</button>
-          <button className="btn btn-primary btn-sm" onClick={() => void reloadPlan()}>{t('buildPlan')}</button>
-        </div>
+        <button className="btn btn-secondary btn-sm" onClick={() => void reloadPlan()}>{t('refresh')}</button>
       </div>
       {message ? <div className="info-box">{message}</div> : null}
       {error ? <div className="error-box">{error}</div> : null}
@@ -846,26 +975,30 @@ function RoutingPage() {
           <div>
             <div className="card-title">Traffic Direction</div>
             <div className="text-muted text-sm" style={{ marginTop: 6 }}>
-              Normal mode keeps configured GeoIP countries on the host interface. Inverted mode swaps the directions.
+              {data.prefixes_route_local ? t('prefixesToLocalDescription') : t('prefixesToTunnelDescription')}
             </div>
           </div>
         </div>
-        <div className="form-row form-row-2">
-          <div className="form-group">
-            <label className="form-label">{t('geoipCountries')}</label>
-            <input className="form-input" value={countries} onChange={(event) => setCountries(event.target.value)} readOnly />
+        <div className="traffic-direction-card">
+          <div>
+            <div className="card-title" style={{ marginBottom: 8 }}>{t('routingPrefixes')}</div>
+            <div className="stat-value" style={{ fontSize: 18 }}>{data.geoip_ipset_name}</div>
+            <div className="stat-label">{data.prefix_summary.total_prefixes.toLocaleString()} {t('totalPrefixes').toLowerCase()}</div>
           </div>
-          <div className="form-group">
-            <label className="form-label">Default policy</label>
-            <input className="form-input" value={data.default_policy} readOnly />
+          <div className="traffic-toggle-row">
+            <label className="toggle toggle-lg" title={t('routingPrefixes')}>
+              <input type="checkbox" checked={data.prefixes_route_local} onChange={(event) => void togglePolicy('prefixes_route_local', event.target.checked)} />
+              <span className="toggle-slider" />
+            </label>
+            <div>
+              <div style={{ fontWeight: 600 }}>{data.prefixes_route_local ? t('sendToLocalInterface') : t('sendToAwgInterface')}</div>
+              <div className="text-muted text-sm">
+                {data.prefixes_route_local ? t('stateLocalTranslated') : t('stateTunnelTranslated')}
+              </div>
+            </div>
           </div>
         </div>
-        <div className="flex gap-4" style={{ marginBottom: 14 }}>
-          <label className="toggle" title={t('geoipEnabled')}>
-            <input type="checkbox" checked={data.geoip_enabled} onChange={(event) => void togglePolicy('geoip_enabled', event.target.checked)} />
-            <span className="toggle-slider" />
-          </label>
-          <span className="text-sm">{t('geoipEnabled')}</span>
+        <div className="flex gap-4" style={{ marginBottom: 4, flexWrap: 'wrap' }}>
           <label className="toggle" title={t('killSwitch')}>
             <input type="checkbox" checked={data.kill_switch_enabled} onChange={(event) => void togglePolicy('kill_switch_enabled', event.target.checked)} />
             <span className="toggle-slider" />
@@ -884,35 +1017,31 @@ function RoutingPage() {
         <div className="routing-diagram">
           <div className="routing-diagram-header">
             <div>
-              <div className="routing-diagram-title">Generated traffic map</div>
+              <div className="routing-diagram-title">{t('generatedTrafficMap')}</div>
               <div className="routing-diagram-subtitle">
-                {plan.safe_to_apply ? 'The current plan is safe to apply.' : 'The current plan blocks unsafe fallback and keeps traffic from leaking outside the tunnel.'}
+                {data.prefixes_route_local ? t('diagramLocalMode') : t('diagramTunnelMode')}
               </div>
             </div>
-            <div className="routing-diagram-mode">
-              <span className={`badge ${plan.safe_to_apply ? 'badge-online' : 'badge-warning'}`}>
-                {plan.safe_to_apply ? 'safe' : 'blocked'}
-              </span>
-            </div>
+            <span className={`badge ${plan.safe_to_apply ? 'badge-online' : 'badge-warning'}`}>
+              {plan.safe_to_apply ? t('safeToApply') : t('blocked')}
+            </span>
           </div>
-          <div className="routing-diagram-grid">
-            <div className="routing-node">
-              <div className="routing-node-label">Source mode</div>
-              <div className="routing-node-value">{plan.source_mode || data.traffic_source_mode || 'localhost'}</div>
-              <div className="routing-node-meta">{(plan.selectors || []).join(', ') || 'OUTPUT only'}</div>
-            </div>
-            <div className="routing-arrow">→</div>
-            <div className="routing-node">
-              <div className="routing-node-label">GeoIP / ipset</div>
-              <div className="routing-node-value">{data.geoip_ipset_name || 'gateway_geoip_local'}</div>
-              <div className="routing-node-meta">{plan.geoip_prefix_count ?? 0} prefixes</div>
-            </div>
-            <div className="routing-arrow">→</div>
-            <div className="routing-node">
-              <div className="routing-node-label">Tunnel policy</div>
-              <div className="routing-node-value">{data.kill_switch_enabled ? 'kill switch on' : 'kill switch off'}</div>
-              <div className="routing-node-meta">{data.strict_mode ? 'strict' : 'relaxed'}</div>
-            </div>
+          <div className="routing-flow">
+            <FlowNode title={t('trafficSource')} value={plan.source_mode || 'localhost'} meta={(plan.selectors || []).join(', ') || 'OUTPUT'} />
+            <FlowArrow />
+            <FlowNode title={t('routingPrefixes')} value={data.geoip_ipset_name} meta={`${plan.geoip_prefix_count ?? 0} ${t('totalPrefixes').toLowerCase()}`} accent />
+            <FlowArrow />
+            <FlowNode
+              title={t('trafficDirection')}
+              value={data.prefixes_route_local ? t('localInterface') : t('awgInterface')}
+              meta={data.prefixes_route_local ? t('stateLocalTranslated') : t('stateTunnelTranslated')}
+            />
+            <FlowArrow />
+            <FlowNode
+              title={t('killSwitch')}
+              value={data.kill_switch_enabled ? t('enabled') : t('disabled')}
+              meta={data.strict_mode ? t('strictMode') : t('relaxedMode')}
+            />
           </div>
           {(plan.warnings || []).length > 0 ? (
             <div className="error-box" style={{ marginTop: 16 }}>{plan.warnings.join('\n')}</div>
@@ -1245,11 +1374,233 @@ function DiagnosticsPage() {
   )
 }
 
-function StatCard({ title, value, label, accent = false }: { title: string; value: string; label: string; accent?: boolean }) {
+function PolicyBlock({
+  title,
+  description,
+  enabled,
+  onToggle,
+  onAdd,
+  addLabel,
+  actions,
+  children,
+}: {
+  title: string
+  description: string
+  enabled: boolean
+  onToggle: (value: boolean) => void
+  onAdd: () => void
+  addLabel: string
+  actions?: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <div className="card policy-block">
+      <div className="card-header" style={{ marginBottom: 14 }}>
+        <div>
+          <div className="routing-diagram-title">{title}</div>
+          <div className="routing-diagram-subtitle">{description}</div>
+        </div>
+        <div className="flex items-center gap-2">
+          {actions}
+          <label className="toggle" title={title}>
+            <input type="checkbox" checked={enabled} onChange={(event) => onToggle(event.target.checked)} />
+            <span className="toggle-slider" />
+          </label>
+          <button className="btn btn-primary btn-sm" onClick={onAdd}>{addLabel}</button>
+        </div>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function SimpleTable({
+  headers,
+  rows,
+  emptyText,
+}: {
+  headers: string[]
+  rows: React.ReactNode[][]
+  emptyText: string
+}) {
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            {headers.map((header) => <th key={header}>{header}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 ? (
+            <tr><td colSpan={headers.length} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>{emptyText}</td></tr>
+          ) : rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              {row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function ListModal({
+  title,
+  description,
+  placeholder,
+  submitLabel,
+  onClose,
+  onSubmit,
+}: {
+  title: string
+  description: string
+  placeholder: string
+  submitLabel: string
+  onClose: () => void
+  onSubmit: (items: string[]) => Promise<void>
+}) {
+  const [value, setValue] = useState('')
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    const items = value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean)
+    if (items.length === 0) {
+      setError('At least one value is required')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      await onSubmit(items)
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || err.message || 'Request failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">{title}</div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>Close</button>
+        </div>
+        <div className="text-muted text-sm" style={{ marginBottom: 14 }}>{description}</div>
+        {error ? <div className="error-box">{error}</div> : null}
+        <form onSubmit={submit}>
+          <div className="form-group">
+            <textarea className="form-input mono" rows={8} value={value} onChange={(event) => setValue(event.target.value)} placeholder={placeholder} />
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-secondary" type="button" onClick={onClose}>Cancel</button>
+            <button className="btn btn-primary" type="submit" disabled={saving}>{saving ? <span className="spinner" /> : submitLabel}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function ChartCard({
+  title,
+  value,
+  subtitle,
+  series,
+  formatter = (input: number) => `${input.toFixed(1)}`,
+}: {
+  title: string
+  value: string
+  subtitle: string
+  series: Array<{ label: string; color: string; values: number[] }>
+  formatter?: (value: number) => string
+}) {
+  return (
+    <div className="card metric-card">
+      <div className="metric-card-header">
+        <div>
+          <div className="card-title" style={{ marginBottom: 8 }}>{title}</div>
+          <div className="stat-value" style={{ fontSize: 22 }}>{value}</div>
+          <div className="stat-label">{subtitle}</div>
+        </div>
+      </div>
+      <MiniLineChart series={series} formatter={formatter} />
+    </div>
+  )
+}
+
+function MiniLineChart({
+  series,
+  formatter,
+}: {
+  series: Array<{ label: string; color: string; values: number[] }>
+  formatter: (value: number) => string
+}) {
+  const width = 520
+  const height = 180
+  const padding = 12
+  const allValues = series.flatMap((item) => item.values)
+  const maxValue = Math.max(...allValues, 1)
+
+  function toPath(values: number[]) {
+    if (values.length === 0) return ''
+    return values.map((value, index) => {
+      const x = padding + (index / Math.max(values.length - 1, 1)) * (width - padding * 2)
+      const y = height - padding - (value / maxValue) * (height - padding * 2)
+      return `${index === 0 ? 'M' : 'L'} ${x} ${y}`
+    }).join(' ')
+  }
+
+  return (
+    <div className="mini-chart-wrap">
+      <svg viewBox={`0 0 ${width} ${height}`} className="mini-chart" role="img" aria-label="metric chart">
+        <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="var(--border)" />
+        {series.map((item) => <path key={item.label} d={toPath(item.values)} fill="none" stroke={item.color} strokeWidth="3" strokeLinecap="round" />)}
+      </svg>
+      <div className="chart-legend">
+        {series.map((item) => (
+          <div className="chart-legend-item" key={item.label}>
+            <span className="chart-swatch" style={{ background: item.color }} />
+            {item.label} {formatter(item.values[item.values.length - 1] ?? 0)}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function FlowNode({ title, value, meta, accent = false }: { title: string; value: string; meta: string; accent?: boolean }) {
+  return (
+    <div className={`routing-node${accent ? ' routing-node-accent' : ''}`}>
+      <div className="routing-node-label">{title}</div>
+      <div className="routing-node-value">{value}</div>
+      <div className="routing-node-meta">{meta}</div>
+    </div>
+  )
+}
+
+function FlowArrow() {
+  return <div className="routing-arrow">→</div>
+}
+
+function StatCard({
+  title,
+  value,
+  label,
+  tone,
+}: {
+  title: string
+  value: string
+  label: string
+  tone?: 'online' | 'offline' | 'warning'
+}) {
   return (
     <div className="card">
       <div className="card-title" style={{ marginBottom: 10 }}>{title}</div>
-      <div className={`stat-value ${accent ? 'text-accent' : ''}`}>{value}</div>
+      <div className={`stat-value ${tone === 'online' ? 'text-accent' : tone === 'offline' ? 'text-danger' : ''}`}>{value}</div>
       <div className="stat-label">{label}</div>
     </div>
   )
@@ -1274,13 +1625,29 @@ function ZoneCard({ title, description, value }: { title: string; description: s
   )
 }
 
+function fmtBytes(bytes: number | null | undefined) {
+  if (!bytes) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let index = 0
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024
+    index += 1
+  }
+  return `${value.toFixed(1)} ${units[index]}`
+}
+
+function fmtPercent(value: number | null | undefined) {
+  return `${(value ?? 0).toFixed(1)}%`
+}
+
 function fmtLatency(latencyMs: number | null | undefined) {
   if (latencyMs == null) return '—'
   return `${latencyMs.toFixed(0)} ms`
 }
 
 function renderUdpStatus(status: string | null | undefined, t: (key: any) => string) {
-  if (!status) return t('unavailable')
+  if (!status) return '—'
   if (status === 'open') return t('udpOpen')
   if (status === 'open_or_filtered') return t('udpOpenOrFiltered')
   if (status === 'unreachable') return t('udpUnreachable')

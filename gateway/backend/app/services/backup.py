@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models import BackupRecord, DnsDomainRule, DnsUpstream, EntryNode, GatewaySettings, RoutingPolicy
 from app.services.dns import build_dnsmasq_preview
-from app.services.routing import build_routing_plan
+from app.services.routing import build_routing_plan, fqdn_ipset_name
 
 
 BACKUP_SCHEMA_VERSION = "1"
@@ -121,6 +121,16 @@ async def build_diagnostics_payload(db: AsyncSession) -> dict:
             "tunnel_status": gateway_settings.tunnel_status if gateway_settings else "stopped",
             "tunnel_last_error": gateway_settings.tunnel_last_error if gateway_settings else None,
         },
+        "routing_policy": {
+            "countries_enabled": routing_policy.countries_enabled if routing_policy else False,
+            "geoip_countries": routing_policy.geoip_countries if routing_policy else [],
+            "manual_prefixes_enabled": routing_policy.manual_prefixes_enabled if routing_policy else False,
+            "manual_prefixes": routing_policy.manual_prefixes if routing_policy else [],
+            "fqdn_prefixes_enabled": routing_policy.fqdn_prefixes_enabled if routing_policy else False,
+            "fqdn_prefixes": routing_policy.fqdn_prefixes if routing_policy else [],
+            "ipset_name": routing_policy.geoip_ipset_name if routing_policy else "routing_prefixes",
+            "prefixes_route_local": routing_policy.prefixes_route_local if routing_policy else True,
+        },
         "entry_nodes": [
             {
                 "id": node.id,
@@ -133,5 +143,10 @@ async def build_diagnostics_payload(db: AsyncSession) -> dict:
             for node in entry_nodes
         ],
         "routing_plan": build_routing_plan(gateway_settings, routing_policy, active_node) if gateway_settings and routing_policy else {},
-        "dns_preview": build_dnsmasq_preview(upstreams, domain_rules),
+        "dns_preview": build_dnsmasq_preview(
+            upstreams,
+            domain_rules,
+            fqdn_prefixes=routing_policy.fqdn_prefixes if routing_policy and routing_policy.fqdn_prefixes_enabled else [],
+            ipset_name=fqdn_ipset_name(routing_policy) if routing_policy else "routing_prefixes_fqdn",
+        ),
     }
