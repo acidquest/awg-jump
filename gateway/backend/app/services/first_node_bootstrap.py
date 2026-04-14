@@ -6,6 +6,7 @@ import json
 import logging
 import shlex
 import tarfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +19,13 @@ from app.models import FirstNodeBootstrapLog, FirstNodeBootstrapStatus
 logger = logging.getLogger(__name__)
 
 _bootstrap_queues: dict[int, asyncio.Queue[str | None]] = {}
+
+
+@dataclass(slots=True)
+class RemoteCommandResult:
+    returncode: int
+    stdout: str
+    stderr: str
 
 
 def _resolve_assets_root() -> Path:
@@ -51,6 +59,49 @@ def _replace_env_value(content: str, key: str, value: str) -> str:
     else:
         lines.append(f"{key}={value}")
     return "\n".join(lines) + "\n"
+
+
+def _wrap_remote_command(command: str, *, ssh_user: str) -> str:
+    if ssh_user == "root":
+        return command
+    sudo_command = f"sudo -S -p '' bash -lc {shlex.quote(command)}"
+    return (
+        "bash -lc "
+        + shlex.quote(
+            f"stty -echo; {sudo_command}; rc=$?; stty echo; printf '\\n'; exit $rc"
+        )
+    )
+
+
+def _format_remote_failure(action: str, result: RemoteCommandResult) -> str:
+    details: list[str] = []
+    if result.stderr.strip():
+        details.append(result.stderr.strip())
+    if result.stdout.strip():
+        details.append(result.stdout.strip())
+    suffix = f": {' | '.join(details)}" if details else ""
+    return f"{action} (rc={result.returncode}){suffix}"
+
+
+async def _run_remote_command(
+    conn: asyncssh.SSHClientConnection,
+    command: str,
+    *,
+    ssh_user: str,
+    ssh_password: str,
+) -> RemoteCommandResult:
+    wrapped_command = _wrap_remote_command(command, ssh_user=ssh_user)
+    kwargs = {"term_type": "xterm"} if ssh_user != "root" else {}
+    async with conn.create_process(wrapped_command, **kwargs) as process:
+        if ssh_user != "root":
+            process.stdin.write(ssh_password + "\n")
+            process.stdin.write_eof()
+        stdout, stderr = await process.communicate()
+        return RemoteCommandResult(
+            returncode=process.returncode or 0,
+            stdout=stdout or "",
+            stderr=stderr or "",
+        )
 
 
 def _build_bundle(*, host: str, docker_namespace: str, image_tag: str) -> bytes:
@@ -193,8 +244,6 @@ async def bootstrap_first_node(
         await queue.put(json.dumps({"step": step, "total": total, "message": message, "status": status}))
         await _append_log(log_id, line)
 
-    remote_root_prefix = "" if ssh_user == "root" else "sudo "
-
     try:
         await emit(f"Connecting to {host}:{ssh_port}...")
         try:
@@ -226,13 +275,27 @@ async def bootstrap_first_node(
             await emit("Extracting bundle to /tmp on remote host...")
             result = await conn.run("tar -xzf /tmp/awg-jump-bootstrap.tgz -C /tmp", check=False)
             if result.returncode != 0:
-                raise RuntimeError("Failed to unpack bootstrap bundle on remote host")
+                raise RuntimeError(
+                    _format_remote_failure(
+                        "Failed to unpack bootstrap bundle on remote host",
+                        RemoteCommandResult(
+                            returncode=result.returncode,
+                            stdout=result.stdout,
+                            stderr=result.stderr,
+                        ),
+                    )
+                )
 
             await emit("Installing Docker and preparing remote directories...")
             bootstrap_command = (
-                f"{remote_root_prefix}bash /tmp/REMOTE_BOOTSTRAP.sh {shlex.quote(remote_dir)}"
+                f"bash /tmp/REMOTE_BOOTSTRAP.sh {shlex.quote(remote_dir)}"
             )
-            result = await conn.run(bootstrap_command, check=False)
+            result = await _run_remote_command(
+                conn,
+                bootstrap_command,
+                ssh_user=ssh_user,
+                ssh_password=ssh_password,
+            )
             if result.stdout.strip():
                 for line in result.stdout.splitlines():
                     await emit(line, advance=False)
@@ -240,17 +303,27 @@ async def bootstrap_first_node(
                 for line in result.stderr.splitlines():
                     await emit(line, advance=False)
             if result.returncode != 0:
-                raise RuntimeError("Remote bootstrap script failed")
+                raise RuntimeError(_format_remote_failure("Remote bootstrap script failed", result))
 
             await emit(f"Copying files into {remote_dir}...")
             unpack_command = (
-                f"{remote_root_prefix}mkdir -p {shlex.quote(remote_dir)} && "
-                f"{remote_root_prefix}tar -xzf /tmp/awg-jump-bootstrap.tgz -C {shlex.quote(remote_dir)} "
+                f"mkdir -p {shlex.quote(remote_dir)} && "
+                f"tar -xzf /tmp/awg-jump-bootstrap.tgz -C {shlex.quote(remote_dir)} "
                 "docker-compose.yml .env .env.ru.example .env.en.example"
             )
-            result = await conn.run(unpack_command, check=False)
+            result = await _run_remote_command(
+                conn,
+                unpack_command,
+                ssh_user=ssh_user,
+                ssh_password=ssh_password,
+            )
             if result.returncode != 0:
-                raise RuntimeError("Failed to copy deployment files into the target directory")
+                raise RuntimeError(
+                    _format_remote_failure(
+                        "Failed to copy deployment files into the target directory",
+                        result,
+                    )
+                )
 
             await emit("Removing temporary bootstrap files...")
             await conn.run("rm -f /tmp/awg-jump-bootstrap.tgz /tmp/REMOTE_BOOTSTRAP.sh", check=False)

@@ -64,10 +64,8 @@ def test_plan_reflects_prefix_direction_rules(monkeypatch) -> None:
     policy.prefixes_route_local = False
     plan = build_routing_plan(make_settings(), policy, make_active_node())
     assert any("--match-set routing_prefixes_geoip dst -j MARK --set-mark 0x2" in command for command in plan["commands"])
-    assert not any(
-        "--match-set routing_prefixes_geoip dst -j RETURN" in command and "AWG_GW_OUTPUT" in command
-        for command in plan["commands"]
-    )
+    assert any("AWG_GW_OUTPUT -j MARK --set-mark 0x1" in command for command in plan["commands"])
+    assert any("--match-set routing_prefixes_geoip dst -j RETURN" in command and "AWG_GW_OUTPUT" in command for command in plan["commands"])
 
 
 def test_plan_uses_default_prefix_when_all_blocks_disabled(monkeypatch) -> None:
@@ -112,12 +110,68 @@ def test_plan_includes_dns_intercept_for_localhost(monkeypatch) -> None:
 def test_plan_switches_preview_to_nftables(monkeypatch) -> None:
     monkeypatch.setattr("app.services.routing._default_route", lambda: ("eth0", "192.0.2.1"))
     monkeypatch.setattr("app.services.routing._interface_exists", lambda _: True)
+    monkeypatch.setattr("app.services.routing._connected_ipv4_prefixes", lambda _: ["192.168.10.0/24"])
     monkeypatch.setattr("app.services.routing.load_cached_country", lambda _: ["203.0.113.0/24"])
     monkeypatch.setattr("app.services.routing.nftables_manager.count", lambda _: 0)
     plan = build_routing_plan(make_settings(experimental_nftables=True), make_policy(), make_active_node())
     assert plan["firewall_backend"] == "nftables"
     assert any(command.startswith("nft add table ip awg_gw") for command in plan["commands"])
+    assert any(command == "nft insert rule ip filter FORWARD jump AWG_GW_FORWARD" for command in plan["commands"])
+    assert any(command.startswith("nft add rule ip filter AWG_GW_FORWARD ") for command in plan["commands"])
+    assert any(command == "nft add rule ip awg_gw mangle_output ip daddr 192.168.10.0/24 return" for command in plan["commands"])
+    assert any("meta mark set 0x1 return" in command for command in plan["commands"])
+    assert any(command == "ip rule add fwmark 0x1 table 200" for command in plan["commands"])
     assert not any(command.startswith("iptables ") for command in plan["commands"])
+
+
+def test_plan_marks_localhost_output_for_both_destinations(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.routing._default_route", lambda: ("eth0", "192.0.2.1"))
+    monkeypatch.setattr("app.services.routing._interface_exists", lambda _: True)
+    monkeypatch.setattr("app.services.routing._connected_ipv4_prefixes", lambda _: ["192.168.10.0/24"])
+    monkeypatch.setattr("app.services.routing.load_cached_country", lambda _: ["203.0.113.0/24"])
+    monkeypatch.setattr("app.services.routing.ipset_manager.count", lambda _: 0)
+
+    plan = build_routing_plan(make_settings(), make_policy(), make_active_node())
+
+    assert any(command == "iptables -t mangle -A AWG_GW_OUTPUT -d 192.168.10.0/24 -j RETURN" for command in plan["commands"])
+    assert any("AWG_GW_OUTPUT -m set --match-set routing_prefixes_geoip dst -j MARK --set-mark 0x1" in command for command in plan["commands"])
+    assert any(command == "iptables -t mangle -A AWG_GW_OUTPUT -j MARK --set-mark 0x2" for command in plan["commands"])
+    assert any(command == "ip rule add fwmark 0x1 table 200" for command in plan["commands"])
+
+
+def test_plan_exempts_connected_lan_from_selected_cidr_marking(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.routing._default_route", lambda: ("eth0", "192.0.2.1"))
+    monkeypatch.setattr("app.services.routing._interface_exists", lambda _: True)
+    monkeypatch.setattr("app.services.routing._connected_ipv4_prefixes", lambda _: ["192.168.10.0/24"])
+    monkeypatch.setattr("app.services.routing.load_cached_country", lambda _: ["203.0.113.0/24"])
+    monkeypatch.setattr("app.services.routing.ipset_manager.count", lambda _: 0)
+
+    plan = build_routing_plan(make_settings(mode="selected_cidr"), make_policy(), make_active_node())
+
+    assert any(command == "iptables -t mangle -A AWG_GW_PREROUTING -d 192.168.10.0/24 -j RETURN" for command in plan["commands"])
+    assert any(
+        command == "iptables -t mangle -A AWG_GW_PREROUTING -s 192.168.10.0/24 -j MARK --set-mark 0x2"
+        for command in plan["commands"]
+    )
+
+
+def test_plan_combines_countries_manual_and_fqdn_match_sets(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.routing._default_route", lambda: ("eth0", "192.0.2.1"))
+    monkeypatch.setattr("app.services.routing._interface_exists", lambda _: True)
+    monkeypatch.setattr("app.services.routing._connected_ipv4_prefixes", lambda _: [])
+    monkeypatch.setattr("app.services.routing.load_cached_country", lambda _: ["203.0.113.0/24"])
+    monkeypatch.setattr("app.services.routing.ipset_manager.count", lambda name: 2 if name == "routing_prefixes_fqdn" else 0)
+
+    policy = make_policy()
+    policy.fqdn_prefixes_enabled = True
+    policy.fqdn_prefixes = ["example.com"]
+
+    plan = build_routing_plan(make_settings(), policy, make_active_node())
+
+    assert any("--match-set routing_prefixes_geoip dst" in command for command in plan["commands"])
+    assert any("--match-set routing_prefixes_manual dst" in command for command in plan["commands"])
+    assert any("--match-set routing_prefixes_fqdn dst" in command for command in plan["commands"])
+    assert plan["prefix_summary"]["resolved_prefixes"] == 2
 
 
 def test_sync_prefix_ipset_keeps_fqdn_set_when_block_disabled(monkeypatch) -> None:
@@ -137,7 +191,63 @@ def test_sync_prefix_ipset_keeps_fqdn_set_when_block_disabled(monkeypatch) -> No
     sync_prefix_ipset(policy)
 
     assert ("routing_prefixes_manual", ("1.1.1.1/32",)) in create_calls
-    assert not any(name == "routing_prefixes_fqdn" and prefixes == tuple() for name, prefixes in create_calls)
+    assert ("routing_prefixes_fqdn", tuple()) in create_calls
+
+
+def test_plan_ignores_disabled_fqdn_match_set(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.routing._default_route", lambda: ("eth0", "192.0.2.1"))
+    monkeypatch.setattr("app.services.routing._interface_exists", lambda _: True)
+    monkeypatch.setattr("app.services.routing.load_cached_country", lambda _: [])
+    monkeypatch.setattr("app.services.routing.ipset_manager.count", lambda _: 5)
+
+    policy = make_policy()
+    policy.countries_enabled = False
+    policy.manual_prefixes_enabled = False
+    policy.fqdn_prefixes_enabled = False
+    policy.fqdn_prefixes = ["example.com"]
+
+    plan = build_routing_plan(make_settings(), policy, make_active_node())
+
+    assert not any("--match-set routing_prefixes_fqdn" in command for command in plan["commands"])
+    assert plan["prefix_summary"]["resolved_prefixes"] == 0
+
+
+def test_sync_prefix_ipset_flushes_fqdn_runtime_set_on_dns_reload(monkeypatch) -> None:
+    from app.services.routing import sync_prefix_ipset
+
+    calls: list[tuple[str, tuple[str, ...]]] = []
+    monkeypatch.setattr("app.services.routing.ipset_manager.create_or_update", lambda name, prefixes: calls.append((name, tuple(prefixes))))
+    monkeypatch.setattr("app.services.routing.ipset_manager.exists", lambda name: True)
+    monkeypatch.setattr("app.services.routing.ipset_manager.create", lambda name: calls.append((name, tuple())))
+    monkeypatch.setattr("app.services.routing.load_cached_country", lambda _: [])
+
+    policy = make_policy()
+    policy.fqdn_prefixes_enabled = True
+    policy.fqdn_prefixes = ["example.com"]
+
+    sync_prefix_ipset(policy, flush_fqdn=True)
+
+    assert ("routing_prefixes_fqdn", tuple()) in calls
+
+
+def test_sync_prefix_ipset_creates_all_enabled_sets(monkeypatch) -> None:
+    from app.services.routing import sync_prefix_ipset
+
+    calls: list[tuple[str, tuple[str, ...]]] = []
+    monkeypatch.setattr("app.services.routing.ipset_manager.create_or_update", lambda name, prefixes: calls.append((name, tuple(prefixes))))
+    monkeypatch.setattr("app.services.routing.ipset_manager.exists", lambda name: False)
+    monkeypatch.setattr("app.services.routing.ipset_manager.create", lambda name: calls.append((name, tuple())))
+    monkeypatch.setattr("app.services.routing.load_cached_country", lambda _: ["203.0.113.0/24"])
+
+    policy = make_policy()
+    policy.fqdn_prefixes_enabled = True
+    policy.fqdn_prefixes = ["example.com"]
+
+    sync_prefix_ipset(policy)
+
+    assert ("routing_prefixes_geoip", ("203.0.113.0/24",)) in calls
+    assert ("routing_prefixes_manual", ("1.1.1.1/32",)) in calls
+    assert ("routing_prefixes_fqdn", tuple()) in calls
 
 
 def test_sync_prefix_ipset_splits_geoip_and_manual(monkeypatch) -> None:

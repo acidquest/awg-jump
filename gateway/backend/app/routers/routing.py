@@ -87,7 +87,7 @@ async def _reload_runtime(
     if refresh_geoip and policy.countries_enabled:
         await refresh_policy_geoip(policy)
 
-    prefixes = sync_prefix_ipset(policy, settings_row)
+    prefixes = sync_prefix_ipset(policy, settings_row, flush_fqdn=restart_dns)
 
     if restart_dns:
         await restart_dnsmasq(db)
@@ -145,9 +145,11 @@ async def update_policy(
     user: AdminUser = Depends(get_current_user),
 ) -> dict:
     policy = await db.get(RoutingPolicy, 1)
+    prev_geoip_countries = sorted(policy.geoip_countries)
+    next_geoip_countries = sorted(item.lower() for item in payload.geoip_countries)
     policy.geoip_enabled = payload.countries_enabled
     policy.countries_enabled = payload.countries_enabled
-    policy.geoip_countries = [item.lower() for item in payload.geoip_countries]
+    policy.geoip_countries = next_geoip_countries
     policy.manual_prefixes_enabled = payload.manual_prefixes_enabled
     policy.manual_prefixes = [_normalize_prefix(item) for item in payload.manual_prefixes]
     policy.fqdn_prefixes_enabled = payload.fqdn_prefixes_enabled
@@ -161,7 +163,7 @@ async def update_policy(
     return await _reload_runtime(
         db,
         policy,
-        refresh_geoip=policy.countries_enabled,
+        refresh_geoip=policy.countries_enabled and prev_geoip_countries != next_geoip_countries,
         restart_dns=True,
     )
 

@@ -1037,18 +1037,17 @@ tr.active-node td:first-child { border-left: 2px solid var(--accent); }
 
 .login-rain-column {
   position: absolute;
-  top: -35%;
-  color: rgba(78, 255, 224, 0.9);
+  top: -30%;
+  color: rgba(120, 255, 229, 0.62);
   text-shadow:
-    0 0 8px rgba(0, 212, 170, 0.35),
-    0 0 20px rgba(0, 212, 170, 0.15);
+    0 0 6px rgba(0, 212, 170, 0.28),
+    0 0 14px rgba(51, 235, 197, 0.14);
   font-family: var(--font-mono);
-  line-height: 1.08;
-  letter-spacing: 1px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   writing-mode: vertical-rl;
   text-orientation: mixed;
   white-space: nowrap;
-  word-break: normal;
   user-select: none;
   animation-name: login-rain-fall;
   animation-timing-function: linear;
@@ -1118,9 +1117,9 @@ tr.active-node td:first-child { border-left: 2px solid var(--accent); }
 
 @keyframes login-rain-fall {
   from {
-    transform: translate3d(0, -8%, 0);
+    transform: translate3d(0, -6%, 0);
   }
   to {
-    transform: translate3d(0, 148vh, 0);
+    transform: translate3d(0, 240%, 0);
   }
 }

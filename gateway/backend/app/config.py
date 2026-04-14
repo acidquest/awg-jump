@@ -37,7 +37,9 @@ class Settings(BaseSettings):
     geoip_fetch_timeout: int = 30
     latency_ping_count: int = 1
     latency_ping_timeout_sec: int = 2
+    routing_table_local: int = 200
     routing_table_vpn: int = 201
+    fwmark_local: str = "0x1"
     fwmark_vpn: str = "0x2"
 
     ui_default_language: str = "en"

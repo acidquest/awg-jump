@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from datetime import datetime, timezone
+import ipaddress
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -212,9 +213,9 @@ async def start_tunnel(db: AsyncSession, node: EntryNode, gateway_settings: Gate
             )
             _PROCESS = None
         else:
-            logger.info("[awg-runtime] starting userspace daemon: %s %s", settings.amneziawg_go_binary, settings.tunnel_interface)
+            logger.info("[awg-runtime] starting userspace daemon: %s -f %s", settings.amneziawg_go_binary, settings.tunnel_interface)
             proc = subprocess.Popen(
-                [settings.amneziawg_go_binary, settings.tunnel_interface],
+                [settings.amneziawg_go_binary, "-f", settings.tunnel_interface],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -324,12 +325,37 @@ def probe_latency(node: EntryNode, *, target: str | None = None, interface_name:
     return latency_ms
 
 
+def resolve_tunnel_probe_target(node: EntryNode) -> str | None:
+    if node.probe_ip:
+        return node.probe_ip
+    try:
+        iface = ipaddress.ip_interface(node.tunnel_address)
+    except ValueError:
+        return None
+    if iface.version != 4:
+        return None
+    if iface.network.prefixlen < 32:
+        for host in iface.network.hosts():
+            if host != iface.ip:
+                return str(host)
+        return None
+
+    # Imported peer configs from awg-jump usually carry a /32 client address only.
+    # In that case infer the entry node as the first host of the matching /24.
+    guessed_network = ipaddress.ip_network(f"{iface.ip}/24", strict=False)
+    for host in guessed_network.hosts():
+        if host != iface.ip:
+            return str(host)
+    return None
+
+
 def probe_node_latency_details(node: EntryNode, *, prefer_tunnel: bool = False) -> dict[str, str | float | None]:
     candidates: list[tuple[str, str | None]] = []
     if prefer_tunnel:
-        if node.probe_ip:
-            candidates.append((node.probe_ip, settings.tunnel_interface))
-            candidates.append((node.probe_ip, None))
+        target = resolve_tunnel_probe_target(node)
+        if target:
+            candidates.append((target, settings.tunnel_interface))
+            candidates.append((target, None))
     else:
         if node.endpoint_host:
             candidates.append((node.endpoint_host, None))
@@ -373,16 +399,16 @@ def probe_udp_endpoint(node: EntryNode, *, timeout_sec: float = 1.0) -> tuple[st
         sock.send(b"\x00")
         try:
             sock.recv(1)
-            logger.info("[awg-runtime] udp probe endpoint=%s:%s status=open", node.endpoint_host, node.endpoint_port)
-            return "open", None
+            logger.info("[awg-runtime] udp probe endpoint=%s:%s status=available detail=open", node.endpoint_host, node.endpoint_port)
+            return "available", None
         except socket.timeout:
-            logger.info("[awg-runtime] udp probe endpoint=%s:%s status=open_or_filtered", node.endpoint_host, node.endpoint_port)
-            return "open_or_filtered", None
+            logger.info("[awg-runtime] udp probe endpoint=%s:%s status=available detail=open_or_filtered", node.endpoint_host, node.endpoint_port)
+            return "available", None
         except ConnectionRefusedError:
-            logger.warning("[awg-runtime] udp probe endpoint=%s:%s status=unreachable detail=connection refused", node.endpoint_host, node.endpoint_port)
-            return "unreachable", "connection refused"
+            logger.warning("[awg-runtime] udp probe endpoint=%s:%s status=unavailable detail=connection refused", node.endpoint_host, node.endpoint_port)
+            return "unavailable", "connection refused"
     except OSError as exc:
-        logger.warning("[awg-runtime] udp probe endpoint=%s:%s status=unreachable detail=%s", node.endpoint_host, node.endpoint_port, exc)
-        return "unreachable", str(exc)
+        logger.warning("[awg-runtime] udp probe endpoint=%s:%s status=unavailable detail=%s", node.endpoint_host, node.endpoint_port, exc)
+        return "unavailable", str(exc)
     finally:
         sock.close()

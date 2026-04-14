@@ -133,6 +133,18 @@ type RoutingPolicyData = {
   prefix_summary: PrefixSummary
 }
 
+type RoutingPolicyPayload = {
+  countries_enabled: boolean
+  geoip_countries: string[]
+  manual_prefixes_enabled: boolean
+  manual_prefixes: string[]
+  fqdn_prefixes_enabled: boolean
+  fqdn_prefixes: string[]
+  prefixes_route_local: boolean
+  kill_switch_enabled: boolean
+  strict_mode: boolean
+}
+
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const token = localStorage.getItem('gateway-token')
   if (!token) return <Navigate to="/login" replace />
@@ -156,6 +168,20 @@ function parseUtcDate(value: string | null | undefined) {
   if (!value) return null
   const date = new Date(normalizeUtcTimestamp(value))
   return Number.isNaN(date.getTime()) ? null : date
+}
+
+function toRoutingPolicyPayload(data: RoutingPolicyData): RoutingPolicyPayload {
+  return {
+    countries_enabled: data.countries_enabled,
+    geoip_countries: data.geoip_countries,
+    manual_prefixes_enabled: data.manual_prefixes_enabled,
+    manual_prefixes: data.manual_prefixes,
+    fqdn_prefixes_enabled: data.fqdn_prefixes_enabled,
+    fqdn_prefixes: data.fqdn_prefixes,
+    prefixes_route_local: data.prefixes_route_local,
+    kill_switch_enabled: data.kill_switch_enabled,
+    strict_mode: data.strict_mode,
+  }
 }
 
 function useLoader<T>(url: string, fallback: T) {
@@ -510,7 +536,7 @@ function DashboardPage() {
 
 function PolicyPage() {
   const { t } = useI18n()
-  const { data: routing, loading, error, reload } = useLoader<RoutingPolicyData>('/routing', {
+  const { data: routing, loading, error, reload, setData } = useLoader<RoutingPolicyData>('/routing', {
     countries_enabled: true,
     geoip_countries: ['ru'],
     manual_prefixes_enabled: false,
@@ -551,7 +577,9 @@ function PolicyPage() {
   }
 
   async function toggleBlock(key: 'countries_enabled' | 'manual_prefixes_enabled' | 'fqdn_prefixes_enabled', value: boolean) {
-    await api.put('/routing', { ...routing, [key]: value })
+    const nextRouting = { ...routing, [key]: value }
+    setData(nextRouting)
+    await api.put('/routing', toRoutingPolicyPayload(nextRouting))
     await reload()
   }
 
@@ -1405,9 +1433,9 @@ function RoutingPage() {
     return () => window.clearTimeout(timer)
   }, [message])
 
-  async function persistPolicy(nextData: any) {
+  async function persistPolicy(nextData: RoutingPolicyData) {
     setData(nextData)
-    await api.put('/routing', nextData)
+    await api.put('/routing', toRoutingPolicyPayload(nextData))
     const applyResponse = await api.post('/routing/apply')
     setMessage(applyResponse.data.status === 'applied' ? t('routingApplied') : applyResponse.data.error || t('routingBlocked'))
     await reload()
@@ -2277,9 +2305,8 @@ function fmtLatencyProbe(
 
 function renderUdpStatus(status: string | null | undefined, t: (key: any) => string) {
   if (!status) return '—'
-  if (status === 'open') return <span className="badge badge-online">{t('udpOpen')}</span>
-  if (status === 'open_or_filtered') return <span className="badge badge-online">{t('udpOpenOrFiltered')}</span>
-  if (status === 'unreachable') return <span className="badge badge-offline">{t('udpUnreachable')}</span>
+  if (status === 'available') return <span className="badge badge-online">{t('available')}</span>
+  if (status === 'unavailable') return <span className="badge badge-offline">{t('unavailable')}</span>
   return <span className="badge badge-unknown">{status}</span>
 }
 

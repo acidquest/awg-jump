@@ -1,11 +1,15 @@
 from __future__ import annotations
 import ipaddress
+import logging
 from pathlib import Path
 
 import httpx
 
 from app.config import settings
 from app.models import RoutingPolicy
+
+
+logger = logging.getLogger(__name__)
 
 
 def cache_path(country_code: str) -> Path:
@@ -50,7 +54,17 @@ async def refresh_policy_geoip(policy: RoutingPolicy) -> dict:
     fetched: dict[str, int] = {}
     merged: set[str] = set()
     for country in countries:
-        prefixes = await fetch_country(country)
+        try:
+            prefixes = await fetch_country(country)
+        except httpx.HTTPError as exc:
+            prefixes = load_cached_country(country)
+            if not prefixes:
+                raise
+            logger.warning(
+                "GeoIP refresh failed for %s, using cached prefixes: %s",
+                country,
+                exc,
+            )
         merged.update(prefixes)
         fetched[country] = len(prefixes)
 

@@ -13,7 +13,7 @@ function makeIpv4(seed: number) {
 }
 
 function makeRainStream(length: number, offset: number) {
-  return Array.from({ length }, (_, index) => makeIpv4(offset * 31 + index)).join('  ')
+  return Array.from({ length }, (_, index) => makeIpv4(offset * 31 + index)).join('    ')
 }
 
 export default function Login() {
@@ -23,14 +23,14 @@ export default function Login() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [streams] = useState(() =>
-    Array.from({ length: 26 }, (_, index) => ({
+    Array.from({ length: 34 }, (_, index) => ({
       id: index,
-      text: makeRainStream(30 + (index % 6) * 6, index),
-      duration: 20 + (index % 5) * 4,
-      delay: (index % 7) * -1.6,
-      left: `${index * 3.9}%`,
-      opacity: 0.16 + (index % 4) * 0.05,
-      size: 12 + (index % 3),
+      text: makeRainStream(3 + (index % 3), index),
+      duration: (88 + (index % 6) * 15.2) / 3,
+      delay: ((index % 11) * -6.8) / 3,
+      left: `${index * 2.95}%`,
+      opacity: 0.34 + (index % 4) * 0.08,
+      size: 13 + (index % 4) * 2,
     }))
   )
 

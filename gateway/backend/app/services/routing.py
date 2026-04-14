@@ -27,7 +27,6 @@ NAT_DNS_OUTPUT_CHAIN = "AWG_GW_DNS_OUTPUT"
 
 NFT_CHAIN_MANGLE_PREROUTING = "mangle_prerouting"
 NFT_CHAIN_MANGLE_OUTPUT = "mangle_output"
-NFT_CHAIN_FILTER_FORWARD = "filter_forward"
 NFT_CHAIN_FILTER_OUTPUT = "filter_output"
 NFT_CHAIN_NAT_PREROUTING = "nat_prerouting"
 NFT_CHAIN_NAT_OUTPUT = "nat_output"
@@ -124,7 +123,7 @@ def _static_match_sets(policy: RoutingPolicy) -> list[str]:
 
 def _all_match_sets(policy: RoutingPolicy) -> list[str]:
     sets = _static_match_sets(policy)
-    if policy.fqdn_prefixes:
+    if policy.fqdn_prefixes_enabled and policy.fqdn_prefixes:
         sets.append(fqdn_ipset_name(policy))
     return sets
 
@@ -143,7 +142,7 @@ def build_prefix_summary(policy: RoutingPolicy, gateway_settings: GatewaySetting
         manager.count(name)
         for name in {geoip_ipset_name(policy), manual_ipset_name(policy), policy.geoip_ipset_name}
     )
-    fqdn_live_count = manager.count(fqdn_ipset_name(policy))
+    fqdn_live_count = manager.count(fqdn_ipset_name(policy)) if policy.fqdn_prefixes_enabled else 0
     return {
         "ipset_name": policy.geoip_ipset_name,
         "geoip_ipset_name": geoip_ipset_name(policy),
@@ -185,7 +184,12 @@ def build_prefix_summary(policy: RoutingPolicy, gateway_settings: GatewaySetting
     }
 
 
-def sync_prefix_ipset(policy: RoutingPolicy, gateway_settings: GatewaySettings | None = None) -> list[str]:
+def sync_prefix_ipset(
+    policy: RoutingPolicy,
+    gateway_settings: GatewaySettings | None = None,
+    *,
+    flush_fqdn: bool = False,
+) -> list[str]:
     prefixes = _merge_prefixes(policy)
     country_prefixes = _country_prefixes(policy)
     manual_prefixes = _manual_prefixes(policy)
@@ -208,9 +212,11 @@ def sync_prefix_ipset(policy: RoutingPolicy, gateway_settings: GatewaySettings |
 
     fqdn_set = fqdn_ipset_name(policy)
     if policy.fqdn_prefixes_enabled:
-        if not manager.exists(fqdn_set):
+        if flush_fqdn:
+            manager.create_or_update(fqdn_set, [])
+        elif not manager.exists(fqdn_set):
             manager.create(fqdn_set)
-    elif not policy.fqdn_prefixes:
+    else:
         manager.create_or_update(fqdn_set, [])
     return prefixes
 
@@ -288,8 +294,10 @@ def _append(table: str, chain: str, rule_args: list[str]) -> None:
     _run_logged(["iptables", "-t", table, "-A", chain, *rule_args])
 
 
-def _ensure_ip_rule() -> None:
+def _ensure_ip_rules() -> None:
     rc, out = _run(["ip", "rule", "show"])
+    if f"fwmark {settings.fwmark_local}" not in out or f"lookup {settings.routing_table_local}" not in out:
+        _run_logged(["ip", "rule", "add", "fwmark", settings.fwmark_local, "table", str(settings.routing_table_local)])
     if f"fwmark {settings.fwmark_vpn}" not in out or f"lookup {settings.routing_table_vpn}" not in out:
         _run_logged(["ip", "rule", "add", "fwmark", settings.fwmark_vpn, "table", str(settings.routing_table_vpn)])
 
@@ -304,6 +312,20 @@ def _ensure_table_routes() -> None:
     if not default_iface or not default_gateway:
         raise RuntimeError("Cannot determine default route for gateway host interface")
     _run_logged(
+        [
+            "ip",
+            "route",
+            "replace",
+            "default",
+            "via",
+            default_gateway,
+            "dev",
+            default_iface,
+            "table",
+            str(settings.routing_table_local),
+        ]
+    )
+    _run_logged(
         ["ip", "route", "replace", "default", "dev", settings.tunnel_interface, "table", str(settings.routing_table_vpn)]
     )
 
@@ -313,6 +335,33 @@ def _physical_interface() -> str:
     if not default_iface:
         raise RuntimeError("Cannot determine default route for gateway host interface")
     return default_iface
+
+
+def _connected_ipv4_prefixes(interface_name: str) -> list[str]:
+    rc, out = _run(["ip", "-4", "route", "show", "dev", interface_name, "scope", "link"])
+    if rc != 0:
+        return []
+
+    prefixes: list[str] = []
+    seen: set[str] = set()
+    for line in out.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        prefix = parts[0]
+        if prefix == "default" or "/" not in prefix:
+            continue
+        if prefix in seen:
+            continue
+        prefixes.append(prefix)
+        seen.add(prefix)
+    return prefixes
+
+
+def _mark_targets(policy: RoutingPolicy) -> tuple[str, str]:
+    if policy.prefixes_route_local:
+        return settings.fwmark_local, settings.fwmark_vpn
+    return settings.fwmark_vpn, settings.fwmark_local
 
 
 def _iptables_command(table: str, chain: str, rule_args: list[str]) -> str:
@@ -327,7 +376,65 @@ def _append_nft(chain: str, expr: str) -> None:
     _run_logged(["nft", "-f", "-"], input_data=f"add rule ip {nftables_manager.TABLE_NAME} {chain} {expr}\n")
 
 
+def _append_compat_nft(table: str, chain: str, expr: str) -> None:
+    _run_logged(["nft", "-f", "-"], input_data=f"add rule ip {table} {chain} {expr}\n")
+
+
+def _compat_chain_exists(table: str, chain: str) -> bool:
+    rc, _ = _run(["nft", "list", "chain", "ip", table, chain])
+    return rc == 0
+
+
+def _ensure_compat_chain(table: str, chain: str) -> None:
+    if not _compat_chain_exists(table, chain):
+        _run_logged(["nft", "add", "chain", "ip", table, chain])
+    _run_logged(["nft", "flush", "chain", "ip", table, chain])
+
+
+def _compat_jump_exists(table: str, builtin_chain: str, target_chain: str) -> bool:
+    rc, out = _run(["nft", "-a", "list", "chain", "ip", table, builtin_chain])
+    if rc != 0:
+        return False
+    return any(f"jump {target_chain}" in line for line in out.splitlines())
+
+
+def _ensure_compat_jump(table: str, builtin_chain: str, target_chain: str) -> None:
+    if _compat_jump_exists(table, builtin_chain, target_chain):
+        return
+    _run_logged(["nft", "insert", "rule", "ip", table, builtin_chain, "jump", target_chain])
+
+
+def _delete_compat_jump(table: str, builtin_chain: str, target_chain: str) -> None:
+    rc, out = _run(["nft", "-a", "list", "chain", "ip", table, builtin_chain])
+    if rc != 0:
+        return
+    for line in reversed(out.splitlines()):
+        if f"jump {target_chain}" not in line:
+            continue
+        match = re.search(r"# handle (\d+)$", line.strip())
+        if not match:
+            continue
+        _run(["nft", "delete", "rule", "ip", table, builtin_chain, "handle", match.group(1)])
+
+
+def _delete_compat_chain(table: str, chain: str) -> None:
+    if not _compat_chain_exists(table, chain):
+        return
+    _run(["nft", "flush", "chain", "ip", table, chain])
+    _run(["nft", "delete", "chain", "ip", table, chain])
+
+
 def _teardown_nftables_stack() -> None:
+    for table, builtin_chain, target_chain in [
+        ("filter", "FORWARD", FILTER_FORWARD_CHAIN),
+        ("filter", "OUTPUT", FILTER_OUTPUT_CHAIN),
+    ]:
+        _delete_compat_jump(table, builtin_chain, target_chain)
+    for table, chain in [
+        ("filter", FILTER_FORWARD_CHAIN),
+        ("filter", FILTER_OUTPUT_CHAIN),
+    ]:
+        _delete_compat_chain(table, chain)
     nftables_manager.flush_all()
 
 
@@ -338,7 +445,6 @@ def _ensure_nftables_base() -> None:
             f"add table ip {nftables_manager.TABLE_NAME}",
             f"add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_MANGLE_PREROUTING} {{ type filter hook prerouting priority mangle; policy accept; }}",
             f"add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_MANGLE_OUTPUT} {{ type route hook output priority mangle; policy accept; }}",
-            f"add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_FILTER_FORWARD} {{ type filter hook forward priority filter; policy accept; }}",
             f"add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_FILTER_OUTPUT} {{ type filter hook output priority filter; policy accept; }}",
             f"add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_NAT_PREROUTING} {{ type nat hook prerouting priority dstnat; policy accept; }}",
             f"add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_NAT_OUTPUT} {{ type nat hook output priority -100; policy accept; }}",
@@ -357,12 +463,15 @@ def _build_marking_rules(
 ) -> list[tuple[str, str, list[str]]]:
     selectors = _source_selectors(gateway_settings)
     rules: list[tuple[str, str, list[str]]] = []
+    matched_mark, other_mark = _mark_targets(policy)
+    local_prefixes = _connected_ipv4_prefixes(_physical_interface())
 
     rules.append(("mangle", MANGLE_PREROUTING_CHAIN, ["-d", f"{active_node.endpoint_host}/32", "-j", "RETURN"]))
     rules.append(("mangle", MANGLE_OUTPUT_CHAIN, ["-d", f"{active_node.endpoint_host}/32", "-j", "RETURN"]))
+    for prefix in local_prefixes:
+        rules.append(("mangle", MANGLE_PREROUTING_CHAIN, ["-d", prefix, "-j", "RETURN"]))
+        rules.append(("mangle", MANGLE_OUTPUT_CHAIN, ["-d", prefix, "-j", "RETURN"]))
 
-    destination_action = "RETURN" if policy.prefixes_route_local else "MARK"
-    destination_args = [] if policy.prefixes_route_local else ["--set-mark", settings.fwmark_vpn]
     match_sets = _all_match_sets(policy)
 
     if gateway_settings.traffic_source_mode == TrafficSourceMode.localhost.value:
@@ -372,11 +481,11 @@ def _build_marking_rules(
                     (
                         "mangle",
                         MANGLE_OUTPUT_CHAIN,
-                        ["-m", "set", "--match-set", match_set, "dst", "-j", destination_action, *destination_args],
+                        ["-m", "set", "--match-set", match_set, "dst", "-j", "MARK", "--set-mark", matched_mark],
                     )
                 )
-        if policy.prefixes_route_local:
-            rules.append(("mangle", MANGLE_OUTPUT_CHAIN, ["-j", "MARK", "--set-mark", settings.fwmark_vpn]))
+                rules.append(("mangle", MANGLE_OUTPUT_CHAIN, ["-m", "set", "--match-set", match_set, "dst", "-j", "RETURN"]))
+        rules.append(("mangle", MANGLE_OUTPUT_CHAIN, ["-j", "MARK", "--set-mark", other_mark]))
 
     for selector in selectors:
         if selector == "127.0.0.1/32":
@@ -387,11 +496,13 @@ def _build_marking_rules(
                     (
                         "mangle",
                         MANGLE_PREROUTING_CHAIN,
-                        ["-s", selector, "-m", "set", "--match-set", match_set, "dst", "-j", destination_action, *destination_args],
+                        ["-s", selector, "-m", "set", "--match-set", match_set, "dst", "-j", "MARK", "--set-mark", matched_mark],
                     )
                 )
-        if policy.prefixes_route_local:
-            rules.append(("mangle", MANGLE_PREROUTING_CHAIN, ["-s", selector, "-j", "MARK", "--set-mark", settings.fwmark_vpn]))
+                rules.append(
+                    ("mangle", MANGLE_PREROUTING_CHAIN, ["-s", selector, "-m", "set", "--match-set", match_set, "dst", "-j", "RETURN"])
+                )
+        rules.append(("mangle", MANGLE_PREROUTING_CHAIN, ["-s", selector, "-j", "MARK", "--set-mark", other_mark]))
 
     return rules
 
@@ -434,25 +545,28 @@ def _build_marking_rules_nft(
     selectors = _source_selectors(gateway_settings)
     rules: list[tuple[str, str]] = []
     match_sets = _all_match_sets(policy)
+    matched_mark, other_mark = _mark_targets(policy)
+    local_prefixes = _connected_ipv4_prefixes(_physical_interface())
 
     rules.append((NFT_CHAIN_MANGLE_PREROUTING, f"ip daddr {active_node.endpoint_host} return"))
     rules.append((NFT_CHAIN_MANGLE_OUTPUT, f"ip daddr {active_node.endpoint_host} return"))
+    for prefix in local_prefixes:
+        rules.append((NFT_CHAIN_MANGLE_PREROUTING, f"ip daddr {prefix} return"))
+        rules.append((NFT_CHAIN_MANGLE_OUTPUT, f"ip daddr {prefix} return"))
 
     if gateway_settings.traffic_source_mode == TrafficSourceMode.localhost.value:
         for match_set in match_sets:
-            action = "return" if policy.prefixes_route_local else f"meta mark set {settings.fwmark_vpn}"
-            rules.append((NFT_CHAIN_MANGLE_OUTPUT, f"ip daddr @{match_set} {action}"))
-        if policy.prefixes_route_local:
-            rules.append((NFT_CHAIN_MANGLE_OUTPUT, f"meta mark set {settings.fwmark_vpn}"))
+            rules.append((NFT_CHAIN_MANGLE_OUTPUT, f"ip daddr @{match_set} meta mark set {matched_mark} return"))
+        rules.append((NFT_CHAIN_MANGLE_OUTPUT, f"meta mark set {other_mark}"))
 
     for selector in selectors:
         if selector == "127.0.0.1/32":
             continue
         for match_set in match_sets:
-            action = "return" if policy.prefixes_route_local else f"meta mark set {settings.fwmark_vpn}"
-            rules.append((NFT_CHAIN_MANGLE_PREROUTING, f"ip saddr {selector} ip daddr @{match_set} {action}"))
-        if policy.prefixes_route_local:
-            rules.append((NFT_CHAIN_MANGLE_PREROUTING, f"ip saddr {selector} meta mark set {settings.fwmark_vpn}"))
+            rules.append(
+                (NFT_CHAIN_MANGLE_PREROUTING, f"ip saddr {selector} ip daddr @{match_set} meta mark set {matched_mark} return")
+            )
+        rules.append((NFT_CHAIN_MANGLE_PREROUTING, f"ip saddr {selector} meta mark set {other_mark}"))
 
     return rules
 
@@ -477,6 +591,33 @@ def _build_dns_intercept_rules_nft(gateway_settings: GatewaySettings) -> list[tu
         for protocol in ("udp", "tcp"):
             rules.append((NFT_CHAIN_NAT_PREROUTING, f"ip saddr {selector} {protocol} dport 53 redirect to :53"))
 
+    return rules
+
+
+def _build_filter_forward_rules_nft(
+    gateway_settings: GatewaySettings,
+    policy: RoutingPolicy,
+    default_iface: str | None,
+) -> list[str]:
+    rules: list[str] = []
+    for selector in _source_selectors(gateway_settings):
+        if selector == "127.0.0.1/32" or default_iface is None:
+            continue
+        rules.extend(
+            [
+                f'ip saddr {selector} oifname "{default_iface}" accept',
+                f'iifname "{default_iface}" ip daddr {selector} ct state related,established accept',
+            ]
+        )
+    rules.extend(
+        [
+            f'oifname "{settings.tunnel_interface}" meta mark {settings.fwmark_vpn} accept',
+            f'iifname "{settings.tunnel_interface}" ct state related,established accept',
+        ]
+    )
+    if policy.kill_switch_enabled:
+        action = "reject" if policy.strict_mode else "drop"
+        rules.append(f'oifname != "{settings.tunnel_interface}" meta mark {settings.fwmark_vpn} {action}')
     return rules
 
 
@@ -511,9 +652,16 @@ def build_routing_plan(
         and (not policy.strict_mode or bool(cached_prefixes) or policy.fqdn_prefixes_enabled)
     )
 
-    commands: list[str] = [f"ip rule add fwmark {settings.fwmark_vpn} table {settings.routing_table_vpn}"]
+    commands: list[str] = [
+        f"ip rule add fwmark {settings.fwmark_local} table {settings.routing_table_local}",
+        f"ip rule add fwmark {settings.fwmark_vpn} table {settings.routing_table_vpn}",
+    ]
 
     if active_node is not None:
+        if default_iface is not None and default_gateway is not None:
+            commands.append(
+                f"ip route replace default via {default_gateway} dev {default_iface} table {settings.routing_table_local}"
+            )
         commands.append(f"ip route replace default dev {settings.tunnel_interface} table {settings.routing_table_vpn}")
         commands.extend(
             [
@@ -556,14 +704,15 @@ def build_routing_plan(
                     f"nft add table ip {nftables_manager.TABLE_NAME}",
                     f"nft add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_MANGLE_PREROUTING} {{ type filter hook prerouting priority mangle; policy accept; }}",
                     f"nft add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_MANGLE_OUTPUT} {{ type route hook output priority mangle; policy accept; }}",
-                    f"nft add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_FILTER_FORWARD} {{ type filter hook forward priority filter; policy accept; }}",
                     f"nft add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_FILTER_OUTPUT} {{ type filter hook output priority filter; policy accept; }}",
                     f"nft add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_NAT_PREROUTING} {{ type nat hook prerouting priority dstnat; policy accept; }}",
                     f"nft add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_NAT_OUTPUT} {{ type nat hook output priority -100; policy accept; }}",
                     f"nft add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_NAT_POSTROUTING} {{ type nat hook postrouting priority srcnat; policy accept; }}",
+                    f"nft add chain ip filter {FILTER_FORWARD_CHAIN}",
+                    f"nft insert rule ip filter FORWARD jump {FILTER_FORWARD_CHAIN}",
+                    f"nft add chain ip filter {FILTER_OUTPUT_CHAIN}",
+                    f"nft insert rule ip filter OUTPUT jump {FILTER_OUTPUT_CHAIN}",
                     _nft_command(NFT_CHAIN_NAT_POSTROUTING, f'oifname "{settings.tunnel_interface}" masquerade'),
-                    _nft_command(NFT_CHAIN_FILTER_FORWARD, f'oifname "{settings.tunnel_interface}" meta mark {settings.fwmark_vpn} accept'),
-                    _nft_command(NFT_CHAIN_FILTER_FORWARD, f'iifname "{settings.tunnel_interface}" ct state related,established accept'),
                 ]
             )
             commands.extend(_nft_command(chain, expr) for chain, expr in _build_marking_rules_nft(gateway_settings, policy, active_node))
@@ -572,13 +721,11 @@ def build_routing_plan(
                 for selector in selectors:
                     if selector == "127.0.0.1/32":
                         continue
-                    commands.extend(
-                        [
-                            _nft_command(NFT_CHAIN_NAT_POSTROUTING, f'ip saddr {selector} oifname "{default_iface}" masquerade'),
-                            _nft_command(NFT_CHAIN_FILTER_FORWARD, f'ip saddr {selector} oifname "{default_iface}" accept'),
-                            _nft_command(NFT_CHAIN_FILTER_FORWARD, f'iifname "{default_iface}" ip daddr {selector} ct state related,established accept'),
-                        ]
-                    )
+                    commands.append(_nft_command(NFT_CHAIN_NAT_POSTROUTING, f'ip saddr {selector} oifname "{default_iface}" masquerade'))
+            commands.extend(
+                f"nft add rule ip filter {FILTER_FORWARD_CHAIN} {expr}"
+                for expr in _build_filter_forward_rules_nft(gateway_settings, policy, default_iface)
+            )
 
     if policy.kill_switch_enabled:
         action = "reject" if policy.strict_mode else "drop"
@@ -591,7 +738,6 @@ def build_routing_plan(
             )
         else:
             commands.append(_nft_command(NFT_CHAIN_FILTER_OUTPUT, f'oifname != "{settings.tunnel_interface}" meta mark {settings.fwmark_vpn} {action}'))
-            commands.append(_nft_command(NFT_CHAIN_FILTER_FORWARD, f'oifname != "{settings.tunnel_interface}" meta mark {settings.fwmark_vpn} {action}'))
 
     manager = _set_manager(gateway_settings)
     return {
@@ -631,12 +777,16 @@ def apply_routing_plan(
 
     selectors = _source_selectors(gateway_settings)
     default_iface = _physical_interface()
-    _ensure_ip_rule()
+    _ensure_ip_rules()
     _ensure_table_routes()
 
     if firewall_backend(gateway_settings) == NFTABLES_BACKEND:
         _teardown_iptables_stack()
         _ensure_nftables_base()
+        _ensure_compat_chain("filter", FILTER_FORWARD_CHAIN)
+        _ensure_compat_chain("filter", FILTER_OUTPUT_CHAIN)
+        _ensure_compat_jump("filter", "FORWARD", FILTER_FORWARD_CHAIN)
+        _ensure_compat_jump("filter", "OUTPUT", FILTER_OUTPUT_CHAIN)
         prefixes = sync_prefix_ipset(policy, gateway_settings)
         for chain, expr in _build_marking_rules_nft(gateway_settings, policy, active_node):
             _append_nft(chain, expr)
@@ -647,17 +797,11 @@ def apply_routing_plan(
             if selector == "127.0.0.1/32":
                 continue
             _append_nft(NFT_CHAIN_NAT_POSTROUTING, f'ip saddr {selector} oifname "{default_iface}" masquerade')
-            _append_nft(NFT_CHAIN_FILTER_FORWARD, f'ip saddr {selector} oifname "{default_iface}" accept')
-            _append_nft(
-                NFT_CHAIN_FILTER_FORWARD,
-                f'iifname "{default_iface}" ip daddr {selector} ct state related,established accept',
-            )
-        _append_nft(NFT_CHAIN_FILTER_FORWARD, f'oifname "{settings.tunnel_interface}" meta mark {settings.fwmark_vpn} accept')
-        _append_nft(NFT_CHAIN_FILTER_FORWARD, f'iifname "{settings.tunnel_interface}" ct state related,established accept')
+        for expr in _build_filter_forward_rules_nft(gateway_settings, policy, default_iface):
+            _append_compat_nft("filter", FILTER_FORWARD_CHAIN, expr)
         if policy.kill_switch_enabled:
             action = "reject" if policy.strict_mode else "drop"
             _append_nft(NFT_CHAIN_FILTER_OUTPUT, f'oifname != "{settings.tunnel_interface}" meta mark {settings.fwmark_vpn} {action}')
-            _append_nft(NFT_CHAIN_FILTER_FORWARD, f'oifname != "{settings.tunnel_interface}" meta mark {settings.fwmark_vpn} {action}')
     else:
         _teardown_nftables_stack()
         prefixes = sync_prefix_ipset(policy, gateway_settings)

@@ -17,7 +17,15 @@ from app.security import get_current_user
 from app.services.conf_parser import parse_peer_conf, render_peer_conf, split_endpoint
 from app.services.first_node_bootstrap import bootstrap_first_node, cleanup_bootstrap_queue, get_bootstrap_queue
 from app.services.routing import apply_routing_plan
-from app.services.runtime import probe_node_latency, probe_node_latency_details, probe_udp_endpoint, resolve_live_tunnel_status, start_tunnel, stop_tunnel
+from app.services.runtime import (
+    probe_node_latency,
+    probe_node_latency_details,
+    probe_udp_endpoint,
+    resolve_live_tunnel_status,
+    resolve_tunnel_probe_target,
+    start_tunnel,
+    stop_tunnel,
+)
 
 
 router = APIRouter(prefix="/api/nodes", tags=["entry-nodes"])
@@ -124,7 +132,8 @@ def _refresh_latency_for_active_tunnel(node: EntryNode) -> None:
     latency_ms = probe["latency_ms"]
     node.latest_latency_ms = latency_ms if isinstance(latency_ms, float) else None
     node.latest_latency_at = datetime.now(timezone.utc)
-    node.last_error = None if latency_ms is not None else ("Probe IP is not configured" if not node.probe_ip else "Latency probe failed")
+    probe_target = resolve_tunnel_probe_target(node)
+    node.last_error = None if latency_ms is not None else ("Latency probe target is not configured" if not probe_target else "Latency probe failed")
 
 
 @router.get("")
@@ -403,7 +412,7 @@ async def activate_node(
     node.is_active = True
     node.latest_latency_ms = None
     node.latest_latency_at = None
-    node.last_error = None if node.probe_ip else "Probe IP is not configured"
+    node.last_error = None if resolve_tunnel_probe_target(node) else "Latency probe target is not configured"
     settings_row = await db.get(GatewaySettings, 1)
     live_status, live_error = resolve_live_tunnel_status(settings_row)
     settings_row.tunnel_status = live_status
