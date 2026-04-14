@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import AdminUser, DnsUpstream, GatewaySettings, RoutingPolicy, RuntimeMode
+from app.services.external_ip import validate_service_pair
 from app.security import hash_password
 
 
@@ -21,6 +22,10 @@ async def ensure_bootstrap_state(db: AsyncSession) -> None:
 
     gateway_settings = await db.get(GatewaySettings, 1)
     if gateway_settings is None:
+        local_service_url, vpn_service_url = validate_service_pair(
+            settings.external_ip_local_service_url,
+            settings.external_ip_vpn_service_url,
+        )
         db.add(
             GatewaySettings(
                 id=1,
@@ -28,6 +33,8 @@ async def ensure_bootstrap_state(db: AsyncSession) -> None:
                 runtime_mode=RuntimeMode.auto.value,
                 dns_intercept_enabled=True,
                 experimental_nftables=False,
+                external_ip_local_service_url=local_service_url,
+                external_ip_vpn_service_url=vpn_service_url,
             )
         )
 

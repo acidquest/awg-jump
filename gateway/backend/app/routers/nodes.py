@@ -16,6 +16,7 @@ from app.models import AdminUser, AuditEvent, EntryNode, FirstNodeBootstrapLog, 
 from app.security import get_current_user
 from app.services.conf_parser import parse_peer_conf, render_peer_conf, split_endpoint
 from app.services.first_node_bootstrap import bootstrap_first_node, cleanup_bootstrap_queue, get_bootstrap_queue
+from app.services.external_ip import refresh_external_ip_info
 from app.services.routing import apply_routing_plan
 from app.services.runtime import (
     probe_node_latency,
@@ -435,6 +436,8 @@ async def activate_node(
             db.add(node)
             db.add(settings_row)
             await db.flush()
+    policy = await db.get(RoutingPolicy, 1)
+    await refresh_external_ip_info(db, settings_row, policy, force=True)
     return _to_payload(node)
 
 
@@ -479,6 +482,8 @@ async def start_active_tunnel(
         db.add(settings_row)
         await db.flush()
         result["latency_ms"] = node.latest_latency_ms
+    policy = await db.get(RoutingPolicy, 1)
+    result["external_ip_info"] = await refresh_external_ip_info(db, settings_row, policy, force=True)
     return result
 
 
@@ -488,4 +493,7 @@ async def stop_active_tunnel(
     user: AdminUser = Depends(get_current_user),
 ) -> dict:
     settings_row = await db.get(GatewaySettings, 1)
-    return await stop_tunnel(db, settings_row)
+    result = await stop_tunnel(db, settings_row)
+    policy = await db.get(RoutingPolicy, 1)
+    result["external_ip_info"] = await refresh_external_ip_info(db, settings_row, policy, force=True)
+    return result

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from app.config import settings
 from app.models import EntryNode, GatewaySettings, RoutingPolicy, TrafficSourceMode, TunnelStatus
+from app.services.external_ip import effective_fqdn_prefixes
 from app.services import ipset_manager, nftables_manager
 from app.services.geoip import load_cached_country
 
@@ -73,7 +74,7 @@ def _run_logged(args: list[str], input_data: str | None = None) -> None:
         raise RuntimeError(f"{' '.join(args)} failed: {out}")
 
 
-def _merge_prefixes(policy: RoutingPolicy) -> list[str]:
+def _merge_prefixes(policy: RoutingPolicy, gateway_settings: GatewaySettings | None = None) -> list[str]:
     merged: list[str] = []
     seen: set[str] = set()
     if policy.countries_enabled:
@@ -87,7 +88,7 @@ def _merge_prefixes(policy: RoutingPolicy) -> list[str]:
             if prefix not in seen:
                 merged.append(prefix)
                 seen.add(prefix)
-    if not policy.countries_enabled and not policy.manual_prefixes_enabled and not policy.fqdn_prefixes_enabled:
+    if not policy.countries_enabled and not policy.manual_prefixes_enabled and not effective_fqdn_prefixes(policy, gateway_settings):
         merged.append("0.0.0.0/0")
     return merged
 
@@ -110,20 +111,20 @@ def _manual_prefixes(policy: RoutingPolicy) -> list[str]:
     return list(dict.fromkeys(policy.manual_prefixes))
 
 
-def _static_match_sets(policy: RoutingPolicy) -> list[str]:
+def _static_match_sets(policy: RoutingPolicy, gateway_settings: GatewaySettings | None = None) -> list[str]:
     sets: list[str] = []
     if policy.countries_enabled:
         sets.append(geoip_ipset_name(policy))
     if policy.manual_prefixes_enabled:
         sets.append(manual_ipset_name(policy))
-    if not policy.countries_enabled and not policy.manual_prefixes_enabled and not policy.fqdn_prefixes_enabled:
+    if not policy.countries_enabled and not policy.manual_prefixes_enabled and not effective_fqdn_prefixes(policy, gateway_settings):
         sets.append(policy.geoip_ipset_name)
     return sets
 
 
-def _all_match_sets(policy: RoutingPolicy) -> list[str]:
-    sets = _static_match_sets(policy)
-    if policy.fqdn_prefixes_enabled and policy.fqdn_prefixes:
+def _all_match_sets(policy: RoutingPolicy, gateway_settings: GatewaySettings | None = None) -> list[str]:
+    sets = _static_match_sets(policy, gateway_settings)
+    if effective_fqdn_prefixes(policy, gateway_settings):
         sets.append(fqdn_ipset_name(policy))
     return sets
 
@@ -133,16 +134,18 @@ def _set_manager(gateway_settings: GatewaySettings | None):
 
 
 def build_prefix_summary(policy: RoutingPolicy, gateway_settings: GatewaySettings | None = None) -> dict:
-    merged = _merge_prefixes(policy)
+    merged = _merge_prefixes(policy, gateway_settings)
     country_prefixes = _country_prefixes(policy)
     manual_prefixes = _manual_prefixes(policy)
+    fqdn_prefix_values = effective_fqdn_prefixes(policy, gateway_settings)
+    system_fqdn_prefixes = [item for item in fqdn_prefix_values if item not in set(policy.fqdn_prefixes)]
     manager = _set_manager(gateway_settings)
     backend = firewall_backend(gateway_settings)
     static_live_count = sum(
         manager.count(name)
         for name in {geoip_ipset_name(policy), manual_ipset_name(policy), policy.geoip_ipset_name}
     )
-    fqdn_live_count = manager.count(fqdn_ipset_name(policy)) if policy.fqdn_prefixes_enabled else 0
+    fqdn_live_count = manager.count(fqdn_ipset_name(policy)) if fqdn_prefix_values else 0
     return {
         "ipset_name": policy.geoip_ipset_name,
         "geoip_ipset_name": geoip_ipset_name(policy),
@@ -180,6 +183,13 @@ def build_prefix_summary(policy: RoutingPolicy, gateway_settings: GatewaySetting
                 "prefix_count": fqdn_live_count,
                 "description": f"{len(policy.fqdn_prefixes)} domains",
             },
+            {
+                "key": "system",
+                "enabled": bool(system_fqdn_prefixes),
+                "items_count": len(system_fqdn_prefixes),
+                "prefix_count": None,
+                "description": ", ".join(system_fqdn_prefixes) if system_fqdn_prefixes else "—",
+            },
         ],
     }
 
@@ -190,9 +200,10 @@ def sync_prefix_ipset(
     *,
     flush_fqdn: bool = False,
 ) -> list[str]:
-    prefixes = _merge_prefixes(policy)
+    prefixes = _merge_prefixes(policy, gateway_settings)
     country_prefixes = _country_prefixes(policy)
     manual_prefixes = _manual_prefixes(policy)
+    fqdn_prefix_values = effective_fqdn_prefixes(policy, gateway_settings)
     manager = _set_manager(gateway_settings)
 
     if policy.countries_enabled:
@@ -205,13 +216,13 @@ def sync_prefix_ipset(
     else:
         manager.create_or_update(manual_ipset_name(policy), [])
 
-    if not policy.countries_enabled and not policy.manual_prefixes_enabled and not policy.fqdn_prefixes_enabled:
+    if not policy.countries_enabled and not policy.manual_prefixes_enabled and not fqdn_prefix_values:
         manager.create_or_update(policy.geoip_ipset_name, ["0.0.0.0/0"])
     else:
         manager.create_or_update(policy.geoip_ipset_name, [])
 
     fqdn_set = fqdn_ipset_name(policy)
-    if policy.fqdn_prefixes_enabled:
+    if fqdn_prefix_values:
         if flush_fqdn:
             manager.create_or_update(fqdn_set, [])
         elif not manager.exists(fqdn_set):
@@ -472,7 +483,7 @@ def _build_marking_rules(
         rules.append(("mangle", MANGLE_PREROUTING_CHAIN, ["-d", prefix, "-j", "RETURN"]))
         rules.append(("mangle", MANGLE_OUTPUT_CHAIN, ["-d", prefix, "-j", "RETURN"]))
 
-    match_sets = _all_match_sets(policy)
+    match_sets = _all_match_sets(policy, gateway_settings)
 
     if gateway_settings.traffic_source_mode == TrafficSourceMode.localhost.value:
         if match_sets:
@@ -544,7 +555,7 @@ def _build_marking_rules_nft(
 ) -> list[tuple[str, str]]:
     selectors = _source_selectors(gateway_settings)
     rules: list[tuple[str, str]] = []
-    match_sets = _all_match_sets(policy)
+    match_sets = _all_match_sets(policy, gateway_settings)
     matched_mark, other_mark = _mark_targets(policy)
     local_prefixes = _connected_ipv4_prefixes(_physical_interface())
 
@@ -627,7 +638,7 @@ def build_routing_plan(
     active_node: EntryNode | None,
 ) -> dict:
     selectors = _source_selectors(gateway_settings)
-    cached_prefixes = _merge_prefixes(policy)
+    cached_prefixes = _merge_prefixes(policy, gateway_settings)
     warnings: list[str] = []
     default_iface, default_gateway = _default_route()
     backend = firewall_backend(gateway_settings)
@@ -649,7 +660,7 @@ def build_routing_plan(
         and default_iface is not None
         and gateway_settings.tunnel_status == TunnelStatus.running.value
         and _interface_exists(settings.tunnel_interface)
-        and (not policy.strict_mode or bool(cached_prefixes) or policy.fqdn_prefixes_enabled)
+        and (not policy.strict_mode or bool(cached_prefixes) or bool(effective_fqdn_prefixes(policy, gateway_settings)))
     )
 
     commands: list[str] = [
@@ -667,7 +678,7 @@ def build_routing_plan(
             [
                 f"{set_label} create/update {geoip_ipset_name(policy)} ({len(_country_prefixes(policy))} prefixes)",
                 f"{set_label} create/update {manual_ipset_name(policy)} ({len(_manual_prefixes(policy))} prefixes)",
-                f"{set_label} create/update {policy.geoip_ipset_name} ({1 if not policy.countries_enabled and not policy.manual_prefixes_enabled and not policy.fqdn_prefixes_enabled else 0} prefixes)",
+                f"{set_label} create/update {policy.geoip_ipset_name} ({1 if not policy.countries_enabled and not policy.manual_prefixes_enabled and not effective_fqdn_prefixes(policy, gateway_settings) else 0} prefixes)",
                 f"{set_label} create/update {fqdn_ipset_name(policy)} (dnsmasq-managed)",
             ]
         )
@@ -748,7 +759,7 @@ def build_routing_plan(
         "prefixes_route_local": policy.prefixes_route_local,
         "prefix_summary": build_prefix_summary(policy, gateway_settings),
         "manual_prefixes": policy.manual_prefixes,
-        "fqdn_prefixes": policy.fqdn_prefixes,
+        "fqdn_prefixes": effective_fqdn_prefixes(policy, gateway_settings),
         "kill_switch_enabled": policy.kill_switch_enabled,
         "strict_mode": policy.strict_mode,
         "dns_intercept_enabled": gateway_settings.dns_intercept_enabled,

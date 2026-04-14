@@ -9,6 +9,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import AdminUser, DnsDomainRule, EntryNode, GatewaySettings, RoutingPolicy
 from app.security import get_current_user
+from app.services.external_ip import serialize_external_ip_info
 from app.services.runtime import (
     current_pid,
     get_kernel_support_status,
@@ -75,6 +76,7 @@ async def status(
         "geoip_countries": routing_policy.geoip_countries,
         "ipset_name": routing_policy.geoip_ipset_name,
         "firewall_backend": "nftables" if gateway_settings.experimental_nftables else "iptables",
+        "external_ip_info": serialize_external_ip_info(gateway_settings, routing_policy),
         "prefix_summary": {
             "countries_enabled": routing_policy.countries_enabled,
             "manual_prefixes_enabled": routing_policy.manual_prefixes_enabled,

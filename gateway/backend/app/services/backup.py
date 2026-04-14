@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models import BackupRecord, DnsDomainRule, DnsUpstream, EntryNode, GatewaySettings, RoutingPolicy
 from app.services.dns import build_dnsmasq_preview
+from app.services.external_ip import effective_fqdn_prefixes
 from app.services.nftables_manager import TABLE_NAME as NFT_TABLE_NAME
 from app.services.routing import build_routing_plan, firewall_backend, fqdn_ipset_name
 
@@ -148,7 +149,7 @@ async def build_diagnostics_payload(db: AsyncSession) -> dict:
         "dns_preview": build_dnsmasq_preview(
             upstreams,
             domain_rules,
-            fqdn_prefixes=routing_policy.fqdn_prefixes if routing_policy and routing_policy.fqdn_prefixes_enabled else [],
+            fqdn_prefixes=effective_fqdn_prefixes(routing_policy, gateway_settings),
             ipset_name=fqdn_ipset_name(routing_policy) if routing_policy else "routing_prefixes_fqdn",
             use_nftset=firewall_backend(gateway_settings) == "nftables",
             nft_table_name=NFT_TABLE_NAME,

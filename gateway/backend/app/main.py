@@ -17,6 +17,7 @@ from app.database import AsyncSessionLocal, Base, engine
 from app.models import EntryNode, GatewaySettings, RoutingPolicy
 from app.routers import auth, backup, dns, nodes, routing, settings as settings_router, system
 from app.services.dns_runtime import restart_dnsmasq, stop_dnsmasq
+from app.services.external_ip import EXTERNAL_IP_REFRESH_INTERVAL_SECONDS, refresh_external_ip_info, validate_service_pair
 from app.services.routing import apply_routing_plan, sync_firewall_backend
 from app.services.runtime import start_tunnel
 from app.services.system_metrics import collect_system_metrics
@@ -75,6 +76,44 @@ async def _ensure_sqlite_columns() -> None:
             await conn.execute(
                 text("ALTER TABLE gateway_settings ADD COLUMN experimental_nftables BOOLEAN NOT NULL DEFAULT 0")
             )
+        if "external_ip_local_service_url" not in columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE gateway_settings ADD COLUMN external_ip_local_service_url VARCHAR(512) NOT NULL DEFAULT 'https://ipinfo.io/ip'"
+                )
+            )
+        if "external_ip_vpn_service_url" not in columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE gateway_settings ADD COLUMN external_ip_vpn_service_url VARCHAR(512) NOT NULL DEFAULT 'https://ifconfig.me/ip'"
+                )
+            )
+        if "external_ip_local_value" not in columns:
+            await conn.execute(text("ALTER TABLE gateway_settings ADD COLUMN external_ip_local_value VARCHAR(64)"))
+        if "external_ip_vpn_value" not in columns:
+            await conn.execute(text("ALTER TABLE gateway_settings ADD COLUMN external_ip_vpn_value VARCHAR(64)"))
+        if "external_ip_local_error" not in columns:
+            await conn.execute(text("ALTER TABLE gateway_settings ADD COLUMN external_ip_local_error TEXT"))
+        if "external_ip_vpn_error" not in columns:
+            await conn.execute(text("ALTER TABLE gateway_settings ADD COLUMN external_ip_vpn_error TEXT"))
+        if "external_ip_local_checked_at" not in columns:
+            await conn.execute(text("ALTER TABLE gateway_settings ADD COLUMN external_ip_local_checked_at DATETIME"))
+        if "external_ip_vpn_checked_at" not in columns:
+            await conn.execute(text("ALTER TABLE gateway_settings ADD COLUMN external_ip_vpn_checked_at DATETIME"))
+        local_service_url, vpn_service_url = validate_service_pair(
+            settings.external_ip_local_service_url,
+            settings.external_ip_vpn_service_url,
+        )
+        await conn.execute(
+            text(
+                """
+                UPDATE gateway_settings
+                SET external_ip_local_service_url = COALESCE(NULLIF(external_ip_local_service_url, ''), :local_url),
+                    external_ip_vpn_service_url = COALESCE(NULLIF(external_ip_vpn_service_url, ''), :vpn_url)
+                """
+            ),
+            {"local_url": local_service_url, "vpn_url": vpn_service_url},
+        )
         result = await conn.execute(text("PRAGMA table_info(entry_nodes)"))
         columns = {row[1] for row in result.fetchall()}
         if "probe_ip" not in columns:
@@ -166,10 +205,26 @@ async def _metrics_loop(stop_event: asyncio.Event) -> None:
             continue
 
 
+async def _external_ip_loop(stop_event: asyncio.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            async with AsyncSessionLocal() as session:
+                await refresh_external_ip_info(session, force=True)
+                await session.commit()
+        except Exception as exc:
+            logger.error("[gateway-external-ip] refresh failed: %s", exc)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=EXTERNAL_IP_REFRESH_INTERVAL_SECONDS)
+        except asyncio.TimeoutError:
+            continue
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     metrics_stop = asyncio.Event()
+    external_ip_stop = asyncio.Event()
     metrics_task: asyncio.Task | None = None
+    external_ip_task: asyncio.Task | None = None
     ensure_directories()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -188,11 +243,21 @@ async def lifespan(app: FastAPI):
             logger.error("[gateway-startup] dnsmasq start failed: %s", exc)
     async with AsyncSessionLocal() as session:
         await _restore_runtime_state(session)
+    async with AsyncSessionLocal() as session:
+        try:
+            await refresh_external_ip_info(session, force=True)
+            await session.commit()
+        except Exception as exc:
+            logger.error("[gateway-startup] external IP refresh failed: %s", exc)
     metrics_task = asyncio.create_task(_metrics_loop(metrics_stop))
+    external_ip_task = asyncio.create_task(_external_ip_loop(external_ip_stop))
     yield
     metrics_stop.set()
+    external_ip_stop.set()
     if metrics_task is not None:
         await metrics_task
+    if external_ip_task is not None:
+        await external_ip_task
     stop_dnsmasq()
 
 

@@ -69,6 +69,7 @@ type SystemStatus = {
   ipset_name: string
   firewall_backend?: 'iptables' | 'nftables'
   experimental_nftables?: boolean
+  external_ip_info: ExternalIpInfo
 }
 
 type MetricsPoint = {
@@ -88,11 +89,43 @@ type SystemMetrics = {
 }
 
 type PrefixSourceSummary = {
-  key: 'countries' | 'manual' | 'fqdn'
+  key: 'countries' | 'manual' | 'fqdn' | 'system'
   enabled: boolean
   items_count: number
   prefix_count: number | null
   description: string
+}
+
+type ExternalIpEndpointInfo = {
+  service_url: string
+  service_host: string | null
+  value: string | null
+  error: string | null
+  checked_at: string | null
+  route_target: 'local' | 'vpn'
+}
+
+type ExternalIpInfo = {
+  refresh_interval_seconds: number
+  forced_domains: string[]
+  local: ExternalIpEndpointInfo
+  vpn: ExternalIpEndpointInfo
+}
+
+type GatewaySettingsData = {
+  ui_language: string
+  runtime_mode: string
+  traffic_source_mode: string
+  allowed_client_cidrs: string[]
+  allowed_client_hosts: string[]
+  dns_intercept_enabled: boolean
+  experimental_nftables: boolean
+  kernel_available: boolean
+  kernel_message: string | null
+  active_entry_node_id?: number | null
+  tunnel_status?: string
+  tunnel_last_error?: string | null
+  external_ip_info: ExternalIpInfo
 }
 
 type PrefixSummary = {
@@ -399,7 +432,7 @@ function AppLayout() {
 function DashboardPage() {
   const { t } = useI18n()
   const [metricsPeriod, setMetricsPeriod] = useState<'1h' | '24h'>('1h')
-  const { data, loading, error } = useLoader<SystemStatus>('/system/status', {
+  const { data, loading, error, reload } = useLoader<SystemStatus>('/system/status', {
     runtime_available: false,
     tunnel_status: 'unknown',
     tunnel_last_error: null,
@@ -416,6 +449,12 @@ function DashboardPage() {
     ipset_name: 'routing_prefixes',
     firewall_backend: 'iptables',
     experimental_nftables: false,
+    external_ip_info: {
+      refresh_interval_seconds: 600,
+      forced_domains: [],
+      local: { service_url: '', service_host: null, value: null, error: null, checked_at: null, route_target: 'local' },
+      vpn: { service_url: '', service_host: null, value: null, error: null, checked_at: null, route_target: 'vpn' },
+    },
   })
   const { data: metrics, loading: metricsLoading } = useLoader<SystemMetrics>(`/system/metrics?period=${metricsPeriod}`, {
     period: metricsPeriod,
@@ -426,6 +465,16 @@ function DashboardPage() {
   })
   const statusTone = data.tunnel_status === 'running' ? 'online' : data.tunnel_status === 'starting' ? 'warning' : 'offline'
   const hideKernelWarning = data.runtime_mode === 'userspace'
+  const reloadRef = useRef(reload)
+
+  useEffect(() => {
+    reloadRef.current = reload
+  }, [reload])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => { void reloadRef.current() }, 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   return (
     <>
@@ -487,6 +536,13 @@ function DashboardPage() {
         </div>
       </div>
       <div className="section">
+        <div className="section-title">{t('externalIpTitle')}</div>
+        <div className="card-grid card-grid-2">
+          <ExternalIpCard endpoint={data.external_ip_info.local} forcedDomains={data.external_ip_info.forced_domains} />
+          <ExternalIpCard endpoint={data.external_ip_info.vpn} forcedDomains={data.external_ip_info.forced_domains} />
+        </div>
+      </div>
+      <div className="section">
         <div className="section-title">
           <span>{t('systemLoad')}</span>
           <div className="segmented-control" role="tablist" aria-label="Metrics period">
@@ -531,6 +587,46 @@ function DashboardPage() {
         ) : null}
       </div>
     </>
+  )
+}
+
+function ExternalIpCard({
+  endpoint,
+  forcedDomains,
+}: {
+  endpoint: ExternalIpEndpointInfo
+  forcedDomains: string[]
+}) {
+  const { t } = useI18n()
+  const forced = endpoint.service_host ? forcedDomains.includes(endpoint.service_host) : false
+  const checkedAt = fmtDateTime(endpoint.checked_at)
+  const toneClass = endpoint.value ? 'badge-online' : endpoint.error ? 'badge-error' : 'badge-pending'
+
+  return (
+    <div className="card">
+      <div className="flex items-center justify-between" style={{ gap: 12, marginBottom: 12 }}>
+        <div className="card-title">{endpoint.route_target === 'local' ? t('localExternalIp') : t('vpnExternalIp')}</div>
+        <span className={`badge ${toneClass}`}>{endpoint.route_target === 'local' ? t('localInterface') : t('awgInterface')}</span>
+      </div>
+      <div className="stat-value" style={{ fontSize: 24 }}>{endpoint.value || '—'}</div>
+      <div className="stat-label">
+        {t('serviceHost')}: {endpoint.service_host || '—'}
+      </div>
+      <div className="text-muted text-sm" style={{ marginTop: 10 }}>
+        {t('serviceUrl')}: <span className="text-mono">{endpoint.service_url || '—'}</span>
+      </div>
+      <div className="text-muted text-sm" style={{ marginTop: 6 }}>
+        {t('lastChecked')}: {checkedAt}
+      </div>
+      <div className="text-muted text-sm" style={{ marginTop: 6 }}>
+        {forced ? t('forcedIntoPrefixes') : t('usesDefaultDirection')}
+      </div>
+      {endpoint.error ? (
+        <div className="text-muted text-sm" style={{ marginTop: 8, color: 'var(--danger)' }}>
+          {endpoint.error}
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -1724,7 +1820,7 @@ function BackupPage() {
 
 function SettingsPage() {
   const { locale, setLocale, t } = useI18n()
-  const { data, reload, setData } = useLoader<any>('/settings', {
+  const { data, reload, setData } = useLoader<GatewaySettingsData>('/settings', {
     ui_language: 'en',
     runtime_mode: 'auto',
     traffic_source_mode: 'localhost',
@@ -1734,9 +1830,17 @@ function SettingsPage() {
     experimental_nftables: false,
     kernel_available: false,
     kernel_message: null,
+    external_ip_info: {
+      refresh_interval_seconds: 600,
+      forced_domains: [],
+      local: { service_url: '', service_host: null, value: null, error: null, checked_at: null, route_target: 'local' },
+      vpn: { service_url: '', service_host: null, value: null, error: null, checked_at: null, route_target: 'vpn' },
+    },
   })
   const [cidrs, setCidrs] = useState('')
   const [hosts, setHosts] = useState('')
+  const [localExternalIpServiceUrl, setLocalExternalIpServiceUrl] = useState('')
+  const [vpnExternalIpServiceUrl, setVpnExternalIpServiceUrl] = useState('')
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [message, setMessage] = useState('')
@@ -1744,7 +1848,9 @@ function SettingsPage() {
   useEffect(() => {
     setCidrs((data.allowed_client_cidrs || []).join(', '))
     setHosts((data.allowed_client_hosts || []).join(', '))
-  }, [data.allowed_client_cidrs, data.allowed_client_hosts])
+    setLocalExternalIpServiceUrl(data.external_ip_info.local.service_url || '')
+    setVpnExternalIpServiceUrl(data.external_ip_info.vpn.service_url || '')
+  }, [data.allowed_client_cidrs, data.allowed_client_hosts, data.external_ip_info.local.service_url, data.external_ip_info.vpn.service_url])
 
   function buildSettingsPayload(overrides: Record<string, unknown> = {}) {
     return {
@@ -1755,6 +1861,8 @@ function SettingsPage() {
       allowed_client_hosts: hosts.split(',').map((item: string) => item.trim()).filter(Boolean),
       dns_intercept_enabled: data.dns_intercept_enabled,
       experimental_nftables: data.experimental_nftables,
+      external_ip_local_service_url: localExternalIpServiceUrl,
+      external_ip_vpn_service_url: vpnExternalIpServiceUrl,
       ...overrides,
     }
   }
@@ -1849,6 +1957,33 @@ function SettingsPage() {
             <div className="form-group">
               <label className="form-label">{t('hostList')}</label>
               <input className="form-input" value={hosts} onChange={(event) => setHosts(event.target.value)} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">{t('externalIpServices')}</label>
+              <div className="text-muted text-sm" style={{ marginBottom: 8 }}>{t('externalIpServicesDescription')}</div>
+              <div className="form-row form-row-2">
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">{t('localExternalIpService')}</label>
+                  <input
+                    className="form-input mono"
+                    value={localExternalIpServiceUrl}
+                    onChange={(event) => setLocalExternalIpServiceUrl(event.target.value)}
+                    placeholder="https://ipinfo.io/ip"
+                  />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">{t('vpnExternalIpService')}</label>
+                  <input
+                    className="form-input mono"
+                    value={vpnExternalIpServiceUrl}
+                    onChange={(event) => setVpnExternalIpServiceUrl(event.target.value)}
+                    placeholder="https://ifconfig.me/ip"
+                  />
+                </div>
+              </div>
+              <div className="text-muted text-sm" style={{ marginTop: 8 }}>
+                {t('forcedDomains')}: {data.external_ip_info.forced_domains.length ? data.external_ip_info.forced_domains.join(', ') : '—'}
+              </div>
             </div>
             <div className="form-group">
               <label className="form-label">{t('dnsInterception')}</label>
@@ -2167,6 +2302,16 @@ function fmtMetricTime(ts: string, period: '1h' | '24h') {
   return new Intl.DateTimeFormat(undefined, {
     hour: '2-digit',
     minute: '2-digit',
+    timeZone: CLIENT_TIME_ZONE,
+  }).format(date)
+}
+
+function fmtDateTime(ts: string | null | undefined) {
+  const date = parseUtcDate(ts)
+  if (!date) return '—'
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
     timeZone: CLIENT_TIME_ZONE,
   }).format(date)
 }

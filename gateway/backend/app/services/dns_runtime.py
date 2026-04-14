@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models import DnsDomainRule, DnsUpstream, GatewaySettings, RoutingPolicy
 from app.services.dns import build_dnsmasq_config
+from app.services.external_ip import effective_fqdn_prefixes
 from app.services.nftables_manager import TABLE_NAME as NFT_TABLE_NAME
 from app.services.routing import firewall_backend, fqdn_ipset_name
 
@@ -57,7 +58,7 @@ async def render_runtime_config(db: AsyncSession) -> str:
     rules = (await db.execute(select(DnsDomainRule).order_by(DnsDomainRule.domain))).scalars().all()
     policy = await db.get(RoutingPolicy, 1)
     gateway_settings = await db.get(GatewaySettings, 1)
-    fqdn_prefixes = policy.fqdn_prefixes if policy and policy.fqdn_prefixes_enabled else []
+    fqdn_prefixes = effective_fqdn_prefixes(policy, gateway_settings)
     ipset_name = fqdn_ipset_name(policy) if policy else "routing_prefixes_fqdn"
     return build_dnsmasq_config(
         upstreams,

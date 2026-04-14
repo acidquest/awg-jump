@@ -12,6 +12,7 @@ from app.database import get_db
 from app.models import AdminUser, EntryNode, GatewaySettings, RoutingPolicy
 from app.security import get_current_user
 from app.services.dns_runtime import restart_dnsmasq
+from app.services.external_ip import refresh_external_ip_info
 from app.services.geoip import refresh_policy_geoip
 from app.services.routing import apply_routing_plan, build_prefix_summary, build_routing_plan, sync_prefix_ipset
 
@@ -105,11 +106,13 @@ async def _reload_runtime(
             status = "error"
     db.add(policy)
     await db.flush()
+    external_ip_info = await refresh_external_ip_info(db, settings_row, policy, force=True)
     return {
         "status": status,
         "prefixes": prefixes,
         "plan": plan,
         "prefix_summary": build_prefix_summary(policy, settings_row),
+        "external_ip_info": external_ip_info,
     }
 
 
@@ -300,6 +303,7 @@ async def refresh_geoip(
     policy = await db.get(RoutingPolicy, 1)
     result = await refresh_policy_geoip(policy)
     sync_prefix_ipset(policy, await db.get(GatewaySettings, 1))
+    await refresh_external_ip_info(db, await db.get(GatewaySettings, 1), policy, force=True)
     return result
 
 
@@ -339,4 +343,5 @@ async def apply_plan(
         return {"status": "error", "error": policy.last_error, "plan": plan}
     db.add(policy)
     await db.flush()
+    await refresh_external_ip_info(db, settings_row, policy, force=True)
     return {"status": "applied", "plan": plan}

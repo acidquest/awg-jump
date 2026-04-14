@@ -10,6 +10,8 @@ def make_settings(mode: str = "localhost", experimental_nftables: bool = False):
         allowed_client_hosts=["192.168.10.50"],
         dns_intercept_enabled=True,
         experimental_nftables=experimental_nftables,
+        external_ip_local_service_url="https://ipinfo.io/ip",
+        external_ip_vpn_service_url="https://ifconfig.me/ip",
         tunnel_status="running",
     )
 
@@ -76,7 +78,10 @@ def test_plan_uses_default_prefix_when_all_blocks_disabled(monkeypatch) -> None:
     policy = make_policy()
     policy.countries_enabled = False
     policy.manual_prefixes_enabled = False
-    plan = build_routing_plan(make_settings(), policy, make_active_node())
+    settings = make_settings()
+    settings.external_ip_local_service_url = ""
+    settings.external_ip_vpn_service_url = ""
+    plan = build_routing_plan(settings, policy, make_active_node())
     assert plan["prefix_summary"]["fallback_default_route"] is True
     assert plan["geoip_prefix_count"] == 1
 
@@ -206,10 +211,31 @@ def test_plan_ignores_disabled_fqdn_match_set(monkeypatch) -> None:
     policy.fqdn_prefixes_enabled = False
     policy.fqdn_prefixes = ["example.com"]
 
-    plan = build_routing_plan(make_settings(), policy, make_active_node())
+    settings = make_settings()
+    settings.external_ip_local_service_url = ""
+    settings.external_ip_vpn_service_url = ""
+    plan = build_routing_plan(settings, policy, make_active_node())
 
     assert not any("--match-set routing_prefixes_fqdn" in command for command in plan["commands"])
     assert plan["prefix_summary"]["resolved_prefixes"] == 0
+
+
+def test_plan_uses_system_fqdn_host_without_fallback_default_route(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.routing._default_route", lambda: ("eth0", "192.0.2.1"))
+    monkeypatch.setattr("app.services.routing._interface_exists", lambda _: True)
+    monkeypatch.setattr("app.services.routing.load_cached_country", lambda _: [])
+    monkeypatch.setattr("app.services.routing.ipset_manager.count", lambda name: 1 if name == "routing_prefixes_fqdn" else 0)
+
+    policy = make_policy()
+    policy.countries_enabled = False
+    policy.manual_prefixes_enabled = False
+    policy.fqdn_prefixes_enabled = False
+    policy.fqdn_prefixes = []
+
+    plan = build_routing_plan(make_settings(), policy, make_active_node())
+
+    assert plan["prefix_summary"]["fallback_default_route"] is False
+    assert any("--match-set routing_prefixes_fqdn dst" in command for command in plan["commands"])
 
 
 def test_sync_prefix_ipset_flushes_fqdn_runtime_set_on_dns_reload(monkeypatch) -> None:
