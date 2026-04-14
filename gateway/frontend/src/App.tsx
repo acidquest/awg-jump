@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
+import { Area, AreaChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import api from './api'
 import { useI18n } from './i18n'
 
@@ -66,6 +67,8 @@ type SystemStatus = {
   kill_switch_enabled: boolean
   geoip_countries: string[]
   ipset_name: string
+  firewall_backend?: 'iptables' | 'nftables'
+  experimental_nftables?: boolean
 }
 
 type MetricsPoint = {
@@ -97,6 +100,12 @@ type PrefixSummary = {
   geoip_ipset_name?: string
   manual_ipset_name?: string
   fqdn_ipset_name?: string
+  set_name?: string
+  geoip_set_name?: string
+  manual_set_name?: string
+  fqdn_set_name?: string
+  firewall_backend?: 'iptables' | 'nftables'
+  set_backend_label?: string
   total_prefixes: number
   configured_prefixes?: number
   resolved_prefixes?: number
@@ -128,6 +137,25 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   const token = localStorage.getItem('gateway-token')
   if (!token) return <Navigate to="/login" replace />
   return <>{children}</>
+}
+
+function firewallBackendLabel(
+  backend: string | undefined,
+  t: (key: 'iptablesBackend' | 'nftablesBackend') => string,
+) {
+  return backend === 'nftables' ? t('nftablesBackend') : t('iptablesBackend')
+}
+
+const CLIENT_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone
+
+function normalizeUtcTimestamp(value: string) {
+  return /[zZ]|[+-]\d{2}:\d{2}$/.test(value) ? value : `${value}Z`
+}
+
+function parseUtcDate(value: string | null | undefined) {
+  if (!value) return null
+  const date = new Date(normalizeUtcTimestamp(value))
+  return Number.isNaN(date.getTime()) ? null : date
 }
 
 function useLoader<T>(url: string, fallback: T) {
@@ -360,6 +388,8 @@ function DashboardPage() {
     kill_switch_enabled: true,
     geoip_countries: [],
     ipset_name: 'routing_prefixes',
+    firewall_backend: 'iptables',
+    experimental_nftables: false,
   })
   const { data: metrics, loading: metricsLoading } = useLoader<SystemMetrics>(`/system/metrics?period=${metricsPeriod}`, {
     period: metricsPeriod,
@@ -387,7 +417,11 @@ function DashboardPage() {
         <StatCard title={t('tunnel')} value={data.tunnel_status} label={data.runtime_available ? t('runtimeReady') : t('runtimeMissing')} tone={statusTone} />
         <StatCard title={t('entryNodes')} value={String(data.entry_node_count)} label={t('activeNode')} />
         <StatCard title={t('dnsRules')} value={String(data.dns_rule_count)} label={t('domains')} />
-        <StatCard title={t('policy')} value={data.ipset_name} label={data.geoip_countries.join(', ') || t('geoipSummary')} />
+        <StatCard
+          title={t('prefixSet')}
+          value={data.ipset_name}
+          label={`${firewallBackendLabel(data.firewall_backend, t)}${data.geoip_countries.length ? ` • ${data.geoip_countries.join(', ')}` : ''}`}
+        />
       </div>
       <div className="card-grid card-grid-4" style={{ marginBottom: 20 }}>
         <StatCard title={t('cpuLoad')} value={fmtPercent(metrics.latest?.cpu_usage_percent)} label={t('sampledPerMinute')} />
@@ -487,7 +521,23 @@ function PolicyPage() {
     prefixes_route_local: true,
     kill_switch_enabled: true,
     strict_mode: true,
-    prefix_summary: { ipset_name: 'routing_prefixes', geoip_ipset_name: 'routing_prefixes_geoip', manual_ipset_name: 'routing_prefixes_manual', fqdn_ipset_name: 'routing_prefixes_fqdn', total_prefixes: 0, configured_prefixes: 0, resolved_prefixes: 0, fallback_default_route: false, sources: [] },
+    prefix_summary: {
+      ipset_name: 'routing_prefixes',
+      geoip_ipset_name: 'routing_prefixes_geoip',
+      manual_ipset_name: 'routing_prefixes_manual',
+      fqdn_ipset_name: 'routing_prefixes_fqdn',
+      set_name: 'routing_prefixes',
+      geoip_set_name: 'routing_prefixes_geoip',
+      manual_set_name: 'routing_prefixes_manual',
+      fqdn_set_name: 'routing_prefixes_fqdn',
+      firewall_backend: 'iptables',
+      set_backend_label: 'ipset',
+      total_prefixes: 0,
+      configured_prefixes: 0,
+      resolved_prefixes: 0,
+      fallback_default_route: false,
+      sources: [],
+    },
   })
   const [message, setMessage] = useState('')
   const [countryModalOpen, setCountryModalOpen] = useState(false)
@@ -496,7 +546,7 @@ function PolicyPage() {
 
   async function updateGeoip() {
     await api.post('/routing/refresh-geoip')
-    setMessage('GeoIP update requested')
+    setMessage(t('geoipUpdateRequested'))
     await reload()
   }
 
@@ -539,7 +589,7 @@ function PolicyPage() {
             <div className="card-title" style={{ marginBottom: 8 }}>{t('totalPrefixes')}</div>
             <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--accent)' }}>{routing.prefix_summary.total_prefixes.toLocaleString()}</div>
             <div className="text-muted text-sm">
-              {routing.geoip_ipset_name}
+              {routing.prefix_summary.set_name || routing.geoip_ipset_name}
               {typeof routing.prefix_summary.configured_prefixes === 'number' ? ` • ${t('configured')}: ${routing.prefix_summary.configured_prefixes}` : ''}
             </div>
           </div>
@@ -550,7 +600,7 @@ function PolicyPage() {
               {routing.prefix_summary.fallback_default_route ? ` • ${t('defaultPrefixApplied')}` : ''}
             </div>
             <div className="text-muted text-sm" style={{ marginTop: 6 }}>
-              {routing.prefix_summary.geoip_ipset_name} • {routing.prefix_summary.manual_ipset_name} • {routing.prefix_summary.fqdn_ipset_name}
+              {firewallBackendLabel(routing.prefix_summary.firewall_backend, t)} • {routing.prefix_summary.geoip_set_name || routing.prefix_summary.geoip_ipset_name} • {routing.prefix_summary.manual_set_name || routing.prefix_summary.manual_ipset_name} • {routing.prefix_summary.fqdn_set_name || routing.prefix_summary.fqdn_ipset_name}
             </div>
           </div>
         </div>
@@ -1328,7 +1378,23 @@ function RoutingPage() {
     prefixes_route_local: true,
     kill_switch_enabled: true,
     strict_mode: true,
-    prefix_summary: { ipset_name: 'routing_prefixes', geoip_ipset_name: 'routing_prefixes_geoip', manual_ipset_name: 'routing_prefixes_manual', fqdn_ipset_name: 'routing_prefixes_fqdn', total_prefixes: 0, configured_prefixes: 0, resolved_prefixes: 0, fallback_default_route: false, sources: [] },
+    prefix_summary: {
+      ipset_name: 'routing_prefixes',
+      geoip_ipset_name: 'routing_prefixes_geoip',
+      manual_ipset_name: 'routing_prefixes_manual',
+      fqdn_ipset_name: 'routing_prefixes_fqdn',
+      set_name: 'routing_prefixes',
+      geoip_set_name: 'routing_prefixes_geoip',
+      manual_set_name: 'routing_prefixes_manual',
+      fqdn_set_name: 'routing_prefixes_fqdn',
+      firewall_backend: 'iptables',
+      set_backend_label: 'ipset',
+      total_prefixes: 0,
+      configured_prefixes: 0,
+      resolved_prefixes: 0,
+      fallback_default_route: false,
+      sources: [],
+    },
   })
   const { data: plan, reload: reloadPlan } = useLoader<any>('/routing/plan', { commands: [], warnings: [], safe_to_apply: false })
   const [message, setMessage] = useState('')
@@ -1417,7 +1483,12 @@ function RoutingPage() {
           <div className="routing-flow">
             <FlowNode title={t('trafficSource')} value={plan.source_mode || 'localhost'} meta={(plan.selectors || []).join(', ') || 'OUTPUT'} />
             <FlowArrow />
-            <FlowNode title={t('routingPrefixes')} value={data.geoip_ipset_name} meta={`${plan.geoip_prefix_count ?? 0} ${t('totalPrefixes').toLowerCase()}`} accent />
+            <FlowNode
+              title={t('prefixSet')}
+              value={data.prefix_summary.set_name || data.geoip_ipset_name}
+              meta={`${firewallBackendLabel(plan.firewall_backend || data.prefix_summary.firewall_backend, t)} • ${plan.geoip_prefix_count ?? 0} ${t('totalPrefixes').toLowerCase()}`}
+              accent
+            />
             <FlowArrow />
             <FlowNode
               title={t('trafficDirection')}
@@ -1632,6 +1703,7 @@ function SettingsPage() {
     allowed_client_cidrs: [],
     allowed_client_hosts: [],
     dns_intercept_enabled: true,
+    experimental_nftables: false,
     kernel_available: false,
     kernel_message: null,
   })
@@ -1654,6 +1726,7 @@ function SettingsPage() {
       allowed_client_cidrs: cidrs.split(',').map((item: string) => item.trim()).filter(Boolean),
       allowed_client_hosts: hosts.split(',').map((item: string) => item.trim()).filter(Boolean),
       dns_intercept_enabled: data.dns_intercept_enabled,
+      experimental_nftables: data.experimental_nftables,
       ...overrides,
     }
   }
@@ -1661,7 +1734,7 @@ function SettingsPage() {
   async function saveSettings(event: FormEvent) {
     event.preventDefault()
     await api.put('/settings', buildSettingsPayload())
-    setMessage('Settings saved')
+    setMessage(t('settingsSaved'))
     await reload()
   }
 
@@ -1670,11 +1743,24 @@ function SettingsPage() {
     setData({ ...data, dns_intercept_enabled: enabled })
     try {
       await api.put('/settings', buildSettingsPayload({ dns_intercept_enabled: enabled }))
-      setMessage('DNS interception updated')
+      setMessage(t('dnsInterceptionUpdated'))
       await reload()
     } catch (err: any) {
       setData({ ...data, dns_intercept_enabled: previous })
-      setMessage(err?.response?.data?.detail || err.message || 'Failed to update DNS interception')
+      setMessage(err?.response?.data?.detail || err.message || t('failedToUpdateDnsInterception'))
+    }
+  }
+
+  async function toggleExperimentalRouting(enabled: boolean) {
+    const previous = Boolean(data.experimental_nftables)
+    setData({ ...data, experimental_nftables: enabled })
+    try {
+      await api.put('/settings', buildSettingsPayload({ experimental_nftables: enabled }))
+      setMessage(t('settingsSaved'))
+      await reload()
+    } catch (err: any) {
+      setData({ ...data, experimental_nftables: previous })
+      setMessage(err?.response?.data?.detail || err.message || 'Request failed')
     }
   }
 
@@ -1683,7 +1769,7 @@ function SettingsPage() {
     await api.post('/auth/change-password', { current_password: currentPassword, new_password: newPassword })
     setCurrentPassword('')
     setNewPassword('')
-    setMessage('Password changed')
+    setMessage(t('passwordChanged'))
   }
 
   return (
@@ -1708,7 +1794,7 @@ function SettingsPage() {
             </div>
             <div className="form-group">
               <label className="form-label">{t('runtimeMode')}</label>
-              <select className="form-input" value={data.runtime_mode} onChange={(event) => { data.runtime_mode = event.target.value }}>
+              <select className="form-input" value={data.runtime_mode} onChange={(event) => setData({ ...data, runtime_mode: event.target.value })}>
                 <option value="auto">{t('runtimeModeAuto')}</option>
                 <option value="kernel">{t('runtimeModeKernel')}</option>
                 <option value="userspace">{t('runtimeModeUserspace')}</option>
@@ -1722,7 +1808,7 @@ function SettingsPage() {
             </div>
             <div className="form-group">
               <label className="form-label">{t('sourceMode')}</label>
-              <select className="form-input" value={data.traffic_source_mode} onChange={(event) => { data.traffic_source_mode = event.target.value }}>
+              <select className="form-input" value={data.traffic_source_mode} onChange={(event) => setData({ ...data, traffic_source_mode: event.target.value })}>
                 <option value="localhost">{t('localhost')}</option>
                 <option value="selected_cidr">{t('selectedCidr')}</option>
                 <option value="selected_hosts">{t('selectedHosts')}</option>
@@ -1747,6 +1833,21 @@ function SettingsPage() {
                 <span className="toggle-slider" />
               </label>
               <div className="text-muted text-sm" style={{ marginTop: 8 }}>{t('dnsInterceptionDescription')}</div>
+            </div>
+            <div className="form-group">
+              <label className="form-label">{t('experimentalRouting')}</label>
+              <label className="toggle" title={t('experimentalRouting')}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(data.experimental_nftables)}
+                  onChange={(event) => { void toggleExperimentalRouting(event.target.checked) }}
+                />
+                <span className="toggle-slider" />
+              </label>
+              <div className="text-muted text-sm" style={{ marginTop: 8 }}>{t('experimentalRoutingDescription')}</div>
+              <div className="text-muted text-sm" style={{ marginTop: 4 }}>
+                {t('firewallBackend')}: {firewallBackendLabel(data.experimental_nftables ? 'nftables' : 'iptables', t)}
+              </div>
             </div>
             <button className="btn btn-primary" type="submit">{t('save')}</button>
           </form>
@@ -1950,121 +2051,143 @@ function MetricChartCard({
         <div className="metric-chip">{chip}</div>
       </div>
       <div className="metric-chart-wrap">
-        {mode === 'cpu' ? <CpuSvgChart points={points} period={period} /> : <MemorySvgChart points={points} period={period} />}
+        <ResponsiveContainer width="100%" height="100%">
+          {mode === 'cpu' ? (
+            <LineChart data={points}>
+              <CartesianGrid stroke="rgba(139, 148, 158, 0.12)" vertical={false} />
+              <XAxis
+                dataKey="collected_at"
+                minTickGap={28}
+                stroke="var(--text-3)"
+                tick={{ fontSize: 11, fill: 'var(--text-3)' }}
+                tickFormatter={(value) => fmtMetricTime(String(value), period)}
+              />
+              <YAxis
+                domain={[0, 100]}
+                tickFormatter={(value) => `${value}%`}
+                stroke="var(--text-3)"
+                tick={{ fontSize: 11, fill: 'var(--text-3)' }}
+                width={42}
+              />
+              <Tooltip content={<MetricsTooltip type="cpu" period={period} />} />
+              <Line
+                type="monotone"
+                dataKey="cpu_usage_percent"
+                stroke="var(--accent)"
+                strokeWidth={2.5}
+                dot={false}
+                activeDot={{ r: 4, strokeWidth: 0, fill: 'var(--accent)' }}
+              />
+            </LineChart>
+          ) : (
+            <AreaChart data={points}>
+              <defs>
+                <linearGradient id="gatewayMemoryUsedFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="rgba(245, 158, 11, 0.38)" />
+                  <stop offset="100%" stopColor="rgba(245, 158, 11, 0.05)" />
+                </linearGradient>
+                <linearGradient id="gatewayMemoryFreeFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="rgba(56, 189, 248, 0.30)" />
+                  <stop offset="100%" stopColor="rgba(56, 189, 248, 0.04)" />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke="rgba(139, 148, 158, 0.12)" vertical={false} />
+              <XAxis
+                dataKey="collected_at"
+                minTickGap={28}
+                stroke="var(--text-3)"
+                tick={{ fontSize: 11, fill: 'var(--text-3)' }}
+                tickFormatter={(value) => fmtMetricTime(String(value), period)}
+              />
+              <YAxis
+                tickFormatter={(value) => fmtBytes(Number(value))}
+                stroke="var(--text-3)"
+                tick={{ fontSize: 11, fill: 'var(--text-3)' }}
+                width={56}
+              />
+              <Tooltip content={<MetricsTooltip type="memory" period={period} />} />
+              <Area
+                type="monotone"
+                dataKey="memory_free_bytes"
+                stroke="var(--success)"
+                fill="url(#gatewayMemoryFreeFill)"
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 4, strokeWidth: 0, fill: 'var(--success)' }}
+              />
+              <Area
+                type="monotone"
+                dataKey="memory_used_bytes"
+                stroke="var(--accent)"
+                fill="url(#gatewayMemoryUsedFill)"
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 4, strokeWidth: 0, fill: 'var(--accent)' }}
+              />
+            </AreaChart>
+          )}
+        </ResponsiveContainer>
       </div>
     </div>
   )
 }
 
 function fmtMetricTime(ts: string, period: '1h' | '24h') {
-  const date = new Date(ts)
-  if (Number.isNaN(date.getTime())) return ''
-  if (period === '1h') {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  }
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const date = parseUtcDate(ts)
+  if (!date) return ''
+  void period
+  return new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: CLIENT_TIME_ZONE,
+  }).format(date)
 }
 
-function buildLinePath(values: number[], width: number, height: number, padding: { top: number; right: number; bottom: number; left: number }, maxValue: number) {
-  if (values.length === 0) return ''
-  const innerWidth = width - padding.left - padding.right
-  const innerHeight = height - padding.top - padding.bottom
-  return values.map((value, index) => {
-    const x = padding.left + (index / Math.max(values.length - 1, 1)) * innerWidth
-    const y = padding.top + innerHeight - (Math.max(value, 0) / Math.max(maxValue, 1)) * innerHeight
-    return `${index === 0 ? 'M' : 'L'} ${x} ${y}`
-  }).join(' ')
-}
+function MetricsTooltip({
+  active,
+  payload,
+  label,
+  type,
+  period,
+}: {
+  active?: boolean
+  payload?: Array<{ dataKey?: string; value?: number | string; payload?: { collected_at: string } }>
+  label?: string
+  type: 'cpu' | 'memory'
+  period: '1h' | '24h'
+}) {
+  if (!active || !payload?.length) return null
 
-function buildAreaPath(values: number[], width: number, height: number, padding: { top: number; right: number; bottom: number; left: number }, maxValue: number) {
-  if (values.length === 0) return ''
-  const line = buildLinePath(values, width, height, padding, maxValue)
-  const innerWidth = width - padding.left - padding.right
-  const baseY = height - padding.bottom
-  const lastX = padding.left + innerWidth
-  return `${line} L ${lastX} ${baseY} L ${padding.left} ${baseY} Z`
-}
-
-function CpuSvgChart({ points, period }: { points: MetricsPoint[]; period: '1h' | '24h' }) {
-  const width = 640
-  const height = 260
-  const padding = { top: 12, right: 16, bottom: 30, left: 42 }
-  const values = points.map((point) => point.cpu_usage_percent)
-  const linePath = buildLinePath(values, width, height, padding, 100)
-  const tickLabels = points.length <= 1
-    ? []
-    : [0, Math.floor((points.length - 1) / 2), points.length - 1]
+  const ts = payload[0]?.payload?.collected_at || (typeof label === 'string' ? label : '')
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="mini-chart" role="img" aria-label="cpu chart">
-      <line x1={padding.left} y1={height - padding.bottom} x2={width - padding.right} y2={height - padding.bottom} stroke="rgba(139, 148, 158, 0.18)" />
-      <line x1={padding.left} y1={padding.top} x2={padding.left} y2={height - padding.bottom} stroke="rgba(139, 148, 158, 0.18)" />
-      {[0, 25, 50, 75, 100].map((tick) => {
-        const y = padding.top + (1 - tick / 100) * (height - padding.top - padding.bottom)
-        return (
-          <g key={tick}>
-            <line x1={padding.left} y1={y} x2={width - padding.right} y2={y} stroke="rgba(139, 148, 158, 0.10)" />
-            <text x={padding.left - 8} y={y + 4} textAnchor="end" className="chart-axis-label">{tick}%</text>
-          </g>
-        )
-      })}
-      {tickLabels.map((index) => {
-        const x = padding.left + (index / Math.max(points.length - 1, 1)) * (width - padding.left - padding.right)
-        return <text key={index} x={x} y={height - 8} textAnchor="middle" className="chart-axis-label">{fmtMetricTime(points[index].collected_at, period)}</text>
-      })}
-      <path d={linePath} fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-function MemorySvgChart({ points, period }: { points: MetricsPoint[]; period: '1h' | '24h' }) {
-  const width = 640
-  const height = 260
-  const padding = { top: 12, right: 16, bottom: 30, left: 56 }
-  const maxValue = Math.max(...points.map((point) => Math.max(point.memory_total_bytes, point.memory_used_bytes + point.memory_free_bytes)), 1)
-  const usedValues = points.map((point) => point.memory_used_bytes)
-  const freeValues = points.map((point) => point.memory_free_bytes)
-  const usedLinePath = buildLinePath(usedValues, width, height, padding, maxValue)
-  const freeLinePath = buildLinePath(freeValues, width, height, padding, maxValue)
-  const usedAreaPath = buildAreaPath(usedValues, width, height, padding, maxValue)
-  const freeAreaPath = buildAreaPath(freeValues, width, height, padding, maxValue)
-  const tickLabels = points.length <= 1
-    ? []
-    : [0, Math.floor((points.length - 1) / 2), points.length - 1]
-  const memoryTicks = [0, maxValue / 2, maxValue]
-
-  return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="mini-chart" role="img" aria-label="memory chart">
-      <defs>
-        <linearGradient id="gatewayMemoryUsedFill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="rgba(245, 158, 11, 0.38)" />
-          <stop offset="100%" stopColor="rgba(245, 158, 11, 0.05)" />
-        </linearGradient>
-        <linearGradient id="gatewayMemoryFreeFill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="rgba(56, 189, 248, 0.30)" />
-          <stop offset="100%" stopColor="rgba(56, 189, 248, 0.04)" />
-        </linearGradient>
-      </defs>
-      <line x1={padding.left} y1={height - padding.bottom} x2={width - padding.right} y2={height - padding.bottom} stroke="rgba(139, 148, 158, 0.18)" />
-      <line x1={padding.left} y1={padding.top} x2={padding.left} y2={height - padding.bottom} stroke="rgba(139, 148, 158, 0.18)" />
-      {memoryTicks.map((tick, index) => {
-        const y = padding.top + (1 - tick / Math.max(maxValue, 1)) * (height - padding.top - padding.bottom)
-        return (
-          <g key={index}>
-            <line x1={padding.left} y1={y} x2={width - padding.right} y2={y} stroke="rgba(139, 148, 158, 0.10)" />
-            <text x={padding.left - 8} y={y + 4} textAnchor="end" className="chart-axis-label">{fmtBytes(tick)}</text>
-          </g>
-        )
-      })}
-      {tickLabels.map((index) => {
-        const x = padding.left + (index / Math.max(points.length - 1, 1)) * (width - padding.left - padding.right)
-        return <text key={index} x={x} y={height - 8} textAnchor="middle" className="chart-axis-label">{fmtMetricTime(points[index].collected_at, period)}</text>
-      })}
-      <path d={freeAreaPath} fill="url(#gatewayMemoryFreeFill)" stroke="none" />
-      <path d={usedAreaPath} fill="url(#gatewayMemoryUsedFill)" stroke="none" />
-      <path d={freeLinePath} fill="none" stroke="var(--success)" strokeWidth="2.5" strokeLinecap="round" />
-      <path d={usedLinePath} fill="none" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" />
-    </svg>
+    <div className="chart-tooltip">
+      <div className="chart-tooltip-title">
+        {ts ? new Intl.DateTimeFormat(undefined, {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+          timeZone: CLIENT_TIME_ZONE,
+        }).format(parseUtcDate(ts) ?? new Date(ts)) : ''}
+      </div>
+      {type === 'cpu' ? (
+        <div className="chart-tooltip-row">
+          <span className="chart-swatch cpu" />
+          CPU {fmtPercent(Number(payload[0]?.value ?? 0))}
+        </div>
+      ) : (
+        <>
+          {payload
+            .slice()
+            .reverse()
+            .map((entry) => (
+              <div key={entry.dataKey} className="chart-tooltip-row">
+                <span className={`chart-swatch ${entry.dataKey === 'memory_used_bytes' ? 'used' : 'free'}`} />
+                {entry.dataKey === 'memory_used_bytes' ? 'Used' : 'Free'} {fmtBytes(Number(entry.value ?? 0))}
+              </div>
+            ))}
+        </>
+      )}
+    </div>
   )
 }
 

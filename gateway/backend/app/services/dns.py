@@ -10,6 +10,9 @@ def build_dnsmasq_preview(
     domain_rules: Iterable[DnsDomainRule],
     fqdn_prefixes: Iterable[str] | None = None,
     ipset_name: str = "routing_prefixes",
+    *,
+    use_nftset: bool = False,
+    nft_table_name: str = "awg_gw",
 ) -> str:
     upstream_by_zone = {item.zone: item for item in upstreams}
     local_servers = upstream_by_zone.get("local").servers if upstream_by_zone.get("local") else []
@@ -32,9 +35,12 @@ def build_dnsmasq_preview(
     fqdn_values = sorted({item.strip().lower().strip(".") for item in (fqdn_prefixes or []) if item.strip()})
     if fqdn_values:
         lines.append("")
-        lines.append("# FQDN prefixes -> ipset")
+        lines.append(f"# FQDN prefixes -> {'nft set' if use_nftset else 'ipset'}")
         for fqdn in fqdn_values:
-            lines.append(f"ipset=/{fqdn}/{ipset_name}")
+            if use_nftset:
+                lines.append(f"nftset=/{fqdn}/4#ip#{nft_table_name}#{ipset_name}")
+            else:
+                lines.append(f"ipset=/{fqdn}/{ipset_name}")
     lines.append("")
     return "\n".join(lines)
 
@@ -44,12 +50,17 @@ def build_dnsmasq_config(
     domain_rules: Iterable[DnsDomainRule],
     fqdn_prefixes: Iterable[str] | None = None,
     ipset_name: str = "routing_prefixes",
+    *,
+    use_nftset: bool = False,
+    nft_table_name: str = "awg_gw",
 ) -> str:
     preview = build_dnsmasq_preview(
         upstreams,
         domain_rules,
         fqdn_prefixes=fqdn_prefixes,
         ipset_name=ipset_name,
+        use_nftset=use_nftset,
+        nft_table_name=nft_table_name,
     ).splitlines()
     return "\n".join(
         [

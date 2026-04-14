@@ -1,14 +1,15 @@
 from types import SimpleNamespace
 
-from app.services.routing import build_routing_plan
+from app.services.routing import build_routing_plan, sync_prefix_ipset
 
 
-def make_settings(mode: str = "localhost"):
+def make_settings(mode: str = "localhost", experimental_nftables: bool = False):
     return SimpleNamespace(
         traffic_source_mode=mode,
         allowed_client_cidrs=["192.168.10.0/24"],
         allowed_client_hosts=["192.168.10.50"],
         dns_intercept_enabled=True,
+        experimental_nftables=experimental_nftables,
         tunnel_status="running",
     )
 
@@ -108,6 +109,17 @@ def test_plan_includes_dns_intercept_for_localhost(monkeypatch) -> None:
     assert any("AWG_GW_DNS_OUTPUT" in command and "--dport 53" in command for command in plan["commands"])
 
 
+def test_plan_switches_preview_to_nftables(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.routing._default_route", lambda: ("eth0", "192.0.2.1"))
+    monkeypatch.setattr("app.services.routing._interface_exists", lambda _: True)
+    monkeypatch.setattr("app.services.routing.load_cached_country", lambda _: ["203.0.113.0/24"])
+    monkeypatch.setattr("app.services.routing.nftables_manager.count", lambda _: 0)
+    plan = build_routing_plan(make_settings(experimental_nftables=True), make_policy(), make_active_node())
+    assert plan["firewall_backend"] == "nftables"
+    assert any(command.startswith("nft add table ip awg_gw") for command in plan["commands"])
+    assert not any(command.startswith("iptables ") for command in plan["commands"])
+
+
 def test_sync_prefix_ipset_keeps_fqdn_set_when_block_disabled(monkeypatch) -> None:
     from app.services.routing import sync_prefix_ipset
 
@@ -138,6 +150,19 @@ def test_sync_prefix_ipset_splits_geoip_and_manual(monkeypatch) -> None:
     monkeypatch.setattr("app.services.routing.load_cached_country", lambda _: ["203.0.113.0/24"])
 
     sync_prefix_ipset(make_policy())
+
+    assert ("routing_prefixes_geoip", ("203.0.113.0/24",)) in calls
+    assert ("routing_prefixes_manual", ("1.1.1.1/32",)) in calls
+
+
+def test_sync_prefix_ipset_uses_nft_manager_when_enabled(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[str, ...]]] = []
+    monkeypatch.setattr("app.services.routing.nftables_manager.create_or_update", lambda name, prefixes: calls.append((name, tuple(prefixes))))
+    monkeypatch.setattr("app.services.routing.nftables_manager.exists", lambda name: True)
+    monkeypatch.setattr("app.services.routing.nftables_manager.create", lambda name: calls.append((name, tuple())))
+    monkeypatch.setattr("app.services.routing.load_cached_country", lambda _: ["203.0.113.0/24"])
+
+    sync_prefix_ipset(make_policy(), make_settings(experimental_nftables=True))
 
     assert ("routing_prefixes_geoip", ("203.0.113.0/24",)) in calls
     assert ("routing_prefixes_manual", ("1.1.1.1/32",)) in calls

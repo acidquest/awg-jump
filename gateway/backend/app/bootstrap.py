@@ -27,6 +27,7 @@ async def ensure_bootstrap_state(db: AsyncSession) -> None:
                 ui_language=settings.ui_default_language,
                 runtime_mode=RuntimeMode.auto.value,
                 dns_intercept_enabled=True,
+                experimental_nftables=False,
             )
         )
 

@@ -326,12 +326,15 @@ def probe_latency(node: EntryNode, *, target: str | None = None, interface_name:
 
 def probe_node_latency_details(node: EntryNode, *, prefer_tunnel: bool = False) -> dict[str, str | float | None]:
     candidates: list[tuple[str, str | None]] = []
-    if prefer_tunnel and node.probe_ip:
-        candidates.append((node.probe_ip, settings.tunnel_interface))
-    if node.endpoint_host:
-        candidates.append((node.endpoint_host, None))
-    if node.probe_ip and (node.probe_ip, None) not in candidates:
-        candidates.append((node.probe_ip, None))
+    if prefer_tunnel:
+        if node.probe_ip:
+            candidates.append((node.probe_ip, settings.tunnel_interface))
+            candidates.append((node.probe_ip, None))
+    else:
+        if node.endpoint_host:
+            candidates.append((node.endpoint_host, None))
+        if node.probe_ip and (node.probe_ip, None) not in candidates:
+            candidates.append((node.probe_ip, None))
 
     seen: set[tuple[str, str | None]] = set()
     for target, interface_name in candidates:

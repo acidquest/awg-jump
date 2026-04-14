@@ -6,11 +6,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import AdminUser, DnsDomainRule, DnsUpstream, RoutingPolicy
+from app.models import AdminUser, DnsDomainRule, DnsUpstream, GatewaySettings, RoutingPolicy
 from app.security import get_current_user
 from app.services.dns_runtime import restart_dnsmasq, status as dns_status
 from app.services.dns import build_dnsmasq_preview
-from app.services.routing import fqdn_ipset_name
+from app.services.nftables_manager import TABLE_NAME as NFT_TABLE_NAME
+from app.services.routing import firewall_backend, fqdn_ipset_name
 
 
 router = APIRouter(prefix="/api/dns", tags=["dns"])
@@ -41,6 +42,7 @@ async def get_dns_state(
     upstreams = (await db.execute(select(DnsUpstream).order_by(DnsUpstream.zone))).scalars().all()
     rules = (await db.execute(select(DnsDomainRule).order_by(DnsDomainRule.domain))).scalars().all()
     policy = await db.get(RoutingPolicy, 1)
+    gateway_settings = await db.get(GatewaySettings, 1)
     return {
         "upstreams": [
             {"zone": item.zone, "servers": item.servers, "description": item.description}
@@ -56,6 +58,8 @@ async def get_dns_state(
             rules,
             fqdn_prefixes=policy.fqdn_prefixes if policy and policy.fqdn_prefixes_enabled else [],
             ipset_name=fqdn_ipset_name(policy) if policy else "routing_prefixes_fqdn",
+            use_nftset=firewall_backend(gateway_settings) == "nftables",
+            nft_table_name=NFT_TABLE_NAME,
         ),
     }
 

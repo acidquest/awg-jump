@@ -83,15 +83,15 @@ async def _reload_runtime(
     refresh_geoip: bool = False,
     restart_dns: bool = False,
 ) -> dict:
+    settings_row = await db.get(GatewaySettings, 1)
     if refresh_geoip and policy.countries_enabled:
         await refresh_policy_geoip(policy)
 
-    prefixes = sync_prefix_ipset(policy)
+    prefixes = sync_prefix_ipset(policy, settings_row)
 
     if restart_dns:
         await restart_dnsmasq(db)
 
-    settings_row = await db.get(GatewaySettings, 1)
     active_node = await db.get(EntryNode, settings_row.active_entry_node_id) if settings_row.active_entry_node_id else None
     status = "synced"
     plan = build_routing_plan(settings_row, policy, active_node)
@@ -105,7 +105,12 @@ async def _reload_runtime(
             status = "error"
     db.add(policy)
     await db.flush()
-    return {"status": status, "prefixes": prefixes, "plan": plan, "prefix_summary": build_prefix_summary(policy)}
+    return {
+        "status": status,
+        "prefixes": prefixes,
+        "plan": plan,
+        "prefix_summary": build_prefix_summary(policy, settings_row),
+    }
 
 
 @router.get("")
@@ -114,6 +119,7 @@ async def get_policy(
     user: AdminUser = Depends(get_current_user),
 ) -> dict:
     policy = await db.get(RoutingPolicy, 1)
+    settings_row = await db.get(GatewaySettings, 1)
     return {
         "geoip_enabled": policy.geoip_enabled,
         "countries_enabled": policy.countries_enabled,
@@ -126,7 +132,7 @@ async def get_policy(
         "prefixes_route_local": policy.prefixes_route_local,
         "kill_switch_enabled": policy.kill_switch_enabled,
         "strict_mode": policy.strict_mode,
-        "prefix_summary": build_prefix_summary(policy),
+        "prefix_summary": build_prefix_summary(policy, settings_row),
         "last_applied_at": policy.last_applied_at.isoformat() if policy.last_applied_at else None,
         "last_error": policy.last_error,
     }
@@ -291,7 +297,7 @@ async def refresh_geoip(
 ) -> dict:
     policy = await db.get(RoutingPolicy, 1)
     result = await refresh_policy_geoip(policy)
-    sync_prefix_ipset(policy)
+    sync_prefix_ipset(policy, await db.get(GatewaySettings, 1))
     return result
 
 

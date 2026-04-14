@@ -124,7 +124,7 @@ def _refresh_latency_for_active_tunnel(node: EntryNode) -> None:
     latency_ms = probe["latency_ms"]
     node.latest_latency_ms = latency_ms if isinstance(latency_ms, float) else None
     node.latest_latency_at = datetime.now(timezone.utc)
-    node.last_error = None if latency_ms is not None else "Latency probe failed"
+    node.last_error = None if latency_ms is not None else ("Probe IP is not configured" if not node.probe_ip else "Latency probe failed")
 
 
 @router.get("")

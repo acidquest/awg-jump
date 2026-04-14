@@ -17,7 +17,7 @@ from app.database import AsyncSessionLocal, Base, engine
 from app.models import EntryNode, GatewaySettings, RoutingPolicy
 from app.routers import auth, backup, dns, nodes, routing, settings as settings_router, system
 from app.services.dns_runtime import restart_dnsmasq, stop_dnsmasq
-from app.services.routing import apply_routing_plan
+from app.services.routing import apply_routing_plan, sync_firewall_backend
 from app.services.runtime import start_tunnel
 from app.services.system_metrics import collect_system_metrics
 
@@ -70,6 +70,10 @@ async def _ensure_sqlite_columns() -> None:
         if "dns_intercept_enabled" not in columns:
             await conn.execute(
                 text("ALTER TABLE gateway_settings ADD COLUMN dns_intercept_enabled BOOLEAN NOT NULL DEFAULT 1")
+            )
+        if "experimental_nftables" not in columns:
+            await conn.execute(
+                text("ALTER TABLE gateway_settings ADD COLUMN experimental_nftables BOOLEAN NOT NULL DEFAULT 0")
             )
         result = await conn.execute(text("PRAGMA table_info(entry_nodes)"))
         columns = {row[1] for row in result.fetchall()}
@@ -172,6 +176,11 @@ async def lifespan(app: FastAPI):
     await _ensure_sqlite_columns()
     async with AsyncSessionLocal() as session:
         await ensure_bootstrap_state(session)
+    async with AsyncSessionLocal() as session:
+        gateway_settings = await session.get(GatewaySettings, 1)
+        routing_policy = await session.get(RoutingPolicy, 1)
+        if gateway_settings and routing_policy:
+            sync_firewall_backend(gateway_settings, routing_policy)
     async with AsyncSessionLocal() as session:
         try:
             await restart_dnsmasq(session)

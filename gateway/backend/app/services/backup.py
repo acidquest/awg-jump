@@ -15,7 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models import BackupRecord, DnsDomainRule, DnsUpstream, EntryNode, GatewaySettings, RoutingPolicy
 from app.services.dns import build_dnsmasq_preview
-from app.services.routing import build_routing_plan, fqdn_ipset_name
+from app.services.nftables_manager import TABLE_NAME as NFT_TABLE_NAME
+from app.services.routing import build_routing_plan, firewall_backend, fqdn_ipset_name
 
 
 BACKUP_SCHEMA_VERSION = "1"
@@ -118,6 +119,7 @@ async def build_diagnostics_payload(db: AsyncSession) -> dict:
             "traffic_source_mode": gateway_settings.traffic_source_mode if gateway_settings else "localhost",
             "allowed_client_cidrs": gateway_settings.allowed_client_cidrs if gateway_settings else [],
             "allowed_client_hosts": gateway_settings.allowed_client_hosts if gateway_settings else [],
+            "experimental_nftables": gateway_settings.experimental_nftables if gateway_settings else False,
             "tunnel_status": gateway_settings.tunnel_status if gateway_settings else "stopped",
             "tunnel_last_error": gateway_settings.tunnel_last_error if gateway_settings else None,
         },
@@ -148,5 +150,7 @@ async def build_diagnostics_payload(db: AsyncSession) -> dict:
             domain_rules,
             fqdn_prefixes=routing_policy.fqdn_prefixes if routing_policy and routing_policy.fqdn_prefixes_enabled else [],
             ipset_name=fqdn_ipset_name(routing_policy) if routing_policy else "routing_prefixes_fqdn",
+            use_nftset=firewall_backend(gateway_settings) == "nftables",
+            nft_table_name=NFT_TABLE_NAME,
         ),
     }
