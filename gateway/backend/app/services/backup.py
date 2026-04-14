@@ -117,9 +117,7 @@ async def build_diagnostics_payload(db: AsyncSession) -> dict:
         "manifest": build_manifest(),
         "gateway_settings": {
             "ui_language": gateway_settings.ui_language if gateway_settings else "en",
-            "traffic_source_mode": gateway_settings.traffic_source_mode if gateway_settings else "localhost",
             "allowed_client_cidrs": gateway_settings.allowed_client_cidrs if gateway_settings else [],
-            "allowed_client_hosts": gateway_settings.allowed_client_hosts if gateway_settings else [],
             "experimental_nftables": gateway_settings.experimental_nftables if gateway_settings else False,
             "tunnel_status": gateway_settings.tunnel_status if gateway_settings else "stopped",
             "tunnel_last_error": gateway_settings.tunnel_last_error if gateway_settings else None,

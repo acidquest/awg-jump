@@ -3,11 +3,11 @@ from types import SimpleNamespace
 from app.services.routing import build_routing_plan, sync_prefix_ipset
 
 
-def make_settings(mode: str = "localhost", experimental_nftables: bool = False):
+def make_settings(source_cidrs: list[str] | None = None, experimental_nftables: bool = False):
     return SimpleNamespace(
-        traffic_source_mode=mode,
-        allowed_client_cidrs=["192.168.10.0/24"],
-        allowed_client_hosts=["192.168.10.50"],
+        traffic_source_mode="cidr_list",
+        allowed_client_cidrs=source_cidrs or ["127.0.0.0/8"],
+        allowed_client_hosts=[],
         dns_intercept_enabled=True,
         experimental_nftables=experimental_nftables,
         external_ip_local_service_url="https://ipinfo.io/ip",
@@ -144,6 +144,22 @@ def test_plan_marks_localhost_output_for_both_destinations(monkeypatch) -> None:
     assert any(command == "ip rule add fwmark 0x1 table 200" for command in plan["commands"])
 
 
+def test_plan_handles_localhost_and_prerouting_selectors_together(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.routing._default_route", lambda: ("eth0", "192.0.2.1"))
+    monkeypatch.setattr("app.services.routing._interface_exists", lambda _: True)
+    monkeypatch.setattr("app.services.routing._connected_ipv4_prefixes", lambda _: ["192.168.10.0/24"])
+    monkeypatch.setattr("app.services.routing.load_cached_country", lambda _: ["203.0.113.0/24"])
+    monkeypatch.setattr("app.services.routing._dns_runtime_uid", lambda: 65534)
+    monkeypatch.setattr("app.services.routing.ipset_manager.count", lambda _: 0)
+
+    plan = build_routing_plan(make_settings(source_cidrs=["127.0.0.0/8", "10.10.0.0/24"]), make_policy(), make_active_node())
+
+    assert any(command == "iptables -t mangle -A AWG_GW_OUTPUT -j MARK --set-mark 0x2" for command in plan["commands"])
+    assert any(command == "iptables -t mangle -A AWG_GW_PREROUTING -s 10.10.0.0/24 -j MARK --set-mark 0x2" for command in plan["commands"])
+    assert any(command == "iptables -t nat -A AWG_GW_DNS_PREROUTING -s 10.10.0.0/24 -p udp --dport 53 -j REDIRECT --to-ports 53" for command in plan["commands"])
+    assert any(command == "iptables -t nat -A AWG_GW_DNS_OUTPUT -p udp --dport 53 -m owner ! --uid-owner 65534 -j REDIRECT --to-ports 53" for command in plan["commands"])
+
+
 def test_plan_exempts_connected_lan_from_selected_cidr_marking(monkeypatch) -> None:
     monkeypatch.setattr("app.services.routing._default_route", lambda: ("eth0", "192.0.2.1"))
     monkeypatch.setattr("app.services.routing._interface_exists", lambda _: True)
@@ -151,7 +167,7 @@ def test_plan_exempts_connected_lan_from_selected_cidr_marking(monkeypatch) -> N
     monkeypatch.setattr("app.services.routing.load_cached_country", lambda _: ["203.0.113.0/24"])
     monkeypatch.setattr("app.services.routing.ipset_manager.count", lambda _: 0)
 
-    plan = build_routing_plan(make_settings(mode="selected_cidr"), make_policy(), make_active_node())
+    plan = build_routing_plan(make_settings(source_cidrs=["192.168.10.0/24"]), make_policy(), make_active_node())
 
     assert any(command == "iptables -t mangle -A AWG_GW_PREROUTING -d 192.168.10.0/24 -j RETURN" for command in plan["commands"])
     assert any(

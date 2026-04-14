@@ -17,6 +17,7 @@ class TrafficSourceMode(str, Enum):
     localhost = "localhost"
     selected_cidr = "selected_cidr"
     selected_hosts = "selected_hosts"
+    cidr_list = "cidr_list"
 
 
 class TunnelStatus(str, Enum):

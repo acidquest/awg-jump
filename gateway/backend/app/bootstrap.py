@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models import AdminUser, DnsUpstream, GatewaySettings, RoutingPolicy, RuntimeMode
 from app.services.external_ip import validate_service_pair
+from app.services.traffic_sources import default_allowed_source_cidrs
 from app.security import hash_password
 
 
@@ -31,6 +32,7 @@ async def ensure_bootstrap_state(db: AsyncSession) -> None:
                 id=1,
                 ui_language=settings.ui_default_language,
                 runtime_mode=RuntimeMode.auto.value,
+                allowed_client_cidrs=default_allowed_source_cidrs(),
                 dns_intercept_enabled=True,
                 experimental_nftables=False,
                 external_ip_local_service_url=local_service_url,

@@ -10,6 +10,7 @@ from app.database import get_db
 from app.models import AdminUser, DnsDomainRule, EntryNode, GatewaySettings, RoutingPolicy
 from app.security import get_current_user
 from app.services.external_ip import serialize_external_ip_info
+from app.services.routing import build_prefix_summary
 from app.services.runtime import (
     current_pid,
     get_kernel_support_status,
@@ -17,6 +18,7 @@ from app.services.runtime import (
     probe_node_latency_details,
     resolve_live_tunnel_status,
 )
+from app.services.traffic_sources import migrate_legacy_source_settings
 from app.services.system_metrics import get_metrics_history
 
 
@@ -35,7 +37,11 @@ async def status(
 ) -> dict:
     kernel_available, kernel_message = get_kernel_support_status()
     gateway_settings = await db.get(GatewaySettings, 1)
+    if migrate_legacy_source_settings(gateway_settings):
+        db.add(gateway_settings)
+        await db.flush()
     routing_policy = await db.get(RoutingPolicy, 1)
+    prefix_summary = build_prefix_summary(routing_policy, gateway_settings)
     live_status, live_error = resolve_live_tunnel_status(gateway_settings)
     gateway_settings.tunnel_status = live_status
     gateway_settings.tunnel_last_error = live_error
@@ -66,7 +72,7 @@ async def status(
         } if active_node else None,
         "entry_node_count": entry_node_count,
         "dns_rule_count": dns_rule_count,
-        "traffic_source_mode": gateway_settings.traffic_source_mode,
+        "allowed_client_cidrs": gateway_settings.allowed_client_cidrs,
         "runtime_mode": gateway_settings.runtime_mode,
         "experimental_nftables": gateway_settings.experimental_nftables,
         "kernel_available": kernel_available,
@@ -77,6 +83,8 @@ async def status(
         "ipset_name": routing_policy.geoip_ipset_name,
         "firewall_backend": "nftables" if gateway_settings.experimental_nftables else "iptables",
         "external_ip_info": serialize_external_ip_info(gateway_settings, routing_policy),
+        "active_prefixes_count": prefix_summary["total_prefixes"],
+        "active_prefixes_configured_count": prefix_summary["configured_prefixes"],
         "prefix_summary": {
             "countries_enabled": routing_policy.countries_enabled,
             "manual_prefixes_enabled": routing_policy.manual_prefixes_enabled,

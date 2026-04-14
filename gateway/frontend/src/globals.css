@@ -392,6 +392,45 @@ select.form-input option { background: var(--bg-3); }
 .badge-pending, .badge-deploying { color: var(--accent); background: var(--accent-dim); }
 .badge-unknown { color: var(--text-3); background: var(--bg-4); }
 
+.source-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.source-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+}
+
+.source-chip-inactive {
+  opacity: 0.55;
+  border-style: dashed;
+}
+
+.source-chip-remove {
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+}
+
+.source-chip-remove:hover {
+  color: var(--danger);
+}
+
+.source-input-row {
+  align-items: center;
+}
+
 .modal-overlay {
   position: fixed;
   inset: 0;

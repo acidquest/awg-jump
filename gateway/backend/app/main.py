@@ -19,6 +19,7 @@ from app.routers import auth, backup, dns, nodes, routing, settings as settings_
 from app.services.dns_runtime import restart_dnsmasq, stop_dnsmasq
 from app.services.external_ip import EXTERNAL_IP_REFRESH_INTERVAL_SECONDS, refresh_external_ip_info, validate_service_pair
 from app.services.routing import apply_routing_plan, sync_firewall_backend
+from app.services.traffic_sources import migrate_legacy_source_settings
 from app.services.runtime import start_tunnel
 from app.services.system_metrics import collect_system_metrics
 
@@ -231,6 +232,11 @@ async def lifespan(app: FastAPI):
     await _ensure_sqlite_columns()
     async with AsyncSessionLocal() as session:
         await ensure_bootstrap_state(session)
+    async with AsyncSessionLocal() as session:
+        gateway_settings = await session.get(GatewaySettings, 1)
+        if gateway_settings and migrate_legacy_source_settings(gateway_settings):
+            session.add(gateway_settings)
+            await session.commit()
     async with AsyncSessionLocal() as session:
         gateway_settings = await session.get(GatewaySettings, 1)
         routing_policy = await session.get(RoutingPolicy, 1)

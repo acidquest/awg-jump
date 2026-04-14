@@ -59,7 +59,7 @@ type SystemStatus = {
   } | null
   entry_node_count: number
   dns_rule_count: number
-  traffic_source_mode: string
+  allowed_client_cidrs: string[]
   runtime_mode: string
   kernel_available: boolean
   kernel_message: string | null
@@ -70,6 +70,8 @@ type SystemStatus = {
   firewall_backend?: 'iptables' | 'nftables'
   experimental_nftables?: boolean
   external_ip_info: ExternalIpInfo
+  active_prefixes_count: number
+  active_prefixes_configured_count: number
 }
 
 type MetricsPoint = {
@@ -115,9 +117,7 @@ type ExternalIpInfo = {
 type GatewaySettingsData = {
   ui_language: string
   runtime_mode: string
-  traffic_source_mode: string
   allowed_client_cidrs: string[]
-  allowed_client_hosts: string[]
   dns_intercept_enabled: boolean
   experimental_nftables: boolean
   kernel_available: boolean
@@ -192,6 +192,7 @@ function firewallBackendLabel(
 }
 
 const CLIENT_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone
+const LOCALHOST_SOURCE = '127.0.0.0/8'
 
 function normalizeUtcTimestamp(value: string) {
   return /[zZ]|[+-]\d{2}:\d{2}$/.test(value) ? value : `${value}Z`
@@ -222,8 +223,10 @@ function useLoader<T>(url: string, fallback: T) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  const reload = async () => {
-    setLoading(true)
+  const reload = async (options?: { background?: boolean }) => {
+    if (!options?.background) {
+      setLoading(true)
+    }
     try {
       const response = await api.get(url)
       setData(response.data)
@@ -439,7 +442,7 @@ function DashboardPage() {
     active_entry_node: null,
     entry_node_count: 0,
     dns_rule_count: 0,
-    traffic_source_mode: 'localhost',
+    allowed_client_cidrs: [LOCALHOST_SOURCE],
     runtime_mode: 'auto',
     kernel_available: false,
     kernel_message: null,
@@ -449,6 +452,8 @@ function DashboardPage() {
     ipset_name: 'routing_prefixes',
     firewall_backend: 'iptables',
     experimental_nftables: false,
+    active_prefixes_count: 0,
+    active_prefixes_configured_count: 0,
     external_ip_info: {
       refresh_interval_seconds: 600,
       forced_domains: [],
@@ -472,7 +477,7 @@ function DashboardPage() {
   }, [reload])
 
   useEffect(() => {
-    const timer = window.setInterval(() => { void reloadRef.current() }, 30_000)
+    const timer = window.setInterval(() => { void reloadRef.current({ background: true }) }, 30_000)
     return () => window.clearInterval(timer)
   }, [])
 
@@ -489,13 +494,17 @@ function DashboardPage() {
       {!error && !loading && data.tunnel_last_error ? <div className="error-box">{data.tunnel_last_error}</div> : null}
       {loading ? <div style={{ padding: 40, textAlign: 'center' }}><span className="spinner" /></div> : null}
       <div className="card-grid card-grid-4" style={{ marginBottom: 20 }}>
-        <StatCard title={t('tunnel')} value={data.tunnel_status} label={data.runtime_available ? t('runtimeReady') : t('runtimeMissing')} tone={statusTone} />
-        <StatCard title={t('entryNodes')} value={String(data.entry_node_count)} label={t('activeNode')} />
-        <StatCard title={t('dnsRules')} value={String(data.dns_rule_count)} label={t('domains')} />
+        <StatCard title={t('tunnel')} value={data.tunnel_status} label="" tone={statusTone} />
+        <StatCard title={t('entryNodes')} value={String(data.entry_node_count)} label="" />
         <StatCard
-          title={t('prefixSet')}
-          value={data.ipset_name}
-          label={`${firewallBackendLabel(data.firewall_backend, t)}${data.geoip_countries.length ? ` • ${data.geoip_countries.join(', ')}` : ''}`}
+          title={t('activePrefixes')}
+          value={String(data.active_prefixes_count)}
+          label=""
+        />
+        <StatCard
+          title={t('activeStack')}
+          value={firewallBackendLabel(data.firewall_backend, t)}
+          label=""
         />
       </div>
       <div className="card-grid card-grid-4" style={{ marginBottom: 20 }}>
@@ -527,7 +536,7 @@ function DashboardPage() {
         <div className="card">
           <div className="card-title" style={{ marginBottom: 10 }}>{t('routeSafety')}</div>
           <div className="stat-value" style={{ fontSize: 20 }}>{data.kill_switch_enabled ? t('protectedMode') : t('relaxedState')}</div>
-          <div className="stat-label">{t('trafficSource')}: {data.traffic_source_mode}</div>
+          <div className="stat-label">{t('trafficSource')}: {(data.allowed_client_cidrs || []).join(', ') || LOCALHOST_SOURCE}</div>
           <div className="text-muted text-sm" style={{ marginTop: 10 }}>
             {data.runtime_mode === 'userspace'
               ? `${t('runtimeMode')}: ${t('runtimeModeUserspace')}`
@@ -1605,7 +1614,7 @@ function RoutingPage() {
             </span>
           </div>
           <div className="routing-flow">
-            <FlowNode title={t('trafficSource')} value={plan.source_mode || 'localhost'} meta={(plan.selectors || []).join(', ') || 'OUTPUT'} />
+            <FlowNode title={t('trafficSource')} value={(plan.selectors || []).join(', ') || LOCALHOST_SOURCE} meta={t('sourceMode')} />
             <FlowArrow />
             <FlowNode
               title={t('prefixSet')}
@@ -1823,9 +1832,7 @@ function SettingsPage() {
   const { data, reload, setData } = useLoader<GatewaySettingsData>('/settings', {
     ui_language: 'en',
     runtime_mode: 'auto',
-    traffic_source_mode: 'localhost',
-    allowed_client_cidrs: [],
-    allowed_client_hosts: [],
+    allowed_client_cidrs: [LOCALHOST_SOURCE],
     dns_intercept_enabled: true,
     experimental_nftables: false,
     kernel_available: false,
@@ -1837,8 +1844,7 @@ function SettingsPage() {
       vpn: { service_url: '', service_host: null, value: null, error: null, checked_at: null, route_target: 'vpn' },
     },
   })
-  const [cidrs, setCidrs] = useState('')
-  const [hosts, setHosts] = useState('')
+  const [sourceInput, setSourceInput] = useState('')
   const [localExternalIpServiceUrl, setLocalExternalIpServiceUrl] = useState('')
   const [vpnExternalIpServiceUrl, setVpnExternalIpServiceUrl] = useState('')
   const [currentPassword, setCurrentPassword] = useState('')
@@ -1846,19 +1852,15 @@ function SettingsPage() {
   const [message, setMessage] = useState('')
 
   useEffect(() => {
-    setCidrs((data.allowed_client_cidrs || []).join(', '))
-    setHosts((data.allowed_client_hosts || []).join(', '))
     setLocalExternalIpServiceUrl(data.external_ip_info.local.service_url || '')
     setVpnExternalIpServiceUrl(data.external_ip_info.vpn.service_url || '')
-  }, [data.allowed_client_cidrs, data.allowed_client_hosts, data.external_ip_info.local.service_url, data.external_ip_info.vpn.service_url])
+  }, [data.external_ip_info.local.service_url, data.external_ip_info.vpn.service_url])
 
   function buildSettingsPayload(overrides: Record<string, unknown> = {}) {
     return {
       ui_language: locale,
       runtime_mode: data.runtime_mode,
-      traffic_source_mode: data.traffic_source_mode,
-      allowed_client_cidrs: cidrs.split(',').map((item: string) => item.trim()).filter(Boolean),
-      allowed_client_hosts: hosts.split(',').map((item: string) => item.trim()).filter(Boolean),
+      allowed_client_cidrs: data.allowed_client_cidrs,
       dns_intercept_enabled: data.dns_intercept_enabled,
       experimental_nftables: data.experimental_nftables,
       external_ip_local_service_url: localExternalIpServiceUrl,
@@ -1867,11 +1869,51 @@ function SettingsPage() {
     }
   }
 
+  const localhostEnabled = data.allowed_client_cidrs.includes(LOCALHOST_SOURCE)
+  const customSourceCidrs = data.allowed_client_cidrs.filter((cidr) => cidr !== LOCALHOST_SOURCE)
+
   async function saveSettings(event: FormEvent) {
     event.preventDefault()
     await api.put('/settings', buildSettingsPayload())
     setMessage(t('settingsSaved'))
     await reload()
+  }
+
+  async function addTrafficSource() {
+    const candidate = sourceInput.trim()
+    if (!candidate) return
+
+    try {
+      await api.put('/settings', buildSettingsPayload({ allowed_client_cidrs: [...data.allowed_client_cidrs, candidate] }))
+      setSourceInput('')
+      setMessage(t('settingsSaved'))
+      await reload()
+    } catch (err: any) {
+      setMessage(err?.response?.data?.detail || err.message || 'Request failed')
+    }
+  }
+
+  async function toggleLocalhostSource(enabled: boolean) {
+    const nextCidrs = enabled
+      ? [LOCALHOST_SOURCE, ...customSourceCidrs]
+      : customSourceCidrs
+    try {
+      await api.put('/settings', buildSettingsPayload({ allowed_client_cidrs: nextCidrs }))
+      setMessage(t('settingsSaved'))
+      await reload()
+    } catch (err: any) {
+      setMessage(err?.response?.data?.detail || err.message || 'Request failed')
+    }
+  }
+
+  async function removeTrafficSource(cidr: string) {
+    try {
+      await api.put('/settings', buildSettingsPayload({ allowed_client_cidrs: data.allowed_client_cidrs.filter((item) => item !== cidr) }))
+      setMessage(t('settingsSaved'))
+      await reload()
+    } catch (err: any) {
+      setMessage(err?.response?.data?.detail || err.message || 'Request failed')
+    }
   }
 
   async function toggleDnsInterception(enabled: boolean) {
@@ -1944,19 +1986,42 @@ function SettingsPage() {
             </div>
             <div className="form-group">
               <label className="form-label">{t('sourceMode')}</label>
-              <select className="form-input" value={data.traffic_source_mode} onChange={(event) => setData({ ...data, traffic_source_mode: event.target.value })}>
-                <option value="localhost">{t('localhost')}</option>
-                <option value="selected_cidr">{t('selectedCidr')}</option>
-                <option value="selected_hosts">{t('selectedHosts')}</option>
-              </select>
-            </div>
-            <div className="form-group">
-              <label className="form-label">{t('cidrList')}</label>
-              <input className="form-input" value={cidrs} onChange={(event) => setCidrs(event.target.value)} />
-            </div>
-            <div className="form-group">
-              <label className="form-label">{t('hostList')}</label>
-              <input className="form-input" value={hosts} onChange={(event) => setHosts(event.target.value)} />
+              <div className="text-muted text-sm" style={{ marginBottom: 8 }}>{t('sourceNetworksDescription')}</div>
+              <div className="source-chip-list">
+                <div className={`source-chip${localhostEnabled ? '' : ' source-chip-inactive'}`}>
+                  <span className="text-mono">{LOCALHOST_SOURCE}</span>
+                  <button
+                    type="button"
+                    className="source-chip-remove"
+                    aria-label={`${localhostEnabled ? t('remove') : t('add')} ${LOCALHOST_SOURCE}`}
+                    onClick={() => { void toggleLocalhostSource(!localhostEnabled) }}
+                  >
+                    {localhostEnabled ? '×' : '+'}
+                  </button>
+                </div>
+                {customSourceCidrs.length ? customSourceCidrs.map((cidr) => (
+                  <div className="source-chip" key={cidr}>
+                    <span className="text-mono">{cidr}</span>
+                    <button
+                      type="button"
+                      className="source-chip-remove"
+                      aria-label={`${t('remove')} ${cidr}`}
+                      onClick={() => { void removeTrafficSource(cidr) }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                )) : null}
+              </div>
+              <div className="form-row form-row-2 source-input-row">
+                <input
+                  className="form-input mono"
+                  value={sourceInput}
+                  onChange={(event) => setSourceInput(event.target.value)}
+                  placeholder={t('sourceNetworkPlaceholder')}
+                />
+                <button className="btn btn-secondary" type="button" onClick={() => { void addTrafficSource() }}>{t('add')}</button>
+              </div>
             </div>
             <div className="form-group">
               <label className="form-label">{t('externalIpServices')}</label>

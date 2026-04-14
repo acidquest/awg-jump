@@ -7,10 +7,11 @@ import subprocess
 from datetime import datetime, timezone
 
 from app.config import settings
-from app.models import EntryNode, GatewaySettings, RoutingPolicy, TrafficSourceMode, TunnelStatus
+from app.models import EntryNode, GatewaySettings, RoutingPolicy, TunnelStatus
 from app.services.external_ip import effective_fqdn_prefixes
 from app.services import ipset_manager, nftables_manager
 from app.services.geoip import load_cached_country
+from app.services.traffic_sources import localhost_selector_enabled, non_localhost_selectors, source_selectors
 
 
 logger = logging.getLogger(__name__)
@@ -243,13 +244,7 @@ def _default_route() -> tuple[str | None, str | None]:
 
 
 def _source_selectors(gateway_settings: GatewaySettings) -> list[str]:
-    if gateway_settings.traffic_source_mode == TrafficSourceMode.localhost.value:
-        return ["127.0.0.1/32"]
-    if gateway_settings.traffic_source_mode == TrafficSourceMode.selected_cidr.value:
-        return list(gateway_settings.allowed_client_cidrs)
-    if gateway_settings.traffic_source_mode == TrafficSourceMode.selected_hosts.value:
-        return [f"{host}/32" for host in gateway_settings.allowed_client_hosts]
-    return []
+    return source_selectors(gateway_settings)
 
 
 def _ensure_chain(table: str, chain: str) -> None:
@@ -485,7 +480,7 @@ def _build_marking_rules(
 
     match_sets = _all_match_sets(policy, gateway_settings)
 
-    if gateway_settings.traffic_source_mode == TrafficSourceMode.localhost.value:
+    if localhost_selector_enabled(gateway_settings):
         if match_sets:
             for match_set in match_sets:
                 rules.append(
@@ -498,9 +493,7 @@ def _build_marking_rules(
                 rules.append(("mangle", MANGLE_OUTPUT_CHAIN, ["-m", "set", "--match-set", match_set, "dst", "-j", "RETURN"]))
         rules.append(("mangle", MANGLE_OUTPUT_CHAIN, ["-j", "MARK", "--set-mark", other_mark]))
 
-    for selector in selectors:
-        if selector == "127.0.0.1/32":
-            continue
+    for selector in non_localhost_selectors(gateway_settings):
         if match_sets:
             for match_set in match_sets:
                 rules.append(
@@ -525,7 +518,7 @@ def _build_dns_intercept_rules(gateway_settings: GatewaySettings) -> list[tuple[
     rules: list[tuple[str, str, list[str]]] = []
     dns_uid = _dns_runtime_uid()
 
-    if gateway_settings.traffic_source_mode == TrafficSourceMode.localhost.value:
+    if localhost_selector_enabled(gateway_settings):
         for protocol in ("udp", "tcp"):
             rule = ["-p", protocol, "--dport", "53"]
             if dns_uid is not None:
@@ -533,9 +526,7 @@ def _build_dns_intercept_rules(gateway_settings: GatewaySettings) -> list[tuple[
             rule.extend(["-j", "REDIRECT", "--to-ports", "53"])
             rules.append(("nat", NAT_DNS_OUTPUT_CHAIN, rule))
 
-    for selector in _source_selectors(gateway_settings):
-        if selector == "127.0.0.1/32":
-            continue
+    for selector in non_localhost_selectors(gateway_settings):
         for protocol in ("udp", "tcp"):
             rules.append(
                 (
@@ -565,14 +556,12 @@ def _build_marking_rules_nft(
         rules.append((NFT_CHAIN_MANGLE_PREROUTING, f"ip daddr {prefix} return"))
         rules.append((NFT_CHAIN_MANGLE_OUTPUT, f"ip daddr {prefix} return"))
 
-    if gateway_settings.traffic_source_mode == TrafficSourceMode.localhost.value:
+    if localhost_selector_enabled(gateway_settings):
         for match_set in match_sets:
             rules.append((NFT_CHAIN_MANGLE_OUTPUT, f"ip daddr @{match_set} meta mark set {matched_mark} return"))
         rules.append((NFT_CHAIN_MANGLE_OUTPUT, f"meta mark set {other_mark}"))
 
-    for selector in selectors:
-        if selector == "127.0.0.1/32":
-            continue
+    for selector in non_localhost_selectors(gateway_settings):
         for match_set in match_sets:
             rules.append(
                 (NFT_CHAIN_MANGLE_PREROUTING, f"ip saddr {selector} ip daddr @{match_set} meta mark set {matched_mark} return")
@@ -589,16 +578,14 @@ def _build_dns_intercept_rules_nft(gateway_settings: GatewaySettings) -> list[tu
     rules: list[tuple[str, str]] = []
     dns_uid = _dns_runtime_uid()
 
-    if gateway_settings.traffic_source_mode == TrafficSourceMode.localhost.value:
+    if localhost_selector_enabled(gateway_settings):
         for protocol in ("udp", "tcp"):
             expr = f"{protocol} dport 53"
             if dns_uid is not None:
                 expr = f"meta skuid != {dns_uid} {expr}"
             rules.append((NFT_CHAIN_NAT_OUTPUT, f"{expr} redirect to :53"))
 
-    for selector in _source_selectors(gateway_settings):
-        if selector == "127.0.0.1/32":
-            continue
+    for selector in non_localhost_selectors(gateway_settings):
         for protocol in ("udp", "tcp"):
             rules.append((NFT_CHAIN_NAT_PREROUTING, f"ip saddr {selector} {protocol} dport 53 redirect to :53"))
 
@@ -611,8 +598,8 @@ def _build_filter_forward_rules_nft(
     default_iface: str | None,
 ) -> list[str]:
     rules: list[str] = []
-    for selector in _source_selectors(gateway_settings):
-        if selector == "127.0.0.1/32" or default_iface is None:
+    for selector in non_localhost_selectors(gateway_settings):
+        if default_iface is None:
             continue
         rules.extend(
             [
@@ -699,9 +686,7 @@ def build_routing_plan(
                 for table, chain, rule in _build_dns_intercept_rules(gateway_settings)
             )
             if default_iface is not None:
-                for selector in selectors:
-                    if selector == "127.0.0.1/32":
-                        continue
+                for selector in non_localhost_selectors(gateway_settings):
                     commands.extend(
                         [
                             f"iptables -t nat -A {NAT_POSTROUTING_CHAIN} -s {selector} -o {default_iface} -j MASQUERADE",
@@ -729,9 +714,7 @@ def build_routing_plan(
             commands.extend(_nft_command(chain, expr) for chain, expr in _build_marking_rules_nft(gateway_settings, policy, active_node))
             commands.extend(_nft_command(chain, expr) for chain, expr in _build_dns_intercept_rules_nft(gateway_settings))
             if default_iface is not None:
-                for selector in selectors:
-                    if selector == "127.0.0.1/32":
-                        continue
+                for selector in non_localhost_selectors(gateway_settings):
                     commands.append(_nft_command(NFT_CHAIN_NAT_POSTROUTING, f'ip saddr {selector} oifname "{default_iface}" masquerade'))
             commands.extend(
                 f"nft add rule ip filter {FILTER_FORWARD_CHAIN} {expr}"
@@ -753,7 +736,7 @@ def build_routing_plan(
     manager = _set_manager(gateway_settings)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "source_mode": gateway_settings.traffic_source_mode,
+        "source_mode": "cidr_list",
         "selectors": selectors,
         "geoip_prefix_count": len(cached_prefixes) + manager.count(fqdn_ipset_name(policy)),
         "prefixes_route_local": policy.prefixes_route_local,
@@ -804,9 +787,7 @@ def apply_routing_plan(
         for chain, expr in _build_dns_intercept_rules_nft(gateway_settings):
             _append_nft(chain, expr)
         _append_nft(NFT_CHAIN_NAT_POSTROUTING, f'oifname "{settings.tunnel_interface}" masquerade')
-        for selector in selectors:
-            if selector == "127.0.0.1/32":
-                continue
+        for selector in non_localhost_selectors(gateway_settings):
             _append_nft(NFT_CHAIN_NAT_POSTROUTING, f'ip saddr {selector} oifname "{default_iface}" masquerade')
         for expr in _build_filter_forward_rules_nft(gateway_settings, policy, default_iface):
             _append_compat_nft("filter", FILTER_FORWARD_CHAIN, expr)
@@ -837,9 +818,7 @@ def apply_routing_plan(
             _append(table, chain, rule)
 
         _append("nat", NAT_POSTROUTING_CHAIN, ["-o", settings.tunnel_interface, "-j", "MASQUERADE"])
-        for selector in selectors:
-            if selector == "127.0.0.1/32":
-                continue
+        for selector in non_localhost_selectors(gateway_settings):
             _append("nat", NAT_POSTROUTING_CHAIN, ["-s", selector, "-o", default_iface, "-j", "MASQUERADE"])
             _append("filter", FILTER_FORWARD_CHAIN, ["-s", selector, "-o", default_iface, "-j", "ACCEPT"])
             _append(
