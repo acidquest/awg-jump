@@ -280,6 +280,27 @@ function useLoader<T>(url: string, fallback: T) {
   return { data, loading, error, reload, setData }
 }
 
+function useBackgroundReload<T>(reload: (options?: { background?: boolean }) => Promise<T>, intervalMs: number) {
+  const reloadRef = useRef(reload)
+
+  useEffect(() => {
+    reloadRef.current = reload
+  }, [reload])
+
+  useEffect(() => {
+    const tick = () => { void reloadRef.current({ background: true }) }
+    const timer = window.setInterval(tick, intervalMs)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') tick()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [intervalMs])
+}
+
 function openEventStream(
   path: string,
   onMessage: (payload: any) => void,
@@ -307,7 +328,7 @@ function openEventStream(
 function LoginPage() {
   const navigate = useNavigate()
   const { t } = useI18n()
-  const [username, setUsername] = useState('admin')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const streams = useMemo(
@@ -362,15 +383,18 @@ function LoginPage() {
 
         <div className="card">
           {error && <div className="error-box">{error}</div>}
-          <form onSubmit={submit}>
+          <form onSubmit={submit} autoComplete="off">
             <div className="form-group">
               <label className="form-label">{t('username')}</label>
               <input
                 className="form-input"
+                name="gateway-operator"
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
                 autoFocus
-                autoComplete="username"
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
                 required
               />
             </div>
@@ -378,10 +402,11 @@ function LoginPage() {
               <label className="form-label">{t('password')}</label>
               <input
                 className="form-input"
+                name="gateway-password"
                 type="password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
-                autoComplete="current-password"
+                autoComplete="off"
                 required
               />
             </div>
@@ -509,17 +534,8 @@ function DashboardPage() {
   })
   const statusTone = data.tunnel_status === 'running' ? 'online' : data.tunnel_status === 'starting' ? 'warning' : 'offline'
   const hideKernelWarning = data.runtime_mode === 'userspace'
-  const reloadRef = useRef(reload)
   const [togglePending, setTogglePending] = useState(false)
-
-  useEffect(() => {
-    reloadRef.current = reload
-  }, [reload])
-
-  useEffect(() => {
-    const timer = window.setInterval(() => { void reloadRef.current({ background: true }) }, 30_000)
-    return () => window.clearInterval(timer)
-  }, [])
+  useBackgroundReload(reload, 5_000)
 
   async function toggleGatewayEnabled(enabled: boolean) {
     setTogglePending(true)
@@ -752,6 +768,7 @@ function PolicyPage() {
   const [countryModalOpen, setCountryModalOpen] = useState(false)
   const [manualModalOpen, setManualModalOpen] = useState(false)
   const [fqdnModalOpen, setFqdnModalOpen] = useState(false)
+  useBackgroundReload(reload, 5_000)
 
   async function updateGeoip() {
     await api.post('/routing/refresh-geoip')

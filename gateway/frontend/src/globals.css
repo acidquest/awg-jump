@@ -997,4 +997,18 @@ tr.active-node td:first-child {
   .main-content { padding: 18px; }
   .card-grid-2, .card-grid-3, .card-grid-4, .form-row-2 { grid-template-columns: 1fr; }
   .page-header { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .traffic-direction-card { width: 100%; }
+  .traffic-toggle-row {
+    width: 100%;
+    min-width: 0;
+    align-items: flex-start;
+  }
+  .traffic-toggle-row .toggle-lg {
+    flex: 0 0 auto;
+    margin-top: 2px;
+  }
+  .traffic-toggle-row > div:last-child {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
 }
