@@ -4,11 +4,13 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage:
-  ./scripts/publish_dockerhub.sh <dockerhub-namespace> <tag> [--latest] [--with-node]
+  ./scripts/publish_dockerhub.sh <dockerhub-namespace> <tag> [--latest] [--with-node] [--gateway] [--only-gateway]
 
 Example:
   ./scripts/publish_dockerhub.sh myorg 2026-04-08 --latest
   ./scripts/publish_dockerhub.sh myorg 2026-04-08 --latest --with-node
+  ./scripts/publish_dockerhub.sh myorg 2026-04-08 --latest --gateway
+  ./scripts/publish_dockerhub.sh myorg 2026-04-08 --latest --only-gateway
 
 By default this script builds and pushes two images:
   docker.io/<namespace>/awg-jump:<tag>
@@ -16,6 +18,12 @@ By default this script builds and pushes two images:
 
 If --with-node is passed, it also pushes:
   docker.io/<namespace>/awg-node:<tag>
+
+If --gateway is passed, it also pushes:
+  docker.io/<namespace>/awg-gateway:<tag>
+
+If --only-gateway is passed, it builds and pushes only:
+  docker.io/<namespace>/awg-gateway:<tag>
 EOF
 }
 
@@ -30,6 +38,8 @@ shift 2
 
 PUSH_LATEST=false
 PUSH_NODE=false
+PUSH_GATEWAY=false
+ONLY_GATEWAY=false
 
 for arg in "$@"; do
     case "$arg" in
@@ -38,6 +48,14 @@ for arg in "$@"; do
             ;;
         --with-node)
             PUSH_NODE=true
+            ;;
+        --gateway)
+            PUSH_GATEWAY=true
+            ;;
+        --only-gateway)
+            ONLY_GATEWAY=true
+            PUSH_GATEWAY=true
+            PUSH_NODE=false
             ;;
         *)
             usage
@@ -69,10 +87,12 @@ fi
 IMAGE_JUMP="docker.io/${NAMESPACE}/awg-jump:${TAG}"
 IMAGE_NGINX="docker.io/${NAMESPACE}/awg-jump-nginx:${TAG}"
 IMAGE_NODE="docker.io/${NAMESPACE}/awg-node:${TAG}"
+IMAGE_GATEWAY="docker.io/${NAMESPACE}/awg-gateway:${TAG}"
 
 JUMP_TAGS=(-t "$IMAGE_JUMP")
 NGINX_TAGS=(-t "$IMAGE_NGINX")
 NODE_TAGS=(-t "$IMAGE_NODE")
+GATEWAY_TAGS=(-t "$IMAGE_GATEWAY")
 
 if [[ "$PUSH_LATEST" == true ]]; then
     JUMP_TAGS+=(-t "docker.io/${NAMESPACE}/awg-jump:latest")
@@ -80,35 +100,55 @@ if [[ "$PUSH_LATEST" == true ]]; then
     if [[ "$PUSH_NODE" == true ]]; then
         NODE_TAGS+=(-t "docker.io/${NAMESPACE}/awg-node:latest")
     fi
+    if [[ "$PUSH_GATEWAY" == true ]]; then
+        GATEWAY_TAGS+=(-t "docker.io/${NAMESPACE}/awg-gateway:latest")
+    fi
 fi
 
-echo "Publishing jump image: $IMAGE_JUMP"
-docker buildx build \
-    --platform linux/amd64 \
-    "${JUMP_TAGS[@]}" \
-    --push \
-    "$REPO_ROOT"
-
-echo "Publishing nginx image: $IMAGE_NGINX"
-docker buildx build \
-    --platform linux/amd64 \
-    "${NGINX_TAGS[@]}" \
-    --push \
-    -f "$REPO_ROOT/nginx/Dockerfile" \
-    "$REPO_ROOT/nginx"
-
-if [[ "$PUSH_NODE" == true ]]; then
-    echo "Publishing node image: $IMAGE_NODE"
+if [[ "$ONLY_GATEWAY" != true ]]; then
+    echo "Publishing jump image: $IMAGE_JUMP"
     docker buildx build \
         --platform linux/amd64 \
-        "${NODE_TAGS[@]}" \
+        "${JUMP_TAGS[@]}" \
         --push \
-        "$REPO_ROOT/node"
+        "$REPO_ROOT"
+
+    echo "Publishing nginx image: $IMAGE_NGINX"
+    docker buildx build \
+        --platform linux/amd64 \
+        "${NGINX_TAGS[@]}" \
+        --push \
+        -f "$REPO_ROOT/nginx/Dockerfile" \
+        "$REPO_ROOT/nginx"
+
+    if [[ "$PUSH_NODE" == true ]]; then
+        echo "Publishing node image: $IMAGE_NODE"
+        docker buildx build \
+            --platform linux/amd64 \
+            "${NODE_TAGS[@]}" \
+            --push \
+            "$REPO_ROOT/node"
+    fi
+fi
+
+if [[ "$PUSH_GATEWAY" == true ]]; then
+    echo "Publishing gateway image: $IMAGE_GATEWAY"
+    docker buildx build \
+        --platform linux/amd64 \
+        "${GATEWAY_TAGS[@]}" \
+        --push \
+        -f "$REPO_ROOT/gateway/Dockerfile" \
+        "$REPO_ROOT"
 fi
 
 echo
 echo "Published images:"
-printf '  %s\n' "$IMAGE_JUMP" "$IMAGE_NGINX"
-if [[ "$PUSH_NODE" == true ]]; then
-    printf '  %s\n' "$IMAGE_NODE"
+if [[ "$ONLY_GATEWAY" != true ]]; then
+    printf '  %s\n' "$IMAGE_JUMP" "$IMAGE_NGINX"
+    if [[ "$PUSH_NODE" == true ]]; then
+        printf '  %s\n' "$IMAGE_NODE"
+    fi
+fi
+if [[ "$PUSH_GATEWAY" == true ]]; then
+    printf '  %s\n' "$IMAGE_GATEWAY"
 fi
