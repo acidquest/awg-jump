@@ -17,7 +17,7 @@ from app.security import get_current_user
 from app.services.conf_parser import parse_peer_conf, render_peer_conf, split_endpoint
 from app.services.first_node_bootstrap import bootstrap_first_node, cleanup_bootstrap_queue, get_bootstrap_queue
 from app.services.external_ip import refresh_external_ip_info
-from app.services.routing import apply_routing_plan
+from app.services.routing import apply_local_passthrough, apply_routing_plan
 from app.services.runtime import (
     probe_node_latency,
     probe_node_latency_details,
@@ -423,6 +423,10 @@ async def activate_node(
     db.add(settings_row)
     db.add(AuditEvent(event_type="entry_node.activated", payload={"entry_node_id": node.id}))
     await db.flush()
+    if not settings_row.gateway_enabled:
+        policy = await db.get(RoutingPolicy, 1)
+        await refresh_external_ip_info(db, settings_row, policy, force=True)
+        return _to_payload(node)
     if live_status == "running":
         result = await start_tunnel(db, node, settings_row)
         if result["status"] == "running":
@@ -466,6 +470,8 @@ async def start_active_tunnel(
     user: AdminUser = Depends(get_current_user),
 ) -> dict:
     settings_row = await db.get(GatewaySettings, 1)
+    if not settings_row.gateway_enabled:
+        raise HTTPException(status_code=409, detail="Gateway routing is disabled")
     if settings_row.active_entry_node_id is None:
         raise HTTPException(status_code=400, detail="No active entry node selected")
     node = await db.get(EntryNode, settings_row.active_entry_node_id)
@@ -494,6 +500,8 @@ async def stop_active_tunnel(
 ) -> dict:
     settings_row = await db.get(GatewaySettings, 1)
     result = await stop_tunnel(db, settings_row)
+    if not settings_row.gateway_enabled:
+        apply_local_passthrough(settings_row)
     policy = await db.get(RoutingPolicy, 1)
     result["external_ip_info"] = await refresh_external_ip_info(db, settings_row, policy, force=True)
     return result

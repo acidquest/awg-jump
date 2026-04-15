@@ -18,9 +18,9 @@ from app.models import EntryNode, GatewaySettings, RoutingPolicy
 from app.routers import auth, backup, dns, nodes, routing, settings as settings_router, system
 from app.services.dns_runtime import restart_dnsmasq, stop_dnsmasq
 from app.services.external_ip import EXTERNAL_IP_REFRESH_INTERVAL_SECONDS, refresh_external_ip_info, validate_service_pair
-from app.services.routing import apply_routing_plan, sync_firewall_backend
+from app.services.routing import apply_local_passthrough, apply_routing_plan, sync_firewall_backend
 from app.services.traffic_sources import migrate_legacy_source_settings
-from app.services.runtime import start_tunnel
+from app.services.runtime import start_tunnel, stop_tunnel
 from app.services.system_metrics import collect_system_metrics
 
 
@@ -72,6 +72,10 @@ async def _ensure_sqlite_columns() -> None:
         if "dns_intercept_enabled" not in columns:
             await conn.execute(
                 text("ALTER TABLE gateway_settings ADD COLUMN dns_intercept_enabled BOOLEAN NOT NULL DEFAULT 1")
+            )
+        if "gateway_enabled" not in columns:
+            await conn.execute(
+                text("ALTER TABLE gateway_settings ADD COLUMN gateway_enabled BOOLEAN NOT NULL DEFAULT 1")
             )
         if "experimental_nftables" not in columns:
             await conn.execute(
@@ -166,7 +170,14 @@ async def _ensure_sqlite_columns() -> None:
 
 async def _restore_runtime_state(session: AsyncSession) -> None:
     settings_row = await session.get(GatewaySettings, 1)
-    if settings_row is None or settings_row.active_entry_node_id is None:
+    if settings_row is None:
+        return
+    if not settings_row.gateway_enabled:
+        await stop_tunnel(session, settings_row)
+        apply_local_passthrough(settings_row)
+        await session.commit()
+        return
+    if settings_row.active_entry_node_id is None:
         return
 
     active_node = await session.get(EntryNode, settings_row.active_entry_node_id)
@@ -241,7 +252,10 @@ async def lifespan(app: FastAPI):
         gateway_settings = await session.get(GatewaySettings, 1)
         routing_policy = await session.get(RoutingPolicy, 1)
         if gateway_settings and routing_policy:
-            sync_firewall_backend(gateway_settings, routing_policy)
+            if gateway_settings.gateway_enabled:
+                sync_firewall_backend(gateway_settings, routing_policy)
+            else:
+                apply_local_passthrough(gateway_settings)
     async with AsyncSessionLocal() as session:
         try:
             await restart_dnsmasq(session)
@@ -264,6 +278,12 @@ async def lifespan(app: FastAPI):
         await metrics_task
     if external_ip_task is not None:
         await external_ip_task
+    async with AsyncSessionLocal() as session:
+        gateway_settings = await session.get(GatewaySettings, 1)
+        if gateway_settings is not None:
+            await stop_tunnel(session, gateway_settings)
+            apply_local_passthrough(gateway_settings)
+            await session.commit()
     stop_dnsmasq()
 
 

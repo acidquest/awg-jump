@@ -73,6 +73,7 @@ async def status(
         "entry_node_count": entry_node_count,
         "dns_rule_count": dns_rule_count,
         "allowed_client_cidrs": gateway_settings.allowed_client_cidrs,
+        "gateway_enabled": gateway_settings.gateway_enabled,
         "runtime_mode": gateway_settings.runtime_mode,
         "experimental_nftables": gateway_settings.experimental_nftables,
         "kernel_available": kernel_available,

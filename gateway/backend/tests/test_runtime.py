@@ -1,7 +1,9 @@
+import subprocess
+
 import pytest
 
 from app.models import EntryNode, GatewaySettings, RuntimeMode, TunnelStatus
-from app.services.runtime import probe_node_latency_details, probe_udp_endpoint, resolve_tunnel_probe_target, settings, start_tunnel
+from app.services.runtime import _setconf_with_retry, probe_node_latency_details, probe_udp_endpoint, resolve_tunnel_probe_target, settings, start_tunnel
 
 
 def _make_node(**overrides) -> EntryNode:
@@ -126,3 +128,27 @@ async def test_start_tunnel_sets_configured_mtu(monkeypatch) -> None:
     await start_tunnel(FakeDb(), _make_node(), gateway_settings)
 
     assert ["ip", "link", "set", "dev", settings.tunnel_interface, "mtu", str(settings.tunnel_mtu)] in commands
+
+
+def test_setconf_with_retry_recovers_from_transient_userspace_error(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    attempts = {"count": 0}
+
+    def fake_run_logged(args: list[str], *, context: str):
+        calls.append(args)
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise subprocess.CalledProcessError(
+                1,
+                args,
+                stderr="Unable to modify interface: Operation not supported",
+            )
+        return None
+
+    monkeypatch.setattr("app.services.runtime._run_logged", fake_run_logged)
+    monkeypatch.setattr("app.services.runtime.time.sleep", lambda _seconds: None)
+
+    _setconf_with_retry("awg-gw0", "/tmp/test.conf", retries=3, delay_sec=0.01)
+
+    assert attempts["count"] == 3
+    assert calls[-1] == [settings.awg_binary, "setconf", "awg-gw0", "/tmp/test.conf"]

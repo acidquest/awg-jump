@@ -61,6 +61,41 @@ def _run_check(args: list[str], *, context: str) -> tuple[int, str]:
     return proc.returncode, output
 
 
+def _setconf_with_retry(interface_name: str, config_path: str, *, retries: int = 10, delay_sec: float = 0.2) -> None:
+    last_error: subprocess.CalledProcessError | None = None
+    transient_markers = (
+        "Unable to modify interface",
+        "Operation not supported",
+        "No such device",
+    )
+
+    for attempt in range(1, retries + 1):
+        try:
+            _run_logged(
+                [settings.awg_binary, "setconf", interface_name, config_path],
+                context="setconf",
+            )
+            if attempt > 1:
+                logger.info("[awg-runtime] setconf succeeded on retry=%s interface=%s", attempt, interface_name)
+            return
+        except subprocess.CalledProcessError as exc:
+            last_error = exc
+            error_text = ((exc.stderr or "") + (exc.stdout or "")).strip()
+            if attempt >= retries or not any(marker in error_text for marker in transient_markers):
+                raise
+            logger.warning(
+                "[awg-runtime] setconf retry=%s/%s interface=%s failed transiently: %s",
+                attempt,
+                retries,
+                interface_name,
+                error_text,
+            )
+            time.sleep(delay_sec)
+
+    if last_error is not None:
+        raise last_error
+
+
 def _detect_kernel_support() -> bool:
     global _KERNEL_MODE, _KERNEL_PROBE_MESSAGE
     if _KERNEL_MODE is not None:
@@ -228,10 +263,13 @@ async def start_tunnel(db: AsyncSession, node: EntryNode, gateway_settings: Gate
                 daemon=True,
             ).start()
             _wait_for_interface(settings.tunnel_interface)
-        _run_logged(
-            [settings.awg_binary, "setconf", settings.tunnel_interface, config_path],
-            context="setconf",
-        )
+        if use_kernel:
+            _run_logged(
+                [settings.awg_binary, "setconf", settings.tunnel_interface, config_path],
+                context="setconf",
+            )
+        else:
+            _setconf_with_retry(settings.tunnel_interface, config_path)
         _run_logged(
             ["ip", "address", "replace", node.tunnel_address, "dev", settings.tunnel_interface],
             context="ip-address-replace",

@@ -312,6 +312,20 @@ def _ensure_ip_rules() -> None:
         _run_logged(["ip", "rule", "add", "fwmark", settings.fwmark_vpn, "table", str(settings.routing_table_vpn)])
 
 
+def _delete_ip_rule(fwmark: str, table: int) -> None:
+    while True:
+        rc, _ = _run(["ip", "rule", "del", "fwmark", fwmark, "table", str(table)])
+        if rc != 0:
+            return
+
+
+def clear_policy_routing() -> None:
+    _delete_ip_rule(settings.fwmark_local, settings.routing_table_local)
+    _delete_ip_rule(settings.fwmark_vpn, settings.routing_table_vpn)
+    _run(["ip", "route", "flush", "table", str(settings.routing_table_local)])
+    _run(["ip", "route", "flush", "table", str(settings.routing_table_vpn)])
+
+
 def _interface_exists(interface_name: str) -> bool:
     rc, _ = _run(["ip", "link", "show", "dev", interface_name])
     return rc == 0
@@ -704,6 +718,46 @@ def _build_filter_forward_rules_nft(
     return rules
 
 
+def _build_local_passthrough_rules(gateway_settings: GatewaySettings, default_iface: str | None) -> list[list[str]]:
+    rules: list[list[str]] = []
+    if default_iface is None:
+        return rules
+    for selector in non_localhost_selectors(gateway_settings):
+        rules.extend(
+            [
+                ["-s", selector, "-o", default_iface, "-j", "ACCEPT"],
+                ["-i", default_iface, "-d", selector, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+            ]
+        )
+    return rules
+
+
+def _build_local_passthrough_nat_rules(gateway_settings: GatewaySettings, default_iface: str | None) -> list[list[str]]:
+    if default_iface is None:
+        return []
+    return [["-s", selector, "-o", default_iface, "-j", "MASQUERADE"] for selector in non_localhost_selectors(gateway_settings)]
+
+
+def _build_local_passthrough_rules_nft(gateway_settings: GatewaySettings, default_iface: str | None) -> list[str]:
+    rules: list[str] = []
+    if default_iface is None:
+        return rules
+    for selector in non_localhost_selectors(gateway_settings):
+        rules.extend(
+            [
+                f'ip saddr {selector} oifname "{default_iface}" accept',
+                f'iifname "{default_iface}" ip daddr {selector} ct state related,established accept',
+            ]
+        )
+    return rules
+
+
+def _build_local_passthrough_nat_rules_nft(gateway_settings: GatewaySettings, default_iface: str | None) -> list[str]:
+    if default_iface is None:
+        return []
+    return [f'ip saddr {selector} oifname "{default_iface}" masquerade' for selector in non_localhost_selectors(gateway_settings)]
+
+
 def build_routing_plan(
     gateway_settings: GatewaySettings,
     policy: RoutingPolicy,
@@ -926,7 +980,37 @@ def apply_routing_plan(
     return plan
 
 
+def apply_local_passthrough(gateway_settings: GatewaySettings) -> None:
+    default_iface = _physical_interface()
+    clear_policy_routing()
+
+    if firewall_backend(gateway_settings) == NFTABLES_BACKEND:
+        _teardown_iptables_stack()
+        _ensure_nftables_base()
+        _ensure_compat_chain("filter", FILTER_FORWARD_CHAIN)
+        _ensure_compat_jump("filter", "FORWARD", FILTER_FORWARD_CHAIN)
+        for expr in _build_local_passthrough_nat_rules_nft(gateway_settings, default_iface):
+            _append_nft(NFT_CHAIN_NAT_POSTROUTING, expr)
+        for expr in _build_local_passthrough_rules_nft(gateway_settings, default_iface):
+            _append_compat_nft("filter", FILTER_FORWARD_CHAIN, expr)
+        return
+
+    _teardown_nftables_stack()
+    _ensure_chain("filter", FILTER_FORWARD_CHAIN)
+    _ensure_chain("nat", NAT_POSTROUTING_CHAIN)
+    _ensure_jump("filter", "FORWARD", FILTER_FORWARD_CHAIN)
+    _ensure_jump("nat", "POSTROUTING", NAT_POSTROUTING_CHAIN)
+    for rule in _build_local_passthrough_nat_rules(gateway_settings, default_iface):
+        _append("nat", NAT_POSTROUTING_CHAIN, rule)
+    for rule in _build_local_passthrough_rules(gateway_settings, default_iface):
+        _append("filter", FILTER_FORWARD_CHAIN, rule)
+
+
 def sync_firewall_backend(gateway_settings: GatewaySettings, policy: RoutingPolicy) -> None:
+    if not getattr(gateway_settings, "gateway_enabled", True):
+        apply_local_passthrough(gateway_settings)
+        return
+
     if firewall_backend(gateway_settings) == NFTABLES_BACKEND:
         _teardown_iptables_stack()
         _ensure_nftables_base()

@@ -46,6 +46,7 @@ type FirstNodeBootstrapLog = {
 
 type SystemStatus = {
   runtime_available: boolean
+  gateway_enabled: boolean
   tunnel_status: string
   tunnel_last_error: string | null
   active_entry_node: {
@@ -118,6 +119,7 @@ type GatewaySettingsData = {
   ui_language: string
   runtime_mode: string
   allowed_client_cidrs: string[]
+  gateway_enabled: boolean
   dns_intercept_enabled: boolean
   experimental_nftables: boolean
   kernel_available: boolean
@@ -189,6 +191,15 @@ function firewallBackendLabel(
   t: (key: 'iptablesBackend' | 'nftablesBackend') => string,
 ) {
   return backend === 'nftables' ? t('nftablesBackend') : t('iptablesBackend')
+}
+
+function tunnelStatusLabel(status: string | undefined, t: (key: any) => string) {
+  if (status === 'running') return t('tunnelStatusRunning')
+  if (status === 'starting') return t('tunnelStatusStarting')
+  if (status === 'stopped') return t('tunnelStatusStopped')
+  if (status === 'error') return t('tunnelStatusError')
+  if (status === 'unknown') return t('tunnelStatusUnknown')
+  return status || '—'
 }
 
 const CLIENT_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -437,6 +448,7 @@ function DashboardPage() {
   const [metricsPeriod, setMetricsPeriod] = useState<'1h' | '24h'>('1h')
   const { data, loading, error, reload } = useLoader<SystemStatus>('/system/status', {
     runtime_available: false,
+    gateway_enabled: true,
     tunnel_status: 'unknown',
     tunnel_last_error: null,
     active_entry_node: null,
@@ -471,6 +483,7 @@ function DashboardPage() {
   const statusTone = data.tunnel_status === 'running' ? 'online' : data.tunnel_status === 'starting' ? 'warning' : 'offline'
   const hideKernelWarning = data.runtime_mode === 'userspace'
   const reloadRef = useRef(reload)
+  const [togglePending, setTogglePending] = useState(false)
 
   useEffect(() => {
     reloadRef.current = reload
@@ -480,6 +493,16 @@ function DashboardPage() {
     const timer = window.setInterval(() => { void reloadRef.current({ background: true }) }, 30_000)
     return () => window.clearInterval(timer)
   }, [])
+
+  async function toggleGatewayEnabled(enabled: boolean) {
+    setTogglePending(true)
+    try {
+      await api.put('/settings/gateway-enabled', { gateway_enabled: enabled })
+      await reload()
+    } finally {
+      setTogglePending(false)
+    }
+  }
 
   return (
     <>
@@ -494,7 +517,26 @@ function DashboardPage() {
       {!error && !loading && data.tunnel_last_error ? <div className="error-box">{data.tunnel_last_error}</div> : null}
       {loading ? <div style={{ padding: 40, textAlign: 'center' }}><span className="spinner" /></div> : null}
       <div className="card-grid card-grid-4" style={{ marginBottom: 20 }}>
-        <StatCard title={t('tunnel')} value={data.tunnel_status} label="" tone={statusTone} />
+        <div className="card">
+          <div className="flex items-center justify-between" style={{ gap: 16, marginBottom: 10 }}>
+            <div className="card-title">{t('tunnel')}</div>
+            <label className="toggle toggle-lg" title={t('gatewayEnabled')}>
+              <input
+                type="checkbox"
+                checked={Boolean(data.gateway_enabled)}
+                disabled={togglePending}
+                onChange={(event) => { void toggleGatewayEnabled(event.target.checked) }}
+              />
+              <span className="toggle-slider" />
+            </label>
+          </div>
+          <div className={`stat-value ${statusTone === 'online' ? 'text-accent' : statusTone === 'offline' ? 'text-danger' : ''}`}>
+            {tunnelStatusLabel(data.tunnel_status, t)}
+          </div>
+          <div className="stat-label">
+            {data.gateway_enabled ? t('gatewayEnabled') : t('disabled')}
+          </div>
+        </div>
         <StatCard title={t('entryNodes')} value={String(data.entry_node_count)} label="" />
         <StatCard
           title={t('activePrefixes')}
@@ -1833,6 +1875,7 @@ function SettingsPage() {
     ui_language: 'en',
     runtime_mode: 'auto',
     allowed_client_cidrs: [LOCALHOST_SOURCE],
+    gateway_enabled: true,
     dns_intercept_enabled: true,
     experimental_nftables: false,
     kernel_available: false,

@@ -33,6 +33,7 @@ async def ensure_bootstrap_state(db: AsyncSession) -> None:
                 ui_language=settings.ui_default_language,
                 runtime_mode=RuntimeMode.auto.value,
                 allowed_client_cidrs=default_allowed_source_cidrs(),
+                gateway_enabled=True,
                 dns_intercept_enabled=True,
                 experimental_nftables=False,
                 external_ip_local_service_url=local_service_url,

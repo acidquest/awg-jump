@@ -14,7 +14,7 @@ from app.security import get_current_user
 from app.services.dns_runtime import restart_dnsmasq
 from app.services.external_ip import refresh_external_ip_info
 from app.services.geoip import refresh_policy_geoip
-from app.services.routing import apply_routing_plan, build_prefix_summary, build_routing_plan, sync_prefix_ipset
+from app.services.routing import apply_local_passthrough, apply_routing_plan, build_prefix_summary, build_routing_plan, sync_prefix_ipset
 
 
 router = APIRouter(prefix="/api/routing", tags=["routing"])
@@ -96,7 +96,10 @@ async def _reload_runtime(
     active_node = await db.get(EntryNode, settings_row.active_entry_node_id) if settings_row.active_entry_node_id else None
     status = "synced"
     plan = build_routing_plan(settings_row, policy, active_node)
-    if plan["safe_to_apply"]:
+    if not settings_row.gateway_enabled:
+        apply_local_passthrough(settings_row)
+        status = "disabled"
+    elif plan["safe_to_apply"]:
         try:
             plan = apply_routing_plan(settings_row, policy, active_node)
             policy.last_error = None
