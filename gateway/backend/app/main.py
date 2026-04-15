@@ -15,7 +15,7 @@ from app.bootstrap import ensure_bootstrap_state
 from app.config import ensure_directories, settings
 from app.database import AsyncSessionLocal, Base, engine
 from app.models import EntryNode, GatewaySettings, RoutingPolicy
-from app.routers import auth, backup, dns, nodes, routing, settings as settings_router, system
+from app.routers import access, auth, backup, dns, nodes, routing, settings as settings_router, system
 from app.services.dns_runtime import restart_dnsmasq, stop_dnsmasq
 from app.services.external_ip import EXTERNAL_IP_REFRESH_INTERVAL_SECONDS, refresh_external_ip_info, validate_service_pair
 from app.services.failover import evaluate_failover_health, failover_to_next_available, start_tunnel_with_retries
@@ -92,6 +92,20 @@ async def _ensure_sqlite_columns() -> None:
             await conn.execute(text("ALTER TABLE gateway_settings ADD COLUMN failover_last_event_at DATETIME"))
         if "failover_last_error" not in columns:
             await conn.execute(text("ALTER TABLE gateway_settings ADD COLUMN failover_last_error TEXT"))
+        if "api_enabled" not in columns:
+            await conn.execute(
+                text("ALTER TABLE gateway_settings ADD COLUMN api_enabled BOOLEAN NOT NULL DEFAULT 0")
+            )
+        if "api_access_key" not in columns:
+            await conn.execute(text("ALTER TABLE gateway_settings ADD COLUMN api_access_key VARCHAR(64)"))
+        if "api_control_enabled" not in columns:
+            await conn.execute(
+                text("ALTER TABLE gateway_settings ADD COLUMN api_control_enabled BOOLEAN NOT NULL DEFAULT 0")
+            )
+        if "api_allowed_client_cidrs" not in columns:
+            await conn.execute(
+                text("ALTER TABLE gateway_settings ADD COLUMN api_allowed_client_cidrs JSON NOT NULL DEFAULT '[]'")
+            )
         if "external_ip_local_service_url" not in columns:
             await conn.execute(
                 text(
@@ -369,6 +383,7 @@ app = FastAPI(
 
 app.include_router(auth.router)
 app.include_router(settings_router.router)
+app.include_router(access.router)
 app.include_router(nodes.router)
 app.include_router(routing.router)
 app.include_router(dns.router)

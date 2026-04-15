@@ -36,6 +36,10 @@ async def ensure_bootstrap_state(db: AsyncSession) -> None:
                 gateway_enabled=True,
                 dns_intercept_enabled=True,
                 experimental_nftables=False,
+                api_enabled=False,
+                api_access_key=None,
+                api_control_enabled=False,
+                api_allowed_client_cidrs=[],
                 external_ip_local_service_url=local_service_url,
                 external_ip_vpn_service_url=vpn_service_url,
             )

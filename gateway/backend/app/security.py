@@ -4,15 +4,16 @@ import hashlib
 import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
+import ipaddress
 
-from fastapi import Depends, HTTPException, Query, status
+from fastapi import Depends, Header, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
-from app.models import AdminUser
+from app.models import AdminUser, GatewaySettings
 
 
 _security = HTTPBearer(auto_error=False)
@@ -48,6 +49,11 @@ def create_session(username: str) -> str:
         "expires_at": datetime.now(timezone.utc) + timedelta(hours=settings.session_ttl_hours),
     }
     return token
+
+
+def generate_api_access_key(length: int = 32) -> str:
+    alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def remove_session(token: str) -> None:
@@ -88,3 +94,63 @@ async def get_current_user(
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     return user
+
+
+async def get_api_settings(
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    request: Request = None,
+    db: AsyncSession = Depends(get_db),
+) -> GatewaySettings:
+    if not x_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="X-API-Key header is required",
+        )
+
+    settings_row = await db.get(GatewaySettings, 1)
+    if settings_row is None or not settings_row.api_enabled:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API access is disabled")
+    if not settings_row.api_access_key or not hmac.compare_digest(settings_row.api_access_key, x_api_key):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+    client_ip = resolve_request_ip(request)
+    if settings_row.api_allowed_client_cidrs and not is_ip_allowed(client_ip, settings_row.api_allowed_client_cidrs):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API access is denied for this IP")
+    return settings_row
+
+
+async def require_api_control(
+    settings_row: GatewaySettings = Depends(get_api_settings),
+) -> GatewaySettings:
+    if not settings_row.api_control_enabled:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API control mode is disabled")
+    return settings_row
+
+
+def resolve_request_ip(request: Request | None) -> str | None:
+    if request is None:
+        return None
+    forwarded_for = request.headers.get("x-forwarded-for", "").strip()
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    real_ip = request.headers.get("x-real-ip", "").strip()
+    if real_ip:
+        return real_ip
+    return request.client.host if request.client else None
+
+
+def is_ip_allowed(client_ip: str | None, allowed_cidrs: list[str]) -> bool:
+    if not allowed_cidrs:
+        return True
+    if not client_ip:
+        return False
+    try:
+        address = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return False
+    for raw_cidr in allowed_cidrs:
+        try:
+            if address in ipaddress.ip_network(raw_cidr, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False

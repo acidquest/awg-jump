@@ -12,13 +12,13 @@
 - `latency` probe;
 - `geoip`, routing plan, kill switch и `dns split`;
 - backup/restore и diagnostics bundle;
+- key-based API для телеметрии и ограниченного remote control;
 - UI на английском по умолчанию, с модульной i18n и примером русского перевода;
 - docker build / compose scaffold с healthcheck.
 
 ## Что сознательно не входит
 
 - любые изменения входной ноды;
-- tunnel API, command channel, telemetry services;
 - auto-failover и remote override;
 - control plane поверх туннеля.
 
@@ -29,6 +29,7 @@
 - [docs/session_log_ru.md](docs/session_log_ru.md) — отчёт по сессиям 1-9.
 - [docs/i18n_ru.md](docs/i18n_ru.md) — формат языковых модулей.
 - [docs/future_integration_notes_ru.md](docs/future_integration_notes_ru.md) — только точки расширения, без интеграции.
+- [docs/api_access_ru.md](docs/api_access_ru.md) — API по ключу для телеметрии и управления.
 
 ## Локальный запуск
 

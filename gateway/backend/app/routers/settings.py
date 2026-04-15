@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models import AdminUser, EntryNode, GatewaySettings, RoutingPolicy, RuntimeMode, TrafficSourceMode
-from app.security import get_current_user
+from app.security import generate_api_access_key, get_current_user
 from app.services.dns_runtime import restart_dnsmasq
 from app.services.external_ip import refresh_external_ip_info, serialize_external_ip_info, validate_service_pair
 from app.services.runtime import get_kernel_support_status, start_tunnel, stop_tunnel
@@ -29,6 +29,21 @@ class GatewaySettingsUpdate(BaseModel):
 
 class GatewayEnabledUpdate(BaseModel):
     gateway_enabled: bool
+
+
+class ApiSettingsUpdate(BaseModel):
+    api_enabled: bool
+    api_control_enabled: bool
+    api_allowed_client_cidrs: list[str] = []
+
+
+def serialize_api_settings(settings_row: GatewaySettings) -> dict:
+    return {
+        "api_enabled": settings_row.api_enabled,
+        "api_access_key": settings_row.api_access_key,
+        "api_control_enabled": settings_row.api_control_enabled,
+        "api_allowed_client_cidrs": settings_row.api_allowed_client_cidrs,
+    }
 
 
 @router.get("")
@@ -56,6 +71,7 @@ async def get_settings(
         "tunnel_status": settings_row.tunnel_status,
         "tunnel_last_error": settings_row.tunnel_last_error,
         "external_ip_info": serialize_external_ip_info(settings_row, policy),
+        "api_settings": serialize_api_settings(settings_row),
     }
 
 
@@ -106,6 +122,45 @@ async def update_settings(
             return {"status": "error", "error": str(exc), "plan": plan}
     external_ip_info = await refresh_external_ip_info(db, settings_row, policy, force=True)
     return {"status": "updated", "plan": plan, "external_ip_info": external_ip_info}
+
+
+@router.put("/api-access")
+async def update_api_settings(
+    payload: ApiSettingsUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(get_current_user),
+) -> dict:
+    try:
+        normalized_allowed_cidrs = normalize_allowed_source_cidrs(payload.api_allowed_client_cidrs)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    settings_row = await db.get(GatewaySettings, 1)
+    if payload.api_enabled and not settings_row.api_access_key:
+        settings_row.api_access_key = generate_api_access_key()
+    settings_row.api_enabled = payload.api_enabled
+    settings_row.api_control_enabled = payload.api_enabled and payload.api_control_enabled
+    settings_row.api_allowed_client_cidrs = normalized_allowed_cidrs
+    db.add(settings_row)
+    await db.flush()
+    return {
+        "status": "updated",
+        "api_settings": serialize_api_settings(settings_row),
+    }
+
+
+@router.post("/api-access/regenerate")
+async def regenerate_api_access_key(
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(get_current_user),
+) -> dict:
+    settings_row = await db.get(GatewaySettings, 1)
+    settings_row.api_access_key = generate_api_access_key()
+    db.add(settings_row)
+    await db.flush()
+    return {
+        "status": "updated",
+        "api_settings": serialize_api_settings(settings_row),
+    }
 
 
 @router.put("/gateway-enabled")

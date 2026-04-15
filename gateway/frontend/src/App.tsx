@@ -137,6 +137,14 @@ type GatewaySettingsData = {
   tunnel_status?: string
   tunnel_last_error?: string | null
   external_ip_info: ExternalIpInfo
+  api_settings: ApiSettings
+}
+
+type ApiSettings = {
+  api_enabled: boolean
+  api_access_key: string | null
+  api_control_enabled: boolean
+  api_allowed_client_cidrs: string[]
 }
 
 type PrefixSummary = {
@@ -2007,8 +2015,15 @@ function SettingsPage() {
       local: { service_url: '', service_host: null, value: null, error: null, checked_at: null, route_target: 'local' },
       vpn: { service_url: '', service_host: null, value: null, error: null, checked_at: null, route_target: 'vpn' },
     },
+    api_settings: {
+      api_enabled: false,
+      api_access_key: null,
+      api_control_enabled: false,
+      api_allowed_client_cidrs: [],
+    },
   })
   const [sourceInput, setSourceInput] = useState('')
+  const [apiAllowedIpInput, setApiAllowedIpInput] = useState('')
   const [localExternalIpServiceUrl, setLocalExternalIpServiceUrl] = useState('')
   const [vpnExternalIpServiceUrl, setVpnExternalIpServiceUrl] = useState('')
   const [currentPassword, setCurrentPassword] = useState('')
@@ -2112,6 +2127,66 @@ function SettingsPage() {
     setCurrentPassword('')
     setNewPassword('')
     setMessage(t('passwordChanged'))
+  }
+
+  async function updateApiAccess(apiEnabled: boolean, apiControlEnabled: boolean) {
+    const previous = data.api_settings
+    const nextState = {
+      api_enabled: apiEnabled,
+      api_access_key: previous.api_access_key,
+      api_control_enabled: apiEnabled ? apiControlEnabled : false,
+      api_allowed_client_cidrs: previous.api_allowed_client_cidrs,
+    }
+    setData({ ...data, api_settings: nextState })
+    try {
+      const response = await api.put('/settings/api-access', {
+        api_enabled: apiEnabled,
+        api_control_enabled: apiEnabled ? apiControlEnabled : false,
+        api_allowed_client_cidrs: previous.api_allowed_client_cidrs,
+      })
+      setData({ ...data, api_settings: response.data.api_settings })
+      setMessage(t('apiAccessUpdated'))
+    } catch (err: any) {
+      setData({ ...data, api_settings: previous })
+      setMessage(err?.response?.data?.detail || err.message || 'Request failed')
+    }
+  }
+
+  async function regenerateApiAccessKey() {
+    const response = await api.post('/settings/api-access/regenerate')
+    setData({ ...data, api_settings: response.data.api_settings })
+    setMessage(t('apiAccessRegenerated'))
+  }
+
+  async function addApiAllowedIp() {
+    const candidate = apiAllowedIpInput.trim()
+    if (!candidate) return
+    try {
+      const response = await api.put('/settings/api-access', {
+        api_enabled: data.api_settings.api_enabled,
+        api_control_enabled: data.api_settings.api_control_enabled,
+        api_allowed_client_cidrs: [...data.api_settings.api_allowed_client_cidrs, candidate],
+      })
+      setData({ ...data, api_settings: response.data.api_settings })
+      setApiAllowedIpInput('')
+      setMessage(t('apiAccessUpdated'))
+    } catch (err: any) {
+      setMessage(err?.response?.data?.detail || err.message || 'Request failed')
+    }
+  }
+
+  async function removeApiAllowedIp(cidr: string) {
+    try {
+      const response = await api.put('/settings/api-access', {
+        api_enabled: data.api_settings.api_enabled,
+        api_control_enabled: data.api_settings.api_control_enabled,
+        api_allowed_client_cidrs: data.api_settings.api_allowed_client_cidrs.filter((item) => item !== cidr),
+      })
+      setData({ ...data, api_settings: response.data.api_settings })
+      setMessage(t('apiAccessUpdated'))
+    } catch (err: any) {
+      setMessage(err?.response?.data?.detail || err.message || 'Request failed')
+    }
   }
 
   return (
@@ -2257,6 +2332,87 @@ function SettingsPage() {
             </div>
             <button className="btn btn-primary" type="submit">{t('save')}</button>
           </form>
+
+          <div style={{ height: 1, background: 'var(--border)', margin: '22px 0' }} />
+
+          <div className="card-title" style={{ marginBottom: 14 }}>{t('apiAccessTitle')}</div>
+          <div className="text-muted text-sm" style={{ marginBottom: 14 }}>{t('apiAccessDescription')}</div>
+          <div className="form-group">
+            <label className="form-label">{t('apiAccessEnabled')}</label>
+            <label className="toggle" title={t('apiAccessEnabled')}>
+              <input
+                type="checkbox"
+                checked={Boolean(data.api_settings.api_enabled)}
+                onChange={(event) => { void updateApiAccess(event.target.checked, data.api_settings.api_control_enabled) }}
+              />
+              <span className="toggle-slider" />
+            </label>
+          </div>
+          <div className="form-group">
+            <label className="form-label">{t('apiAccessKey')}</label>
+            <div className="form-row form-row-2 source-input-row">
+              <input
+                className="form-input mono"
+                value={data.api_settings.api_access_key || ''}
+                readOnly
+                placeholder={t('apiAccessKeyPlaceholder')}
+              />
+              <button
+                className="btn btn-secondary"
+                type="button"
+                disabled={!data.api_settings.api_enabled}
+                onClick={() => { void regenerateApiAccessKey() }}
+              >
+                {t('regenerate')}
+              </button>
+            </div>
+            <div className="text-muted text-sm" style={{ marginTop: 8 }}>
+              {data.api_settings.api_enabled ? t('apiAccessKeyGenerated') : t('apiAccessDisabledHint')}
+            </div>
+          </div>
+          <div className="form-group">
+            <label className="form-label">{t('apiControlMode')}</label>
+            <label className="toggle" title={t('apiControlMode')}>
+              <input
+                type="checkbox"
+                checked={Boolean(data.api_settings.api_enabled && data.api_settings.api_control_enabled)}
+                disabled={!data.api_settings.api_enabled}
+                onChange={(event) => { void updateApiAccess(data.api_settings.api_enabled, event.target.checked) }}
+              />
+              <span className="toggle-slider" />
+            </label>
+            <div className="text-muted text-sm" style={{ marginTop: 8 }}>
+              {data.api_settings.api_control_enabled ? t('apiControlEnabledDescription') : t('apiReadOnlyDescription')}
+            </div>
+          </div>
+          <div className="form-group">
+            <label className="form-label">{t('apiAllowedIps')}</label>
+            <div className="text-muted text-sm" style={{ marginBottom: 8 }}>{t('apiAllowedIpsDescription')}</div>
+            <div className="source-chip-list">
+              {data.api_settings.api_allowed_client_cidrs.length ? data.api_settings.api_allowed_client_cidrs.map((cidr) => (
+                <div className="source-chip" key={cidr}>
+                  <span className="text-mono">{cidr}</span>
+                  <button
+                    type="button"
+                    className="source-chip-remove"
+                    aria-label={`${t('remove')} ${cidr}`}
+                    onClick={() => { void removeApiAllowedIp(cidr) }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )) : <div className="text-muted text-sm">{t('apiAllowedIpsEmpty')}</div>}
+            </div>
+            <div className="form-row form-row-2 source-input-row">
+              <input
+                className="form-input mono"
+                value={apiAllowedIpInput}
+                onChange={(event) => setApiAllowedIpInput(event.target.value)}
+                placeholder={t('apiAllowedIpPlaceholder')}
+              />
+              <button className="btn btn-secondary" type="button" onClick={() => { void addApiAllowedIp() }}>{t('add')}</button>
+            </div>
+          </div>
         </div>
       </div>
     </>
