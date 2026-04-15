@@ -62,9 +62,14 @@ class GatewaySettings(Base):
         ForeignKey("entry_nodes.id", ondelete="SET NULL"),
         nullable=True,
     )
+    failover_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    failover_unhealthy_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    failover_last_event_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    failover_last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     tunnel_status: Mapped[str] = mapped_column(String(32), default=TunnelStatus.stopped.value)
     tunnel_last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     tunnel_last_applied_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    active_node_connected_at_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
     external_ip_local_service_url: Mapped[str] = mapped_column(String(512), default="https://ipinfo.io/ip", nullable=False)
     external_ip_vpn_service_url: Mapped[str] = mapped_column(String(512), default="https://ifconfig.me/ip", nullable=False)
     external_ip_local_value: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -97,6 +102,7 @@ class EntryNode(Base):
     allowed_ips: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     persistent_keepalive: Mapped[int | None] = mapped_column(Integer, nullable=True)
     obfuscation: Mapped[dict[str, int | str]] = mapped_column(JSON, default=dict, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     latest_latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     latest_latency_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)

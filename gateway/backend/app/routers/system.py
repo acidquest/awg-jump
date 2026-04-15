@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, Depends
 from fastapi import Query
 from sqlalchemy import func, select
@@ -15,6 +17,7 @@ from app.services.runtime import (
     current_pid,
     get_kernel_support_status,
     is_runtime_available,
+    reset_active_node_uptime,
     probe_node_latency_details,
     resolve_live_tunnel_status,
 )
@@ -45,6 +48,8 @@ async def status(
     live_status, live_error = resolve_live_tunnel_status(gateway_settings)
     gateway_settings.tunnel_status = live_status
     gateway_settings.tunnel_last_error = live_error
+    if live_status != "running":
+        reset_active_node_uptime(gateway_settings)
     db.add(gateway_settings)
     await db.flush()
     active_node = await db.get(EntryNode, gateway_settings.active_entry_node_id) if gateway_settings.active_entry_node_id else None
@@ -69,11 +74,15 @@ async def status(
             "latest_latency_target": probe["target"] if isinstance(probe["target"], str) else None,
             "latest_latency_via_interface": probe["via_interface"] if isinstance(probe["via_interface"], str) else None,
             "latest_latency_method": probe["method"] if isinstance(probe["method"], str) else None,
+            "uptime_seconds": max(int(time.time()) - gateway_settings.active_node_connected_at_epoch, 0)
+            if gateway_settings.active_node_connected_at_epoch and live_status == "running"
+            else 0,
         } if active_node else None,
         "entry_node_count": entry_node_count,
         "dns_rule_count": dns_rule_count,
         "allowed_client_cidrs": gateway_settings.allowed_client_cidrs,
         "gateway_enabled": gateway_settings.gateway_enabled,
+        "failover_enabled": gateway_settings.failover_enabled,
         "runtime_mode": gateway_settings.runtime_mode,
         "experimental_nftables": gateway_settings.experimental_nftables,
         "kernel_available": kernel_available,

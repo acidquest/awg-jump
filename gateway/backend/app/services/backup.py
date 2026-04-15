@@ -109,7 +109,7 @@ async def record_backup(db: AsyncSession, filename: str, size_bytes: int, kind: 
 async def build_diagnostics_payload(db: AsyncSession) -> dict:
     gateway_settings = await db.get(GatewaySettings, 1)
     routing_policy = await db.get(RoutingPolicy, 1)
-    entry_nodes = (await db.execute(select(EntryNode).order_by(EntryNode.id))).scalars().all()
+    entry_nodes = (await db.execute(select(EntryNode).order_by(EntryNode.position.asc(), EntryNode.id.asc()))).scalars().all()
     upstreams = (await db.execute(select(DnsUpstream).order_by(DnsUpstream.zone))).scalars().all()
     domain_rules = (await db.execute(select(DnsDomainRule).order_by(DnsDomainRule.domain))).scalars().all()
     active_node = gateway_settings.active_entry_node if gateway_settings else None
@@ -119,6 +119,7 @@ async def build_diagnostics_payload(db: AsyncSession) -> dict:
             "ui_language": gateway_settings.ui_language if gateway_settings else "en",
             "allowed_client_cidrs": gateway_settings.allowed_client_cidrs if gateway_settings else [],
             "experimental_nftables": gateway_settings.experimental_nftables if gateway_settings else False,
+            "failover_enabled": gateway_settings.failover_enabled if gateway_settings else False,
             "tunnel_status": gateway_settings.tunnel_status if gateway_settings else "stopped",
             "tunnel_last_error": gateway_settings.tunnel_last_error if gateway_settings else None,
         },
@@ -137,6 +138,7 @@ async def build_diagnostics_payload(db: AsyncSession) -> dict:
                 "id": node.id,
                 "name": node.name,
                 "endpoint": node.endpoint,
+                "position": node.position,
                 "is_active": node.is_active,
                 "latest_latency_ms": node.latest_latency_ms,
                 "latest_latency_at": node.latest_latency_at.isoformat() if node.latest_latency_at else None,

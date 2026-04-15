@@ -49,6 +49,7 @@ async def get_settings(
         "gateway_enabled": settings_row.gateway_enabled,
         "dns_intercept_enabled": settings_row.dns_intercept_enabled,
         "experimental_nftables": settings_row.experimental_nftables,
+        "failover_enabled": settings_row.failover_enabled,
         "kernel_available": kernel_available,
         "kernel_message": kernel_message,
         "active_entry_node_id": settings_row.active_entry_node_id,

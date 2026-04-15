@@ -219,6 +219,34 @@ input, select, textarea {
   color: var(--text-2);
 }
 
+.active-node-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.active-node-uptime {
+  text-align: right;
+}
+
+.active-node-uptime-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--warning);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.active-node-uptime-value {
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--warning);
+}
+
 .btn {
   display: inline-flex;
   align-items: center;

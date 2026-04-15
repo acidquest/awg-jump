@@ -7,24 +7,30 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.database import get_db
 from app.models import AdminUser, AuditEvent, EntryNode, FirstNodeBootstrapLog, FirstNodeBootstrapStatus, GatewaySettings, RoutingPolicy
 from app.security import get_current_user
 from app.services.conf_parser import parse_peer_conf, render_peer_conf, split_endpoint
 from app.services.first_node_bootstrap import bootstrap_first_node, cleanup_bootstrap_queue, get_bootstrap_queue
 from app.services.external_ip import refresh_external_ip_info
+from app.services.failover import (
+    append_node_to_order,
+    assign_active_node,
+    list_nodes_in_order,
+    move_node_by_direction,
+    remove_node_from_order,
+    start_tunnel_with_retries,
+)
 from app.services.routing import apply_local_passthrough, apply_routing_plan
 from app.services.runtime import (
-    probe_node_latency,
     probe_node_latency_details,
     probe_udp_endpoint,
+    remove_runtime_config,
     resolve_live_tunnel_status,
     resolve_tunnel_probe_target,
-    start_tunnel,
     stop_tunnel,
 )
 
@@ -67,6 +73,14 @@ class FirstNodeBootstrapRequest(BaseModel):
     remote_dir: str = Field(default="/opt/awg-jump", min_length=1, max_length=512)
     docker_namespace: str = Field(min_length=1, max_length=255)
     image_tag: str = Field(default="latest", min_length=1, max_length=128)
+
+
+class FailoverSettingsUpdate(BaseModel):
+    enabled: bool
+
+
+class EntryNodeMoveRequest(BaseModel):
+    direction: str = Field(pattern="^(up|down)$")
 
 
 def _serialize_bootstrap_log(log: FirstNodeBootstrapLog) -> dict:
@@ -120,6 +134,7 @@ def _to_payload(
         "udp_status": udp_status,
         "udp_detail": udp_detail,
         "is_active": node.is_active,
+        "position": node.position,
         "created_at": node.created_at.isoformat(),
     }
 
@@ -142,7 +157,7 @@ async def list_nodes(
     db: AsyncSession = Depends(get_db),
     user: AdminUser = Depends(get_current_user),
 ) -> list[dict]:
-    nodes = (await db.execute(select(EntryNode).order_by(EntryNode.id))).scalars().all()
+    nodes = await list_nodes_in_order(db)
     payloads: list[dict] = []
     for node in nodes:
         if node.is_active:
@@ -256,18 +271,6 @@ async def stream_first_node_bootstrap_log(
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-@router.get("/{node_id}")
-async def get_node(
-    node_id: int,
-    db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(get_current_user),
-) -> dict:
-    node = await db.get(EntryNode, node_id)
-    if node is None:
-        raise HTTPException(status_code=404, detail="Entry node not found")
-    return _to_payload(node)
-
-
 @router.post("/import", status_code=201)
 async def import_node(
     payload: ImportConfRequest,
@@ -290,25 +293,10 @@ async def import_node(
         persistent_keepalive=parsed.persistent_keepalive,
         obfuscation=parsed.obfuscation,
     )
+    await append_node_to_order(db, node)
     db.add(node)
     await db.flush()
     db.add(AuditEvent(event_type="entry_node.imported", payload={"entry_node_id": node.id, "name": node.name}))
-    await db.flush()
-    return _to_payload(node)
-
-
-@router.put("/{node_id}")
-async def update_node(
-    node_id: int,
-    payload: EntryNodeUpdate,
-    db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(get_current_user),
-) -> dict:
-    node = await db.get(EntryNode, node_id)
-    if node is None:
-        raise HTTPException(status_code=404, detail="Entry node not found")
-    node.name = payload.name
-    db.add(node)
     await db.flush()
     return _to_payload(node)
 
@@ -394,9 +382,94 @@ async def delete_node(
     if settings_row.active_entry_node_id == node.id:
         settings_row.active_entry_node_id = None
         settings_row.tunnel_status = "stopped"
+        settings_row.tunnel_last_error = None
+        settings_row.active_node_connected_at_epoch = None
+        settings_row.failover_unhealthy_since = None
         db.add(settings_row)
+        if settings_row.gateway_enabled:
+            await stop_tunnel(db, settings_row)
     await db.delete(node)
+    await db.flush()
+    remove_runtime_config(node.id)
+    await remove_node_from_order(db, node.id)
     return {"status": "deleted"}
+
+
+@router.get("/failover")
+async def get_failover_settings(
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(get_current_user),
+) -> dict:
+    settings_row = await db.get(GatewaySettings, 1)
+    return {
+        "enabled": settings_row.failover_enabled,
+        "last_error": settings_row.failover_last_error,
+        "last_event_at": settings_row.failover_last_event_at.isoformat() if settings_row.failover_last_event_at else None,
+    }
+
+
+@router.put("/failover")
+async def update_failover_settings(
+    payload: FailoverSettingsUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(get_current_user),
+) -> dict:
+    settings_row = await db.get(GatewaySettings, 1)
+    settings_row.failover_enabled = payload.enabled
+    if not payload.enabled:
+        settings_row.failover_unhealthy_since = None
+        settings_row.failover_last_error = None
+    db.add(settings_row)
+    await db.flush()
+    return {
+        "enabled": settings_row.failover_enabled,
+        "last_error": settings_row.failover_last_error,
+        "last_event_at": settings_row.failover_last_event_at.isoformat() if settings_row.failover_last_event_at else None,
+    }
+
+
+@router.put("/{node_id}")
+async def update_node(
+    node_id: int,
+    payload: EntryNodeUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(get_current_user),
+) -> dict:
+    node = await db.get(EntryNode, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="Entry node not found")
+    node.name = payload.name
+    db.add(node)
+    await db.flush()
+    return _to_payload(node)
+
+
+@router.get("/{node_id}")
+async def get_node(
+    node_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(get_current_user),
+) -> dict:
+    node = await db.get(EntryNode, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="Entry node not found")
+    return _to_payload(node)
+
+
+@router.post("/{node_id}/move")
+async def move_node(
+    node_id: int,
+    payload: EntryNodeMoveRequest,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(get_current_user),
+) -> dict:
+    node = await db.get(EntryNode, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="Entry node not found")
+    await move_node_by_direction(db, node, payload.direction)
+    db.add(AuditEvent(event_type="entry_node.moved", payload={"entry_node_id": node.id, "direction": payload.direction}))
+    await db.flush()
+    return {"status": "moved"}
 
 
 @router.post("/{node_id}/activate")
@@ -409,28 +482,22 @@ async def activate_node(
     if node is None:
         raise HTTPException(status_code=404, detail="Entry node not found")
 
-    await db.execute(update(EntryNode).values(is_active=False))
-    node.is_active = True
-    node.latest_latency_ms = None
-    node.latest_latency_at = None
-    node.last_error = None if resolve_tunnel_probe_target(node) else "Latency probe target is not configured"
     settings_row = await db.get(GatewaySettings, 1)
     live_status, live_error = resolve_live_tunnel_status(settings_row)
     settings_row.tunnel_status = live_status
     settings_row.tunnel_last_error = live_error
-    settings_row.active_entry_node_id = node.id
-    db.add(node)
-    db.add(settings_row)
-    db.add(AuditEvent(event_type="entry_node.activated", payload={"entry_node_id": node.id}))
-    await db.flush()
+    await assign_active_node(db, settings_row, node, record_event=True)
     if not settings_row.gateway_enabled:
         policy = await db.get(RoutingPolicy, 1)
         await refresh_external_ip_info(db, settings_row, policy, force=True)
         return _to_payload(node)
     if live_status == "running":
-        result = await start_tunnel(db, node, settings_row)
+        result, probe = await start_tunnel_with_retries(db, node, settings_row)
         if result["status"] == "running":
-            _refresh_latency_for_active_tunnel(node)
+            latency_ms = probe["latency_ms"]
+            node.latest_latency_ms = latency_ms if isinstance(latency_ms, float) else None
+            node.latest_latency_at = datetime.now(timezone.utc)
+            node.last_error = None if latency_ms is not None else "Tunnel probe failed after startup"
             policy = await db.get(RoutingPolicy, 1)
             try:
                 apply_routing_plan(settings_row, policy, node)
@@ -475,9 +542,12 @@ async def start_active_tunnel(
     if settings_row.active_entry_node_id is None:
         raise HTTPException(status_code=400, detail="No active entry node selected")
     node = await db.get(EntryNode, settings_row.active_entry_node_id)
-    result = await start_tunnel(db, node, settings_row)
+    result, probe = await start_tunnel_with_retries(db, node, settings_row)
     if result["status"] == "running":
-        _refresh_latency_for_active_tunnel(node)
+        latency_ms = probe["latency_ms"]
+        node.latest_latency_ms = latency_ms if isinstance(latency_ms, float) else None
+        node.latest_latency_at = datetime.now(timezone.utc)
+        node.last_error = None if latency_ms is not None else "Tunnel probe failed after startup"
         policy = await db.get(RoutingPolicy, 1)
         try:
             apply_routing_plan(settings_row, policy, node)

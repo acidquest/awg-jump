@@ -18,9 +18,10 @@ from app.models import EntryNode, GatewaySettings, RoutingPolicy
 from app.routers import auth, backup, dns, nodes, routing, settings as settings_router, system
 from app.services.dns_runtime import restart_dnsmasq, stop_dnsmasq
 from app.services.external_ip import EXTERNAL_IP_REFRESH_INTERVAL_SECONDS, refresh_external_ip_info, validate_service_pair
+from app.services.failover import evaluate_failover_health, failover_to_next_available, start_tunnel_with_retries
 from app.services.routing import apply_local_passthrough, apply_routing_plan, sync_firewall_backend
 from app.services.traffic_sources import migrate_legacy_source_settings
-from app.services.runtime import start_tunnel, stop_tunnel
+from app.services.runtime import reset_active_node_uptime, resolve_live_tunnel_status, stop_tunnel
 from app.services.system_metrics import collect_system_metrics
 
 
@@ -81,6 +82,16 @@ async def _ensure_sqlite_columns() -> None:
             await conn.execute(
                 text("ALTER TABLE gateway_settings ADD COLUMN experimental_nftables BOOLEAN NOT NULL DEFAULT 0")
             )
+        if "failover_enabled" not in columns:
+            await conn.execute(
+                text("ALTER TABLE gateway_settings ADD COLUMN failover_enabled BOOLEAN NOT NULL DEFAULT 0")
+            )
+        if "failover_unhealthy_since" not in columns:
+            await conn.execute(text("ALTER TABLE gateway_settings ADD COLUMN failover_unhealthy_since DATETIME"))
+        if "failover_last_event_at" not in columns:
+            await conn.execute(text("ALTER TABLE gateway_settings ADD COLUMN failover_last_event_at DATETIME"))
+        if "failover_last_error" not in columns:
+            await conn.execute(text("ALTER TABLE gateway_settings ADD COLUMN failover_last_error TEXT"))
         if "external_ip_local_service_url" not in columns:
             await conn.execute(
                 text(
@@ -105,6 +116,8 @@ async def _ensure_sqlite_columns() -> None:
             await conn.execute(text("ALTER TABLE gateway_settings ADD COLUMN external_ip_local_checked_at DATETIME"))
         if "external_ip_vpn_checked_at" not in columns:
             await conn.execute(text("ALTER TABLE gateway_settings ADD COLUMN external_ip_vpn_checked_at DATETIME"))
+        if "active_node_connected_at_epoch" not in columns:
+            await conn.execute(text("ALTER TABLE gateway_settings ADD COLUMN active_node_connected_at_epoch INTEGER"))
         local_service_url, vpn_service_url = validate_service_pair(
             settings.external_ip_local_service_url,
             settings.external_ip_vpn_service_url,
@@ -124,6 +137,22 @@ async def _ensure_sqlite_columns() -> None:
         if "probe_ip" not in columns:
             await conn.execute(
                 text("ALTER TABLE entry_nodes ADD COLUMN probe_ip VARCHAR(64)")
+            )
+        if "position" not in columns:
+            await conn.execute(
+                text("ALTER TABLE entry_nodes ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
+            )
+            await conn.execute(
+                text(
+                    """
+                    WITH ordered AS (
+                        SELECT id, ROW_NUMBER() OVER (ORDER BY id) - 1 AS rn
+                        FROM entry_nodes
+                    )
+                    UPDATE entry_nodes
+                    SET position = (SELECT rn FROM ordered WHERE ordered.id = entry_nodes.id)
+                    """
+                )
             )
         result = await conn.execute(text("PRAGMA table_info(system_metrics)"))
         metric_columns = {row[1] for row in result.fetchall()}
@@ -190,7 +219,7 @@ async def _restore_runtime_state(session: AsyncSession) -> None:
         return
 
     logger.info("[gateway-startup] restoring tunnel for active node id=%s name=%s", active_node.id, active_node.name)
-    result = await start_tunnel(session, active_node, settings_row)
+    result, _probe = await start_tunnel_with_retries(session, active_node, settings_row)
     if result.get("status") == "running":
         policy = await session.get(RoutingPolicy, 1)
         try:
@@ -202,6 +231,19 @@ async def _restore_runtime_state(session: AsyncSession) -> None:
             logger.error("[gateway-startup] routing restore failed: %s", exc)
         session.add(settings_row)
         await session.commit()
+        return
+
+    if settings_row.failover_enabled:
+        replacement = await failover_to_next_available(
+            session,
+            settings_row,
+            reason=f"Startup restore failed for node {active_node.name}: {settings_row.tunnel_last_error or 'unknown error'}",
+            failed_node_id=active_node.id,
+        )
+        if replacement is not None:
+            await session.commit()
+            return
+    await session.commit()
 
 
 async def _metrics_loop(stop_event: asyncio.Event) -> None:
@@ -231,12 +273,37 @@ async def _external_ip_loop(stop_event: asyncio.Event) -> None:
             continue
 
 
+async def _failover_loop(stop_event: asyncio.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            async with AsyncSessionLocal() as session:
+                settings_row = await session.get(GatewaySettings, 1)
+                if settings_row is not None:
+                    live_status, live_error = resolve_live_tunnel_status(settings_row)
+                    settings_row.tunnel_status = live_status
+                    settings_row.tunnel_last_error = live_error
+                    if live_status != "running":
+                        reset_active_node_uptime(settings_row)
+                    session.add(settings_row)
+                    await session.flush()
+                    await evaluate_failover_health(session, settings_row)
+                    await session.commit()
+        except Exception as exc:
+            logger.error("[gateway-failover] cycle failed: %s", exc)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=10)
+        except asyncio.TimeoutError:
+            continue
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     metrics_stop = asyncio.Event()
     external_ip_stop = asyncio.Event()
+    failover_stop = asyncio.Event()
     metrics_task: asyncio.Task | None = None
     external_ip_task: asyncio.Task | None = None
+    failover_task: asyncio.Task | None = None
     ensure_directories()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -271,13 +338,17 @@ async def lifespan(app: FastAPI):
             logger.error("[gateway-startup] external IP refresh failed: %s", exc)
     metrics_task = asyncio.create_task(_metrics_loop(metrics_stop))
     external_ip_task = asyncio.create_task(_external_ip_loop(external_ip_stop))
+    failover_task = asyncio.create_task(_failover_loop(failover_stop))
     yield
     metrics_stop.set()
     external_ip_stop.set()
+    failover_stop.set()
     if metrics_task is not None:
         await metrics_task
     if external_ip_task is not None:
         await external_ip_task
+    if failover_task is not None:
+        await failover_task
     async with AsyncSessionLocal() as session:
         gateway_settings = await session.get(GatewaySettings, 1)
         if gateway_settings is not None:

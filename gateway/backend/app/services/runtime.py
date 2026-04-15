@@ -25,6 +25,14 @@ logger = logging.getLogger(__name__)
 _PING_TIME_RE = re.compile(r"time[=<]([0-9]+(?:\.[0-9]+)?)")
 
 
+def reset_active_node_uptime(gateway_settings: GatewaySettings) -> None:
+    gateway_settings.active_node_connected_at_epoch = None
+
+
+def mark_active_node_connected(gateway_settings: GatewaySettings) -> None:
+    gateway_settings.active_node_connected_at_epoch = int(time.time())
+
+
 def _stream_process_logs(proc: subprocess.Popen, node_name: str) -> None:
     if proc.stderr is None:
         return
@@ -211,11 +219,20 @@ def write_runtime_config(node: EntryNode) -> str:
     return str(config_path)
 
 
+def remove_runtime_config(node_id: int) -> None:
+    config_path = Path(settings.wg_config_dir) / f"entry-node-{node_id}.conf"
+    try:
+        config_path.unlink()
+    except FileNotFoundError:
+        return
+
+
 async def start_tunnel(db: AsyncSession, node: EntryNode, gateway_settings: GatewaySettings) -> dict:
     global _PROCESS
 
     config_path = write_runtime_config(node)
     logger.info("[awg-runtime] requested tunnel start for node=%s endpoint=%s config=%s", node.name, node.endpoint, config_path)
+    reset_active_node_uptime(gateway_settings)
     if not is_runtime_available():
         gateway_settings.tunnel_status = TunnelStatus.error.value
         gateway_settings.tunnel_last_error = "amneziawg-go or awg binary is not available in the container"
@@ -283,6 +300,7 @@ async def start_tunnel(db: AsyncSession, node: EntryNode, gateway_settings: Gate
             context="ip-link-up",
         )
         gateway_settings.tunnel_status = TunnelStatus.running.value
+        mark_active_node_connected(gateway_settings)
         logger.info("[awg-runtime] tunnel is running for node=%s pid=%s", node.name, current_pid())
     except subprocess.CalledProcessError as exc:
         gateway_settings.tunnel_status = TunnelStatus.error.value
@@ -327,6 +345,7 @@ async def stop_tunnel(db: AsyncSession, gateway_settings: GatewaySettings) -> di
     stop_tunnel_process()
     gateway_settings.tunnel_status = TunnelStatus.stopped.value
     gateway_settings.tunnel_last_error = None
+    reset_active_node_uptime(gateway_settings)
     gateway_settings.tunnel_last_applied_at = datetime.now(timezone.utc)
     db.add(gateway_settings)
     await db.flush()

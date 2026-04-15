@@ -23,11 +23,18 @@ type NodeItem = {
   udp_status: string | null
   udp_detail: string | null
   is_active: boolean
+  position: number
   tunnel_address: string
   dns_servers: string[]
   allowed_ips: string[]
   persistent_keepalive: number | null
   obfuscation: Record<string, string | number>
+}
+
+type FailoverSettings = {
+  enabled: boolean
+  last_error: string | null
+  last_event_at: string | null
 }
 
 type FirstNodeBootstrapLog = {
@@ -54,6 +61,7 @@ type SystemStatus = {
     name: string
     endpoint: string
     latest_latency_ms: number | null
+    uptime_seconds: number
     latest_latency_target?: string | null
     latest_latency_via_interface?: string | null
     latest_latency_method?: string | null
@@ -122,6 +130,7 @@ type GatewaySettingsData = {
   gateway_enabled: boolean
   dns_intercept_enabled: boolean
   experimental_nftables: boolean
+  failover_enabled: boolean
   kernel_available: boolean
   kernel_message: string | null
   active_entry_node_id?: number | null
@@ -227,6 +236,19 @@ function toRoutingPolicyPayload(data: RoutingPolicyData): RoutingPolicyPayload {
     kill_switch_enabled: data.kill_switch_enabled,
     strict_mode: data.strict_mode,
   }
+}
+
+function fmtNodeUptime(totalSeconds: number, t: (key: 'daysShort' | 'hoursShort' | 'minutesShort') => string) {
+  const safeSeconds = Number.isFinite(totalSeconds) ? Math.max(0, Math.floor(totalSeconds)) : 0
+  const totalMinutes = Math.floor(safeSeconds / 60)
+  const days = Math.floor(totalMinutes / (60 * 24))
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60)
+  const minutes = totalMinutes % 60
+  const parts: string[] = []
+  if (days > 0) parts.push(`${days}${t('daysShort')}`)
+  if (days > 0 || hours > 0) parts.push(`${hours}${t('hoursShort')}`)
+  parts.push(`${minutes}${t('minutesShort')}`)
+  return parts.join(' ')
 }
 
 function useLoader<T>(url: string, fallback: T) {
@@ -560,8 +582,18 @@ function DashboardPage() {
           <div className="card-title" style={{ marginBottom: 10 }}>{t('activeNode')}</div>
           {data.active_entry_node ? (
             <>
-              <div className="stat-value" style={{ fontSize: 20 }}>{data.active_entry_node.name}</div>
-              <div className="stat-label">{data.active_entry_node.endpoint}</div>
+              <div className="active-node-summary">
+                <div>
+                  <div className="stat-value" style={{ fontSize: 20 }}>{data.active_entry_node.name}</div>
+                  <div className="stat-label">{data.active_entry_node.endpoint}</div>
+                </div>
+                <div className="active-node-uptime">
+                  <div className="active-node-uptime-label">{t('uptime')}</div>
+                  <div className="active-node-uptime-value">
+                    {fmtNodeUptime(data.active_entry_node?.uptime_seconds ?? 0, t)}
+                  </div>
+                </div>
+              </div>
               <div className="text-muted text-sm" style={{ marginTop: 10 }}>
                 {t('latency')}: {fmtLatency(data.active_entry_node.latest_latency_ms)}
                 <br />
@@ -894,9 +926,15 @@ function PolicyPage() {
 function NodesPage() {
   const { t } = useI18n()
   const { data, loading, error, reload } = useLoader<NodeItem[]>('/nodes', [])
+  const { data: failover, reload: reloadFailover } = useLoader<FailoverSettings>('/nodes/failover', {
+    enabled: false,
+    last_error: null,
+    last_event_at: null,
+  })
   const { data: bootstrapLogs, reload: reloadBootstrapLogs } = useLoader<FirstNodeBootstrapLog[]>('/nodes/bootstrap-first/logs', [])
   const [message, setMessage] = useState('')
   const [editNode, setEditNode] = useState<NodeItem | null>(null)
+  const [deleteNode, setDeleteNode] = useState<NodeItem | null>(null)
   const [showAddNode, setShowAddNode] = useState(false)
   const [showBootstrapModal, setShowBootstrapModal] = useState(false)
   const [selectedBootstrapLog, setSelectedBootstrapLog] = useState<FirstNodeBootstrapLog | null>(null)
@@ -919,6 +957,24 @@ function NodesPage() {
     await reload()
   }
 
+  async function toggleFailover(enabled: boolean) {
+    await api.put('/nodes/failover', { enabled })
+    setMessage(t('failoverUpdated'))
+    await reloadFailover()
+  }
+
+  async function moveNode(nodeId: number, direction: 'up' | 'down') {
+    await api.post(`/nodes/${nodeId}/move`, { direction })
+    await reload()
+  }
+
+  async function removeNode(node: NodeItem) {
+    await api.delete(`/nodes/${node.id}`)
+    setDeleteNode(null)
+    setMessage(`${t('deleted')}: ${node.name}`)
+    await reload()
+  }
+
   return (
     <>
       <div className="page-header">
@@ -936,7 +992,19 @@ function NodesPage() {
       {message ? <div className="info-box">{message}</div> : null}
       {error ? <div className="error-box">{error}</div> : null}
       <div className="card" style={{ marginBottom: 20 }}>
-        <div className="card-title" style={{ marginBottom: 14 }}>{t('savedNodes')}</div>
+        <div className="card-header" style={{ marginBottom: 14 }}>
+          <div>
+            <div className="card-title">{t('savedNodes')}</div>
+            {failover.last_error ? <div className="text-muted text-sm" style={{ marginTop: 6 }}>{failover.last_error}</div> : null}
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm">{t('failover')}</span>
+            <label className="toggle" title={t('failover')}>
+              <input type="checkbox" checked={failover.enabled} onChange={(event) => { void toggleFailover(event.target.checked) }} />
+              <span className="toggle-slider" />
+            </label>
+          </div>
+        </div>
         {loading ? <div style={{ padding: 40, textAlign: 'center' }}><span className="spinner" /></div> : null}
         <div className="table-wrap">
           <table>
@@ -953,7 +1021,11 @@ function NodesPage() {
             <tbody>
               {data.length === 0 ? (
                 <tr><td colSpan={6} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>{t('noEntryNodes')}</td></tr>
-              ) : data.map((node) => (
+              ) : data.map((node, index) => {
+                const hasPinnedActive = data[0]?.is_active
+                const canMoveUp = !node.is_active && index > (hasPinnedActive ? 1 : 0)
+                const canMoveDown = !node.is_active && index < data.length - 1
+                return (
                 <tr key={node.id} className={node.is_active ? 'active-node' : ''}>
                   <td>{node.name}</td>
                   <td className="text-mono">{node.endpoint}</td>
@@ -973,12 +1045,15 @@ function NodesPage() {
                       >
                         {t('activate')}
                       </button>
+                      <button className="btn btn-ghost btn-sm" title={t('moveUp')} onClick={() => void moveNode(node.id, 'up')} disabled={!canMoveUp}>↑</button>
+                      <button className="btn btn-ghost btn-sm" title={t('moveDown')} onClick={() => void moveNode(node.id, 'down')} disabled={!canMoveDown}>↓</button>
                       <button className="btn btn-ghost btn-sm" onClick={() => setEditNode(node)}>{t('edit')}</button>
+                      <button className="btn btn-danger btn-sm" onClick={() => setDeleteNode(node)}>{t('delete')}</button>
                     </div>
                   </td>
                   <td>{node.is_active ? <span className="badge badge-online">{t('active')}</span> : '—'}</td>
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
         </div>
@@ -1045,6 +1120,15 @@ function NodesPage() {
           }}
         />
       ) : null}
+      {deleteNode ? (
+        <ConfirmDeleteNodeModal
+          node={deleteNode}
+          onClose={() => setDeleteNode(null)}
+          onConfirm={async () => {
+            await removeNode(deleteNode)
+          }}
+        />
+      ) : null}
       {selectedBootstrapLog ? (
         <LogViewerModal
           title={t('deployLog')}
@@ -1080,6 +1164,52 @@ function LogViewerModal({ title, logOutput, onClose }: { title: string; logOutpu
         </div>
         <div className="terminal" style={{ minHeight: 220 }}>
           <pre style={{ margin: 0, color: '#a8b5c2', whiteSpace: 'pre-wrap' }}>{logOutput || '(empty)'}</pre>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ConfirmDeleteNodeModal({
+  node,
+  onClose,
+  onConfirm,
+}: {
+  node: NodeItem
+  onClose: () => void
+  onConfirm: () => Promise<void>
+}) {
+  const { t } = useI18n()
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  async function submit() {
+    setSaving(true)
+    setError('')
+    try {
+      await onConfirm()
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || err.message || 'Delete failed')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">{t('deleteNode')}</div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>Close</button>
+        </div>
+        <div className="text-muted" style={{ marginBottom: 14 }}>
+          {t('deleteNodeConfirmation')}: <span className="text-accent">{node.name}</span>
+        </div>
+        {error ? <div className="error-box">{error}</div> : null}
+        <div className="flex gap-2" style={{ justifyContent: 'flex-end' }}>
+          <button className="btn btn-secondary" type="button" onClick={onClose} disabled={saving}>{t('cancel')}</button>
+          <button className="btn btn-danger" type="button" onClick={() => void submit()} disabled={saving}>
+            {saving ? t('loading') : t('delete')}
+          </button>
         </div>
       </div>
     </div>
@@ -1878,6 +2008,7 @@ function SettingsPage() {
     gateway_enabled: true,
     dns_intercept_enabled: true,
     experimental_nftables: false,
+    failover_enabled: false,
     kernel_available: false,
     kernel_message: null,
     external_ip_info: {
