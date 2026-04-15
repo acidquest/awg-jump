@@ -134,8 +134,6 @@ export const en = {
   disabled: 'disabled',
   configured: 'configured',
   resolved: 'resolved',
-  strictMode: 'Strict mode',
-  relaxedMode: 'Relaxed mode',
   backupDownloaded: 'Backup downloaded',
   backupRestored: 'Backup restored, restart the container to reload runtime state',
   filename: 'Filename',

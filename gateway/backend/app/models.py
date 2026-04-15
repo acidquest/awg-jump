@@ -149,7 +149,6 @@ class RoutingPolicy(Base):
     invert_geoip: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     default_policy: Mapped[str] = mapped_column(String(16), default="vpn", nullable=False)
     kill_switch_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    strict_mode: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_applied_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

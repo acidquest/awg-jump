@@ -134,8 +134,6 @@ export const ru = {
   disabled: 'выключено',
   configured: 'настроено',
   resolved: 'разрешено',
-  strictMode: 'Строгий режим',
-  relaxedMode: 'Нестрогий режим',
   backupDownloaded: 'Backup скачан',
   backupRestored: 'Backup восстановлен, перезапусти контейнер для полной загрузки runtime state',
   filename: 'Файл',

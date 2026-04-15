@@ -5,6 +5,13 @@ from collections.abc import Iterable
 from app.models import DnsDomainRule, DnsUpstream
 
 
+def _to_dnsmasq_domain(domain: str) -> str:
+    normalized = domain.strip().strip(".").lower()
+    if not normalized:
+        raise ValueError("Domain cannot be empty")
+    return normalized.encode("idna").decode("ascii")
+
+
 def build_dnsmasq_preview(
     upstreams: Iterable[DnsUpstream],
     domain_rules: Iterable[DnsDomainRule],
@@ -30,9 +37,16 @@ def build_dnsmasq_preview(
     for rule in sorted(domain_rules, key=lambda item: item.domain):
         if not rule.enabled or rule.zone != "local":
             continue
+        dnsmasq_domain = _to_dnsmasq_domain(rule.domain)
         for server in local_servers:
-            lines.append(f"server=/{rule.domain}/{server}")
-    fqdn_values = sorted({item.strip().lower().strip(".") for item in (fqdn_prefixes or []) if item.strip()})
+            lines.append(f"server=/{dnsmasq_domain}/{server}")
+    fqdn_values = sorted(
+        {
+            _to_dnsmasq_domain(item)
+            for item in (fqdn_prefixes or [])
+            if item and item.strip().strip(".")
+        }
+    )
     if fqdn_values:
         lines.append("")
         lines.append(f"# FQDN prefixes -> {'nft set' if use_nftset else 'ipset'}")

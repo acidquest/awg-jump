@@ -28,7 +28,6 @@ def make_policy():
         geoip_ipset_name="routing_prefixes",
         prefixes_route_local=True,
         kill_switch_enabled=True,
-        strict_mode=True,
     )
 
 
@@ -40,9 +39,9 @@ def test_plan_enables_safe_block_without_active_node(monkeypatch) -> None:
     monkeypatch.setattr("app.services.routing._default_route", lambda: ("eth0", "192.0.2.1"))
     monkeypatch.setattr("app.services.routing._interface_exists", lambda _: True)
     monkeypatch.setattr("app.services.routing.load_cached_country", lambda _: [])
-    plan = build_routing_plan(make_settings(), make_policy(), None)
+    plan = build_routing_plan(make_settings(source_cidrs=["10.10.0.0/24"]), make_policy(), None)
     assert not plan["safe_to_apply"]
-    assert any("REJECT" in command for command in plan["commands"])
+    assert any("AWG_GW_FORWARD -s 10.10.0.0/24 ! -o awg-gw0 -m mark --mark 0x2 -j DROP" in command for command in plan["commands"])
     assert "No active entry node selected" in plan["warnings"]
     assert "1.1.1.1/32" in plan["manual_prefixes"]
 
@@ -150,6 +149,7 @@ def test_plan_marks_localhost_output_for_both_destinations(monkeypatch) -> None:
     assert any("AWG_GW_OUTPUT -m set --match-set routing_prefixes_geoip dst -j MARK --set-mark 0x1" in command for command in plan["commands"])
     assert any(command == "iptables -t mangle -A AWG_GW_OUTPUT -j MARK --set-mark 0x2" for command in plan["commands"])
     assert any(command == "ip rule add fwmark 0x1 table 200" for command in plan["commands"])
+    assert not any("iptables -t filter -A AWG_GW_OUTPUT" in command for command in plan["commands"])
 
 
 def test_plan_handles_localhost_and_prerouting_selectors_together(monkeypatch) -> None:

@@ -38,3 +38,4 @@ frontend/.vite/
 
 # Dev docs
 dev_docs/
+pytest.ini

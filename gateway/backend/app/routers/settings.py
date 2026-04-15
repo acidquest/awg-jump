@@ -90,7 +90,10 @@ async def update_settings(
     policy = await db.get(RoutingPolicy, 1)
     if policy:
         sync_firewall_backend(settings_row, policy)
-    await restart_dnsmasq(db)
+    try:
+        await restart_dnsmasq(db)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to restart dnsmasq: {exc}") from exc
     active_node = await db.get(EntryNode, settings_row.active_entry_node_id) if settings_row.active_entry_node_id else None
     plan = build_routing_plan(settings_row, policy, active_node) if policy else None
     if settings_row.gateway_enabled and policy and active_node and plan and plan["safe_to_apply"]:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import pwd
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -99,9 +101,66 @@ async def restart_dnsmasq(db: AsyncSession) -> dict:
     return status()
 
 
+def _read_pidfile() -> int | None:
+    try:
+        raw_value = pid_path().read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+    if not raw_value:
+        return None
+    try:
+        return int(raw_value)
+    except ValueError:
+        logger.warning("[gateway-dns] invalid pid file contents: %r", raw_value)
+        return None
+
+
+def _remove_pidfile() -> None:
+    try:
+        pid_path().unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.warning("[gateway-dns] failed to remove pid file %s: %s", pid_path(), exc)
+
+
+def _terminate_pid(pid: int) -> None:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        _remove_pidfile()
+        return
+    except OSError as exc:
+        logger.warning("[gateway-dns] failed to terminate dnsmasq pid=%s: %s", pid, exc)
+        return
+
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            _remove_pidfile()
+            return
+        time.sleep(0.1)
+
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError as exc:
+        logger.warning("[gateway-dns] failed to kill dnsmasq pid=%s: %s", pid, exc)
+        return
+    _remove_pidfile()
+
+
 def stop_dnsmasq() -> None:
     global _DNS_PROCESS
     if _DNS_PROCESS is None:
+        pid = _read_pidfile()
+        if pid is not None:
+            _terminate_pid(pid)
         return
     if _DNS_PROCESS.poll() is None:
         _DNS_PROCESS.terminate()
@@ -109,4 +168,5 @@ def stop_dnsmasq() -> None:
             _DNS_PROCESS.wait(timeout=3)
         except Exception:
             _DNS_PROCESS.kill()
+    _remove_pidfile()
     _DNS_PROCESS = None

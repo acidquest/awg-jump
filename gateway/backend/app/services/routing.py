@@ -718,6 +718,20 @@ def _build_filter_forward_rules_nft(
     return rules
 
 
+def _build_kill_switch_forward_rules(gateway_settings: GatewaySettings) -> list[list[str]]:
+    return [
+        ["-s", selector, "!", "-o", settings.tunnel_interface, "-m", "mark", "--mark", settings.fwmark_vpn, "-j", "DROP"]
+        for selector in non_localhost_selectors(gateway_settings)
+    ]
+
+
+def _build_kill_switch_forward_rules_nft(gateway_settings: GatewaySettings) -> list[str]:
+    return [
+        f'ip saddr {selector} oifname != "{settings.tunnel_interface}" meta mark {settings.fwmark_vpn} drop'
+        for selector in non_localhost_selectors(gateway_settings)
+    ]
+
+
 def _build_local_passthrough_rules(gateway_settings: GatewaySettings, default_iface: str | None) -> list[list[str]]:
     rules: list[list[str]] = []
     if default_iface is None:
@@ -786,7 +800,6 @@ def build_routing_plan(
         and default_iface is not None
         and gateway_settings.tunnel_status == TunnelStatus.running.value
         and _interface_exists(settings.tunnel_interface)
-        and (not policy.strict_mode or bool(cached_prefixes) or bool(effective_fqdn_prefixes(policy, gateway_settings)))
     )
 
     commands: list[str] = [
@@ -860,16 +873,16 @@ def build_routing_plan(
             )
 
     if policy.kill_switch_enabled:
-        action = "reject" if policy.strict_mode else "drop"
         if backend == IPTABLES_BACKEND:
-            commands.append(
-                f"iptables -t filter -A {FILTER_OUTPUT_CHAIN} ! -o {settings.tunnel_interface} -m mark --mark {settings.fwmark_vpn} -j {action.upper()}"
-            )
-            commands.append(
-                f"iptables -t filter -A {FILTER_FORWARD_CHAIN} ! -o {settings.tunnel_interface} -m mark --mark {settings.fwmark_vpn} -j {action.upper()}"
+            commands.extend(
+                _iptables_command("filter", FILTER_FORWARD_CHAIN, rule)
+                for rule in _build_kill_switch_forward_rules(gateway_settings)
             )
         else:
-            commands.append(_nft_command(NFT_CHAIN_FILTER_OUTPUT, f'oifname != "{settings.tunnel_interface}" meta mark {settings.fwmark_vpn} {action}'))
+            commands.extend(
+                f"nft add rule ip filter {FILTER_FORWARD_CHAIN} {expr}"
+                for expr in _build_kill_switch_forward_rules_nft(gateway_settings)
+            )
 
     manager = _set_manager(gateway_settings)
     return {
@@ -882,7 +895,6 @@ def build_routing_plan(
         "manual_prefixes": policy.manual_prefixes,
         "fqdn_prefixes": effective_fqdn_prefixes(policy, gateway_settings),
         "kill_switch_enabled": policy.kill_switch_enabled,
-        "strict_mode": policy.strict_mode,
         "dns_intercept_enabled": gateway_settings.dns_intercept_enabled,
         "warnings": warnings,
         "commands": commands,
@@ -931,8 +943,8 @@ def apply_routing_plan(
         for expr in _build_filter_forward_rules_nft(gateway_settings, default_iface):
             _append_compat_nft("filter", FILTER_FORWARD_CHAIN, expr)
         if policy.kill_switch_enabled:
-            action = "reject" if policy.strict_mode else "drop"
-            _append_nft(NFT_CHAIN_FILTER_OUTPUT, f'oifname != "{settings.tunnel_interface}" meta mark {settings.fwmark_vpn} {action}')
+            for expr in _build_kill_switch_forward_rules_nft(gateway_settings):
+                _append_compat_nft("filter", FILTER_FORWARD_CHAIN, expr)
     else:
         _teardown_nftables_stack()
         prefixes = sync_prefix_ipset(policy, gateway_settings)
@@ -966,16 +978,14 @@ def apply_routing_plan(
             _append("filter", FILTER_FORWARD_CHAIN, rule)
 
         if policy.kill_switch_enabled:
-            action = "REJECT" if policy.strict_mode else "DROP"
-            _append("filter", FILTER_OUTPUT_CHAIN, ["!", "-o", settings.tunnel_interface, "-m", "mark", "--mark", settings.fwmark_vpn, "-j", action])
-            _append("filter", FILTER_FORWARD_CHAIN, ["!", "-o", settings.tunnel_interface, "-m", "mark", "--mark", settings.fwmark_vpn, "-j", action])
+            for rule in _build_kill_switch_forward_rules(gateway_settings):
+                _append("filter", FILTER_FORWARD_CHAIN, rule)
 
     logger.info(
-        "[awg-routing] applied routing plan backend=%s source_mode=%s kill_switch=%s strict_mode=%s",
+        "[awg-routing] applied routing plan backend=%s source_mode=%s kill_switch=%s",
         firewall_backend(gateway_settings),
         gateway_settings.traffic_source_mode,
         policy.kill_switch_enabled,
-        policy.strict_mode,
     )
     return plan
 

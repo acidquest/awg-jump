@@ -29,7 +29,6 @@ class RoutingPolicyUpdate(BaseModel):
     fqdn_prefixes: list[str] = []
     prefixes_route_local: bool
     kill_switch_enabled: bool
-    strict_mode: bool
 
 
 class CountryPayload(BaseModel):
@@ -137,7 +136,6 @@ async def get_policy(
         "geoip_ipset_name": policy.geoip_ipset_name,
         "prefixes_route_local": policy.prefixes_route_local,
         "kill_switch_enabled": policy.kill_switch_enabled,
-        "strict_mode": policy.strict_mode,
         "prefix_summary": build_prefix_summary(policy, settings_row),
         "last_applied_at": policy.last_applied_at.isoformat() if policy.last_applied_at else None,
         "last_error": policy.last_error,
@@ -162,7 +160,6 @@ async def update_policy(
     policy.fqdn_prefixes = sorted({_normalize_fqdn(item) for item in payload.fqdn_prefixes})
     policy.prefixes_route_local = payload.prefixes_route_local
     policy.kill_switch_enabled = payload.kill_switch_enabled
-    policy.strict_mode = payload.strict_mode
     policy.geoip_ipset_name = "routing_prefixes"
     db.add(policy)
     await db.flush()

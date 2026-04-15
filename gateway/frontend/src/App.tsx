@@ -173,7 +173,6 @@ type RoutingPolicyData = {
   geoip_ipset_name: string
   prefixes_route_local: boolean
   kill_switch_enabled: boolean
-  strict_mode: boolean
   prefix_summary: PrefixSummary
 }
 
@@ -186,7 +185,6 @@ type RoutingPolicyPayload = {
   fqdn_prefixes: string[]
   prefixes_route_local: boolean
   kill_switch_enabled: boolean
-  strict_mode: boolean
 }
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -234,7 +232,6 @@ function toRoutingPolicyPayload(data: RoutingPolicyData): RoutingPolicyPayload {
     fqdn_prefixes: data.fqdn_prefixes,
     prefixes_route_local: data.prefixes_route_local,
     kill_switch_enabled: data.kill_switch_enabled,
-    strict_mode: data.strict_mode,
   }
 }
 
@@ -725,7 +722,6 @@ function PolicyPage() {
     geoip_ipset_name: 'routing_prefixes',
     prefixes_route_local: true,
     kill_switch_enabled: true,
-    strict_mode: true,
     prefix_summary: {
       ipset_name: 'routing_prefixes',
       geoip_ipset_name: 'routing_prefixes_geoip',
@@ -1682,7 +1678,6 @@ function RoutingPage() {
     geoip_ipset_name: 'routing_prefixes',
     prefixes_route_local: true,
     kill_switch_enabled: true,
-    strict_mode: true,
     prefix_summary: {
       ipset_name: 'routing_prefixes',
       geoip_ipset_name: 'routing_prefixes_geoip',
@@ -1719,7 +1714,7 @@ function RoutingPage() {
     await reloadPlan()
   }
 
-  async function togglePolicy(key: 'prefixes_route_local' | 'kill_switch_enabled' | 'strict_mode', value: boolean) {
+  async function togglePolicy(key: 'prefixes_route_local' | 'kill_switch_enabled', value: boolean) {
     const nextData = { ...data, [key]: value }
     await persistPolicy(nextData)
   }
@@ -1763,11 +1758,6 @@ function RoutingPage() {
             <span className="toggle-slider" />
           </label>
           <span className="text-sm">{t('killSwitch')}</span>
-          <label className="toggle" title={t('strictMode')}>
-            <input type="checkbox" checked={data.strict_mode} onChange={(event) => void togglePolicy('strict_mode', event.target.checked)} />
-            <span className="toggle-slider" />
-          </label>
-          <span className="text-sm">{t('strictMode')}</span>
         </div>
       </div>
       <div className="section">
@@ -1804,7 +1794,7 @@ function RoutingPage() {
             <FlowNode
               title={t('killSwitch')}
               value={data.kill_switch_enabled ? t('enabled') : t('disabled')}
-              meta={data.strict_mode ? t('strictMode') : t('relaxedMode')}
+              meta={t('routeSafety')}
             />
           </div>
           {(plan.warnings || []).length > 0 ? (
