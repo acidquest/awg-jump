@@ -30,6 +30,10 @@ _awg_processes: dict[str, subprocess.Popen] = {}
 
 # ── Режим работы: kernel module или userspace amneziawg-go ────────────────
 _kernel_mode: bool | None = None  # None = ещё не определено
+_INTERFACE_MTU = {
+    "awg0": "1380",
+    "awg1": "1300",
+}
 
 
 def _detect_kernel_mode() -> bool:
@@ -418,6 +422,13 @@ async def apply_interface(iface: Interface, peers: list[Peer]) -> None:
     logger.info("[awg] ip link set %s up: rc=%d %s", ifname, rc, out)
     if rc != 0:
         raise RuntimeError(f"ip link set up failed: {out}")
+
+    mtu = _INTERFACE_MTU.get(ifname)
+    if mtu:
+        rc, out = _run_cmd(["ip", "link", "set", "dev", ifname, "mtu", mtu])
+        logger.info("[awg] ip link set dev %s mtu %s: rc=%d %s", ifname, mtu, rc, out)
+        if rc != 0:
+            raise RuntimeError(f"ip link set mtu failed: {out}")
 
     logger.info("[awg] Interface %s is UP ✓", ifname)
 

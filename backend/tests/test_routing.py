@@ -26,6 +26,17 @@ def test_setup_iptables_limits_output_rules_to_dns(monkeypatch):
     for proto in ("udp", "tcp"):
         assert any(rule_args[:4] == ["-p", proto, "--dport", "53"] for rule_args in output_rules)
 
+    assert (
+        "mangle",
+        "FORWARD",
+        [
+            "-p", "tcp",
+            "--tcp-flags", "SYN,RST", "SYN",
+            "-o", "awg1",
+            "-j", "TCPMSS", "--set-mss", "1260",
+        ],
+    ) in calls
+
 
 def test_setup_iptables_inverted_swaps_marks(monkeypatch):
     calls: list[tuple[str, str, list[str]]] = []

@@ -116,6 +116,7 @@ rm -f "$CONFIG_FILE"
 # Настроить сетевой интерфейс
 ip addr add "${AWG_ADDRESS}" dev awg0
 ip link set awg0 up
+ip link set dev awg0 mtu 1300
 
 # Явный route до tunnel IP jump-сервера.
 # awg setconf не управляет маршрутизацией как wg-quick, поэтому без этого
@@ -143,6 +144,8 @@ iptables -C FORWARD -i awg0 -o "${DEFAULT_IFACE}" -j ACCEPT 2>/dev/null || \
 iptables -A FORWARD -i awg0 -o "${DEFAULT_IFACE}" -j ACCEPT
 iptables -C FORWARD -i "${DEFAULT_IFACE}" -o awg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
 iptables -A FORWARD -i "${DEFAULT_IFACE}" -o awg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -i awg0 -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
+iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -i awg0 -j TCPMSS --clamp-mss-to-pmtu
 
 echo "[awg-node] Node is ready. Listening on UDP port ${AWG_LISTEN_PORT}"
 

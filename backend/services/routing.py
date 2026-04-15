@@ -18,6 +18,7 @@ _GEOIP_IPSET_NAME = "geoip_local"
 _VPN_ROUTE_METRIC_PRIMARY = "100"
 _VPN_ROUTE_METRIC_FALLBACK = "200"
 _DNS_OUTPUT_PROTOCOLS = ("udp", "tcp")
+_AWG1_TCP_MSS = "1260"
 
 
 def _run(args: list[str]) -> tuple[int, str]:
@@ -108,6 +109,12 @@ def _remove_all_policy_mark_rules() -> None:
                 "--dport", "53",
                 *rules["output_other"],  # type: ignore[list-item]
             ])
+    _ipt_del("mangle", "FORWARD", [
+        "-p", "tcp",
+        "--tcp-flags", "SYN,RST", "SYN",
+        "-o", "awg1",
+        "-j", "TCPMSS", "--set-mss", _AWG1_TCP_MSS,
+    ])
 
 
 def _ensure_route(table: int, route_args: list[str], *, description: str) -> None:
@@ -269,6 +276,18 @@ def setup_iptables(invert_geoip: bool = False) -> None:
         _ipt_add("mangle", "OUTPUT", ["-p", proto, "--dport", "53", *rules["output_other"]])  # type: ignore[list-item]
     logger.info("iptables mangle OUTPUT rules configured (DNS only)")
 
+    _ipt_add(
+        "mangle",
+        "FORWARD",
+        [
+            "-p", "tcp",
+            "--tcp-flags", "SYN,RST", "SYN",
+            "-o", "awg1",
+            "-j", "TCPMSS", "--set-mss", _AWG1_TCP_MSS,
+        ],
+    )
+    logger.info("iptables mangle FORWARD TCPMSS rule configured for awg1")
+
     # nat POSTROUTING: MASQUERADE исходящего трафика
     _ipt_add("nat", "POSTROUTING", ["-o", phys_iface, "-j", "MASQUERADE"])
     _ipt_add("nat", "POSTROUTING", ["-o", "awg1", "-j", "MASQUERADE"])
@@ -321,6 +340,16 @@ def get_status(invert_geoip: bool = False) -> dict:
         "other_mark": rules["other_mark"],
         "prerouting_geoip": _ipt_rule_exists("mangle", "PREROUTING", rules["prerouting_geoip"]),  # type: ignore[arg-type]
         "prerouting_other": _ipt_rule_exists("mangle", "PREROUTING", rules["prerouting_other"]),  # type: ignore[arg-type]
+        "forward_tcpmss_awg1": _ipt_rule_exists(
+            "mangle",
+            "FORWARD",
+            [
+                "-p", "tcp",
+                "--tcp-flags", "SYN,RST", "SYN",
+                "-o", "awg1",
+                "-j", "TCPMSS", "--set-mss", _AWG1_TCP_MSS,
+            ],
+        ),
         "nat_eth0": _ipt_rule_exists("nat", "POSTROUTING", ["-o", phys_iface, "-j", "MASQUERADE"]),
         "nat_awg1": _ipt_rule_exists("nat", "POSTROUTING", ["-o", "awg1", "-j", "MASQUERADE"]),
         "output_geoip": all(
