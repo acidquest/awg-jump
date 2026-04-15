@@ -237,6 +237,10 @@ async def start_tunnel(db: AsyncSession, node: EntryNode, gateway_settings: Gate
             context="ip-address-replace",
         )
         _run_logged(
+            ["ip", "link", "set", "dev", settings.tunnel_interface, "mtu", str(settings.tunnel_mtu)],
+            context="ip-link-set-mtu",
+        )
+        _run_logged(
             ["ip", "link", "set", "up", "dev", settings.tunnel_interface],
             context="ip-link-up",
         )

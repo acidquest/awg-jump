@@ -50,6 +50,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nftables \
     iputils-ping \
     procps \
+    tcpdump \
+    traceroute \
     wireguard-tools \
     && rm -rf /var/lib/apt/lists/*
 

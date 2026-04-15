@@ -1,5 +1,7 @@
-from app.models import EntryNode
-from app.services.runtime import probe_node_latency_details, probe_udp_endpoint, resolve_tunnel_probe_target, settings
+import pytest
+
+from app.models import EntryNode, GatewaySettings, RuntimeMode, TunnelStatus
+from app.services.runtime import probe_node_latency_details, probe_udp_endpoint, resolve_tunnel_probe_target, settings, start_tunnel
 
 
 def _make_node(**overrides) -> EntryNode:
@@ -93,3 +95,34 @@ def test_probe_udp_endpoint_oserror_is_unavailable(monkeypatch) -> None:
     status, detail = probe_udp_endpoint(_make_node())
     assert status == "unavailable"
     assert detail == "network unreachable"
+
+
+@pytest.mark.asyncio
+async def test_start_tunnel_sets_configured_mtu(monkeypatch) -> None:
+    commands: list[list[str]] = []
+
+    class FakeDb:
+        def add(self, _obj) -> None:
+            pass
+
+        async def flush(self) -> None:
+            pass
+
+    monkeypatch.setattr("app.services.runtime.write_runtime_config", lambda _node: "/tmp/test.conf")
+    monkeypatch.setattr("app.services.runtime.is_runtime_available", lambda: True)
+    monkeypatch.setattr("app.services.runtime.stop_tunnel_process", lambda: None)
+    monkeypatch.setattr("app.services.runtime._resolve_runtime_mode", lambda _mode: True)
+    monkeypatch.setattr("app.services.runtime._ensure_interface_absent", lambda _iface: None)
+    monkeypatch.setattr("app.services.runtime.current_pid", lambda: None)
+
+    def fake_run_logged(args: list[str], *, context: str):
+        commands.append(args)
+        return None
+
+    monkeypatch.setattr("app.services.runtime._run_logged", fake_run_logged)
+
+    gateway_settings = GatewaySettings(runtime_mode=RuntimeMode.auto.value, tunnel_status=TunnelStatus.stopped.value)
+
+    await start_tunnel(FakeDb(), _make_node(), gateway_settings)
+
+    assert ["ip", "link", "set", "dev", settings.tunnel_interface, "mtu", str(settings.tunnel_mtu)] in commands

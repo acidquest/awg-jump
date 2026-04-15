@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     awg_binary: str = "awg"
     default_tunnel_address: str = "10.44.0.2/32"
     default_dns_servers: str = "1.1.1.1,8.8.8.8"
+    tunnel_mtu: int = 1380
     external_ip_local_service_url: str = "https://ipinfo.io/ip"
     external_ip_vpn_service_url: str = "https://ifconfig.me/ip"
     geoip_source: str = "https://www.ipdeny.com/ipblocks/data/countries"

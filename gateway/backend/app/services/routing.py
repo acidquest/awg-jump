@@ -20,6 +20,7 @@ IPTABLES_BACKEND = "iptables"
 NFTABLES_BACKEND = "nftables"
 
 MANGLE_PREROUTING_CHAIN = "AWG_GW_PREROUTING"
+MANGLE_FORWARD_CHAIN = "AWG_GW_FORWARD_MANGLE"
 MANGLE_OUTPUT_CHAIN = "AWG_GW_OUTPUT"
 FILTER_FORWARD_CHAIN = "AWG_GW_FORWARD"
 FILTER_OUTPUT_CHAIN = "AWG_GW_OUTPUT"
@@ -28,6 +29,7 @@ NAT_DNS_PREROUTING_CHAIN = "AWG_GW_DNS_PREROUTING"
 NAT_DNS_OUTPUT_CHAIN = "AWG_GW_DNS_OUTPUT"
 
 NFT_CHAIN_MANGLE_PREROUTING = "mangle_prerouting"
+NFT_CHAIN_MANGLE_FORWARD = "mangle_forward"
 NFT_CHAIN_MANGLE_OUTPUT = "mangle_output"
 NFT_CHAIN_FILTER_OUTPUT = "filter_output"
 NFT_CHAIN_NAT_PREROUTING = "nat_prerouting"
@@ -276,6 +278,7 @@ def _delete_chain(table: str, chain: str) -> None:
 def _teardown_iptables_stack() -> None:
     for table, builtin_chain, target_chain in [
         ("mangle", "PREROUTING", MANGLE_PREROUTING_CHAIN),
+        ("mangle", "FORWARD", MANGLE_FORWARD_CHAIN),
         ("mangle", "OUTPUT", MANGLE_OUTPUT_CHAIN),
         ("filter", "FORWARD", FILTER_FORWARD_CHAIN),
         ("filter", "OUTPUT", FILTER_OUTPUT_CHAIN),
@@ -286,6 +289,7 @@ def _teardown_iptables_stack() -> None:
         _delete_jump(table, builtin_chain, target_chain)
     for table, chain in [
         ("mangle", MANGLE_PREROUTING_CHAIN),
+        ("mangle", MANGLE_FORWARD_CHAIN),
         ("mangle", MANGLE_OUTPUT_CHAIN),
         ("filter", FILTER_FORWARD_CHAIN),
         ("filter", FILTER_OUTPUT_CHAIN),
@@ -450,6 +454,7 @@ def _ensure_nftables_base() -> None:
         [
             f"add table ip {nftables_manager.TABLE_NAME}",
             f"add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_MANGLE_PREROUTING} {{ type filter hook prerouting priority mangle; policy accept; }}",
+            f"add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_MANGLE_FORWARD} {{ type filter hook forward priority mangle; policy accept; }}",
             f"add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_MANGLE_OUTPUT} {{ type route hook output priority mangle; policy accept; }}",
             f"add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_FILTER_OUTPUT} {{ type filter hook output priority filter; policy accept; }}",
             f"add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_NAT_PREROUTING} {{ type nat hook prerouting priority dstnat; policy accept; }}",
@@ -592,9 +597,92 @@ def _build_dns_intercept_rules_nft(gateway_settings: GatewaySettings) -> list[tu
     return rules
 
 
+def _build_mss_clamp_rules_nft(gateway_settings: GatewaySettings) -> list[tuple[str, str]]:
+    rules: list[tuple[str, str]] = [
+        (
+            NFT_CHAIN_MANGLE_OUTPUT,
+            f'oifname "{settings.tunnel_interface}" tcp flags syn / syn,rst tcp option maxseg size set 1260',
+        )
+    ]
+    for selector in non_localhost_selectors(gateway_settings):
+        rules.append(
+            (
+                NFT_CHAIN_MANGLE_FORWARD,
+                f'ip saddr {selector} oifname "{settings.tunnel_interface}" tcp flags syn / syn,rst tcp option maxseg size set 1260',
+            )
+        )
+    return rules
+
+
+def _build_postrouting_rules_nft(
+    gateway_settings: GatewaySettings,
+    default_iface: str | None,
+) -> list[str]:
+    rules = [f'oifname "{settings.tunnel_interface}" meta mark {settings.fwmark_vpn} masquerade']
+    if default_iface is not None:
+        for selector in non_localhost_selectors(gateway_settings):
+            rules.append(
+                f'ip saddr {selector} oifname "{default_iface}" meta mark {settings.fwmark_local} masquerade'
+            )
+    return rules
+
+
+def _build_mss_clamp_rules(gateway_settings: GatewaySettings) -> list[tuple[str, str, list[str]]]:
+    rules: list[tuple[str, str, list[str]]] = [
+        (
+            "mangle",
+            MANGLE_OUTPUT_CHAIN,
+            ["-o", settings.tunnel_interface, "-p", "tcp", "-m", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--set-mss", "1260"],
+        )
+    ]
+    for selector in non_localhost_selectors(gateway_settings):
+        rules.append(
+            (
+                "mangle",
+                MANGLE_FORWARD_CHAIN,
+                ["-s", selector, "-o", settings.tunnel_interface, "-p", "tcp", "-m", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--set-mss", "1260"],
+            )
+        )
+    return rules
+
+
+def _build_forward_rules(
+    gateway_settings: GatewaySettings,
+    default_iface: str | None,
+) -> list[list[str]]:
+    rules: list[list[str]] = []
+    if default_iface is not None:
+        for selector in non_localhost_selectors(gateway_settings):
+            rules.extend(
+                [
+                    ["-s", selector, "-o", default_iface, "-m", "mark", "--mark", settings.fwmark_local, "-j", "ACCEPT"],
+                    ["-i", default_iface, "-d", selector, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+                ]
+            )
+    rules.extend(
+        [
+            ["-o", settings.tunnel_interface, "-m", "mark", "--mark", settings.fwmark_vpn, "-j", "ACCEPT"],
+            ["-i", settings.tunnel_interface, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+        ]
+    )
+    return rules
+
+
+def _build_postrouting_rules(
+    gateway_settings: GatewaySettings,
+    default_iface: str | None,
+) -> list[list[str]]:
+    rules: list[list[str]] = [["-o", settings.tunnel_interface, "-m", "mark", "--mark", settings.fwmark_vpn, "-j", "MASQUERADE"]]
+    if default_iface is not None:
+        for selector in non_localhost_selectors(gateway_settings):
+            rules.append(
+                ["-s", selector, "-o", default_iface, "-m", "mark", "--mark", settings.fwmark_local, "-j", "MASQUERADE"]
+            )
+    return rules
+
+
 def _build_filter_forward_rules_nft(
     gateway_settings: GatewaySettings,
-    policy: RoutingPolicy,
     default_iface: str | None,
 ) -> list[str]:
     rules: list[str] = []
@@ -603,7 +691,7 @@ def _build_filter_forward_rules_nft(
             continue
         rules.extend(
             [
-                f'ip saddr {selector} oifname "{default_iface}" accept',
+                f'ip saddr {selector} oifname "{default_iface}" meta mark {settings.fwmark_local} accept',
                 f'iifname "{default_iface}" ip daddr {selector} ct state related,established accept',
             ]
         )
@@ -613,9 +701,6 @@ def _build_filter_forward_rules_nft(
             f'iifname "{settings.tunnel_interface}" ct state related,established accept',
         ]
     )
-    if policy.kill_switch_enabled:
-        action = "reject" if policy.strict_mode else "drop"
-        rules.append(f'oifname != "{settings.tunnel_interface}" meta mark {settings.fwmark_vpn} {action}')
     return rules
 
 
@@ -672,12 +757,6 @@ def build_routing_plan(
 
         if backend == IPTABLES_BACKEND:
             commands.extend(
-                [
-                    f"iptables -t nat -A {NAT_POSTROUTING_CHAIN} -o {settings.tunnel_interface} -j MASQUERADE",
-                    f"iptables -t filter -A {FILTER_FORWARD_CHAIN} -o {settings.tunnel_interface} -m mark --mark {settings.fwmark_vpn} -j ACCEPT",
-                ]
-            )
-            commands.extend(
                 _iptables_command(table, chain, rule)
                 for table, chain, rule in _build_marking_rules(gateway_settings, policy, cached_prefixes, active_node)
             )
@@ -685,20 +764,24 @@ def build_routing_plan(
                 _iptables_command(table, chain, rule)
                 for table, chain, rule in _build_dns_intercept_rules(gateway_settings)
             )
-            if default_iface is not None:
-                for selector in non_localhost_selectors(gateway_settings):
-                    commands.extend(
-                        [
-                            f"iptables -t nat -A {NAT_POSTROUTING_CHAIN} -s {selector} -o {default_iface} -j MASQUERADE",
-                            f"iptables -t filter -A {FILTER_FORWARD_CHAIN} -s {selector} -o {default_iface} -j ACCEPT",
-                            f"iptables -t filter -A {FILTER_FORWARD_CHAIN} -i {default_iface} -d {selector} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
-                        ]
-                    )
+            commands.extend(
+                _iptables_command(table, chain, rule)
+                for table, chain, rule in _build_mss_clamp_rules(gateway_settings)
+            )
+            commands.extend(
+                _iptables_command("nat", NAT_POSTROUTING_CHAIN, rule)
+                for rule in _build_postrouting_rules(gateway_settings, default_iface)
+            )
+            commands.extend(
+                _iptables_command("filter", FILTER_FORWARD_CHAIN, rule)
+                for rule in _build_forward_rules(gateway_settings, default_iface)
+            )
         else:
             commands.extend(
                 [
                     f"nft add table ip {nftables_manager.TABLE_NAME}",
                     f"nft add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_MANGLE_PREROUTING} {{ type filter hook prerouting priority mangle; policy accept; }}",
+                    f"nft add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_MANGLE_FORWARD} {{ type filter hook forward priority mangle; policy accept; }}",
                     f"nft add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_MANGLE_OUTPUT} {{ type route hook output priority mangle; policy accept; }}",
                     f"nft add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_FILTER_OUTPUT} {{ type filter hook output priority filter; policy accept; }}",
                     f"nft add chain ip {nftables_manager.TABLE_NAME} {NFT_CHAIN_NAT_PREROUTING} {{ type nat hook prerouting priority dstnat; policy accept; }}",
@@ -708,17 +791,18 @@ def build_routing_plan(
                     f"nft insert rule ip filter FORWARD jump {FILTER_FORWARD_CHAIN}",
                     f"nft add chain ip filter {FILTER_OUTPUT_CHAIN}",
                     f"nft insert rule ip filter OUTPUT jump {FILTER_OUTPUT_CHAIN}",
-                    _nft_command(NFT_CHAIN_NAT_POSTROUTING, f'oifname "{settings.tunnel_interface}" masquerade'),
                 ]
             )
             commands.extend(_nft_command(chain, expr) for chain, expr in _build_marking_rules_nft(gateway_settings, policy, active_node))
             commands.extend(_nft_command(chain, expr) for chain, expr in _build_dns_intercept_rules_nft(gateway_settings))
-            if default_iface is not None:
-                for selector in non_localhost_selectors(gateway_settings):
-                    commands.append(_nft_command(NFT_CHAIN_NAT_POSTROUTING, f'ip saddr {selector} oifname "{default_iface}" masquerade'))
+            commands.extend(_nft_command(chain, expr) for chain, expr in _build_mss_clamp_rules_nft(gateway_settings))
+            commands.extend(
+                _nft_command(NFT_CHAIN_NAT_POSTROUTING, expr)
+                for expr in _build_postrouting_rules_nft(gateway_settings, default_iface)
+            )
             commands.extend(
                 f"nft add rule ip filter {FILTER_FORWARD_CHAIN} {expr}"
-                for expr in _build_filter_forward_rules_nft(gateway_settings, policy, default_iface)
+                for expr in _build_filter_forward_rules_nft(gateway_settings, default_iface)
             )
 
     if policy.kill_switch_enabled:
@@ -786,10 +870,11 @@ def apply_routing_plan(
             _append_nft(chain, expr)
         for chain, expr in _build_dns_intercept_rules_nft(gateway_settings):
             _append_nft(chain, expr)
-        _append_nft(NFT_CHAIN_NAT_POSTROUTING, f'oifname "{settings.tunnel_interface}" masquerade')
-        for selector in non_localhost_selectors(gateway_settings):
-            _append_nft(NFT_CHAIN_NAT_POSTROUTING, f'ip saddr {selector} oifname "{default_iface}" masquerade')
-        for expr in _build_filter_forward_rules_nft(gateway_settings, policy, default_iface):
+        for chain, expr in _build_mss_clamp_rules_nft(gateway_settings):
+            _append_nft(chain, expr)
+        for expr in _build_postrouting_rules_nft(gateway_settings, default_iface):
+            _append_nft(NFT_CHAIN_NAT_POSTROUTING, expr)
+        for expr in _build_filter_forward_rules_nft(gateway_settings, default_iface):
             _append_compat_nft("filter", FILTER_FORWARD_CHAIN, expr)
         if policy.kill_switch_enabled:
             action = "reject" if policy.strict_mode else "drop"
@@ -798,6 +883,7 @@ def apply_routing_plan(
         _teardown_nftables_stack()
         prefixes = sync_prefix_ipset(policy, gateway_settings)
         _ensure_chain("mangle", MANGLE_PREROUTING_CHAIN)
+        _ensure_chain("mangle", MANGLE_FORWARD_CHAIN)
         _ensure_chain("mangle", MANGLE_OUTPUT_CHAIN)
         _ensure_chain("filter", FILTER_FORWARD_CHAIN)
         _ensure_chain("filter", FILTER_OUTPUT_CHAIN)
@@ -805,6 +891,7 @@ def apply_routing_plan(
         _ensure_chain("nat", NAT_DNS_PREROUTING_CHAIN)
         _ensure_chain("nat", NAT_DNS_OUTPUT_CHAIN)
         _ensure_jump("mangle", "PREROUTING", MANGLE_PREROUTING_CHAIN)
+        _ensure_jump("mangle", "FORWARD", MANGLE_FORWARD_CHAIN)
         _ensure_jump("mangle", "OUTPUT", MANGLE_OUTPUT_CHAIN)
         _ensure_jump("filter", "FORWARD", FILTER_FORWARD_CHAIN)
         _ensure_jump("filter", "OUTPUT", FILTER_OUTPUT_CHAIN)
@@ -816,18 +903,13 @@ def apply_routing_plan(
             _append(table, chain, rule)
         for table, chain, rule in _build_dns_intercept_rules(gateway_settings):
             _append(table, chain, rule)
+        for table, chain, rule in _build_mss_clamp_rules(gateway_settings):
+            _append(table, chain, rule)
 
-        _append("nat", NAT_POSTROUTING_CHAIN, ["-o", settings.tunnel_interface, "-j", "MASQUERADE"])
-        for selector in non_localhost_selectors(gateway_settings):
-            _append("nat", NAT_POSTROUTING_CHAIN, ["-s", selector, "-o", default_iface, "-j", "MASQUERADE"])
-            _append("filter", FILTER_FORWARD_CHAIN, ["-s", selector, "-o", default_iface, "-j", "ACCEPT"])
-            _append(
-                "filter",
-                FILTER_FORWARD_CHAIN,
-                ["-i", default_iface, "-d", selector, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
-            )
-        _append("filter", FILTER_FORWARD_CHAIN, ["-o", settings.tunnel_interface, "-m", "mark", "--mark", settings.fwmark_vpn, "-j", "ACCEPT"])
-        _append("filter", FILTER_FORWARD_CHAIN, ["-i", settings.tunnel_interface, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"])
+        for rule in _build_postrouting_rules(gateway_settings, default_iface):
+            _append("nat", NAT_POSTROUTING_CHAIN, rule)
+        for rule in _build_forward_rules(gateway_settings, default_iface):
+            _append("filter", FILTER_FORWARD_CHAIN, rule)
 
         if policy.kill_switch_enabled:
             action = "REJECT" if policy.strict_mode else "DROP"
