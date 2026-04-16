@@ -123,10 +123,10 @@ def test_plan_switches_preview_to_nftables(monkeypatch) -> None:
     assert any(command == "nft insert rule ip filter FORWARD jump AWG_GW_FORWARD" for command in plan["commands"])
     assert any(command.startswith("nft add rule ip filter AWG_GW_FORWARD ") for command in plan["commands"])
     assert any(command == "nft add rule ip awg_gw mangle_output ip daddr 192.168.10.0/24 return" for command in plan["commands"])
-    assert any("meta mark set 0x1 return" in command for command in plan["commands"])
+    assert any("ct mark set 0x1 meta mark set 0x1 counter return" in command for command in plan["commands"])
     assert any(command == "ip rule add fwmark 0x1 table 200" for command in plan["commands"])
     assert any(
-        command == 'nft add rule ip awg_gw nat_postrouting oifname "awg-gw0" meta mark 0x2 masquerade'
+        command == 'nft add rule ip awg_gw nat_postrouting oifname "awg-gw0" meta mark 0x2 counter masquerade'
         for command in plan["commands"]
     )
     assert any(
@@ -190,11 +190,11 @@ def test_plan_limits_direct_nft_forward_and_nat_to_local_mark(monkeypatch) -> No
     plan = build_routing_plan(make_settings(source_cidrs=["10.10.0.0/24"], experimental_nftables=True), make_policy(), make_active_node())
 
     assert any(
-        command == 'nft add rule ip awg_gw nat_postrouting ip saddr 10.10.0.0/24 oifname "eth0" meta mark 0x1 masquerade'
+        command == 'nft add rule ip awg_gw nat_postrouting ip saddr 10.10.0.0/24 oifname "eth0" meta mark 0x1 counter masquerade'
         for command in plan["commands"]
     )
     assert any(
-        command == 'nft add rule ip filter AWG_GW_FORWARD ip saddr 10.10.0.0/24 oifname "eth0" meta mark 0x1 accept'
+        command == 'nft add rule ip filter AWG_GW_FORWARD ip saddr 10.10.0.0/24 oifname "eth0" meta mark 0x1 counter accept'
         for command in plan["commands"]
     )
 

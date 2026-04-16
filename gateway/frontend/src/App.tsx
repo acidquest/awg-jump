@@ -81,6 +81,31 @@ type SystemStatus = {
   external_ip_info: ExternalIpInfo
   active_prefixes_count: number
   active_prefixes_configured_count: number
+  traffic_summary: TrafficSummary
+}
+
+type TrafficInterfaceCounters = {
+  rx_bytes: number
+  tx_bytes: number
+}
+
+type TrafficCurrentSummary = {
+  collected_at: string
+  local_interface_name: string | null
+  vpn_interface_name: string
+  local: TrafficInterfaceCounters
+  vpn: TrafficInterfaceCounters
+} | null
+
+type TrafficPeriodSummary = {
+  local: TrafficInterfaceCounters
+  vpn: TrafficInterfaceCounters
+} | null
+
+type TrafficSummary = {
+  current: TrafficCurrentSummary
+  last_hour: TrafficPeriodSummary
+  last_day: TrafficPeriodSummary
 }
 
 type MetricsPoint = {
@@ -524,6 +549,11 @@ function DashboardPage() {
       local: { service_url: '', service_host: null, value: null, error: null, checked_at: null, route_target: 'local' },
       vpn: { service_url: '', service_host: null, value: null, error: null, checked_at: null, route_target: 'vpn' },
     },
+    traffic_summary: {
+      current: null,
+      last_hour: null,
+      last_day: null,
+    },
   })
   const { data: metrics, loading: metricsLoading } = useLoader<SystemMetrics>(`/system/metrics?period=${metricsPeriod}`, {
     period: metricsPeriod,
@@ -593,10 +623,26 @@ function DashboardPage() {
         />
       </div>
       <div className="card-grid card-grid-4" style={{ marginBottom: 20 }}>
-        <StatCard title={t('cpuLoad')} value={fmtPercent(metrics.latest?.cpu_usage_percent)} label={t('sampledPerMinute')} />
-        <StatCard title={t('memoryUsed')} value={fmtBytes(metrics.latest?.memory_used_bytes)} label={`${t('memoryFree')}: ${fmtBytes(metrics.latest?.memory_free_bytes)}`} />
-        <StatCard title={t('killSwitch')} value={data.kill_switch_enabled ? t('enabled') : t('disabled')} label={t('routeSafety')} />
-        <StatCard title={t('runtimeMode')} value={data.runtime_mode} label={data.runtime_mode === 'userspace' ? t('userspaceActive') : t('kernelModeStatus')} />
+        <StatCard
+          title={t('localTrafficIn')}
+          value={fmtBytes(data.traffic_summary.last_day?.local.rx_bytes)}
+          label={`${t('lastHour')}: ${fmtBytes(data.traffic_summary.last_hour?.local.rx_bytes)}`}
+        />
+        <StatCard
+          title={t('localTrafficOut')}
+          value={fmtBytes(data.traffic_summary.last_day?.local.tx_bytes)}
+          label={`${t('lastHour')}: ${fmtBytes(data.traffic_summary.last_hour?.local.tx_bytes)}`}
+        />
+        <StatCard
+          title={t('vpnTrafficIn')}
+          value={fmtBytes(data.traffic_summary.last_day?.vpn.rx_bytes)}
+          label={`${t('lastHour')}: ${fmtBytes(data.traffic_summary.last_hour?.vpn.rx_bytes)}`}
+        />
+        <StatCard
+          title={t('vpnTrafficOut')}
+          value={fmtBytes(data.traffic_summary.last_day?.vpn.tx_bytes)}
+          label={`${t('lastHour')}: ${fmtBytes(data.traffic_summary.last_hour?.vpn.tx_bytes)}`}
+        />
       </div>
       <div className="card-grid card-grid-2">
         <div className="card">
@@ -639,12 +685,9 @@ function DashboardPage() {
           </div>
         </div>
       </div>
-      <div className="section">
-        <div className="section-title">{t('externalIpTitle')}</div>
-        <div className="card-grid card-grid-2">
-          <ExternalIpCard endpoint={data.external_ip_info.local} forcedDomains={data.external_ip_info.forced_domains} />
-          <ExternalIpCard endpoint={data.external_ip_info.vpn} forcedDomains={data.external_ip_info.forced_domains} />
-        </div>
+      <div className="card-grid card-grid-2 section" style={{ marginTop: 20 }}>
+        <ExternalIpCard endpoint={data.external_ip_info.local} forcedDomains={data.external_ip_info.forced_domains} />
+        <ExternalIpCard endpoint={data.external_ip_info.vpn} forcedDomains={data.external_ip_info.forced_domains} />
       </div>
       <div className="section">
         <div className="section-title">
@@ -2384,7 +2427,7 @@ function SettingsPage() {
               </button>
             </div>
             <div className="text-muted text-sm" style={{ marginTop: 8 }}>
-              {data.api_settings.api_enabled ? t('apiAccessKeyGenerated') : t('apiAccessDisabledHint')}
+              {data.api_settings.api_enabled ? t('apiAccessKeyGenerated') : ''}
             </div>
           </div>
           <div className="form-group">

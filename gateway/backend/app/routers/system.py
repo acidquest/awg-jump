@@ -23,6 +23,7 @@ from app.services.runtime import (
 )
 from app.services.traffic_sources import migrate_legacy_source_settings
 from app.services.system_metrics import get_metrics_history
+from app.services.traffic_metrics import get_traffic_usage_summary
 
 
 router = APIRouter(prefix="/api/system", tags=["system"])
@@ -61,6 +62,7 @@ async def status(
         await db.flush()
     entry_node_count = await db.scalar(select(func.count()).select_from(EntryNode))
     dns_rule_count = await db.scalar(select(func.count()).select_from(DnsDomainRule))
+    traffic_summary = await get_traffic_usage_summary(db)
     return {
         "runtime_available": is_runtime_available(),
         "runtime_pid": current_pid(),
@@ -100,6 +102,7 @@ async def status(
             "manual_prefixes_enabled": routing_policy.manual_prefixes_enabled,
             "fqdn_prefixes_enabled": routing_policy.fqdn_prefixes_enabled,
         },
+        "traffic_summary": traffic_summary,
     }
 
 

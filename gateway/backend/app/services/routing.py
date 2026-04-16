@@ -23,6 +23,7 @@ MANGLE_PREROUTING_CHAIN = "AWG_GW_PREROUTING"
 MANGLE_FORWARD_CHAIN = "AWG_GW_FORWARD_MANGLE"
 MANGLE_OUTPUT_CHAIN = "AWG_GW_OUTPUT"
 FILTER_FORWARD_CHAIN = "AWG_GW_FORWARD"
+FILTER_INPUT_CHAIN = "AWG_GW_INPUT"
 FILTER_OUTPUT_CHAIN = "AWG_GW_OUTPUT"
 NAT_POSTROUTING_CHAIN = "AWG_GW_POSTROUTING"
 NAT_DNS_PREROUTING_CHAIN = "AWG_GW_DNS_PREROUTING"
@@ -281,6 +282,7 @@ def _teardown_iptables_stack() -> None:
         ("mangle", "FORWARD", MANGLE_FORWARD_CHAIN),
         ("mangle", "OUTPUT", MANGLE_OUTPUT_CHAIN),
         ("filter", "FORWARD", FILTER_FORWARD_CHAIN),
+        ("filter", "INPUT", FILTER_INPUT_CHAIN),
         ("filter", "OUTPUT", FILTER_OUTPUT_CHAIN),
         ("nat", "POSTROUTING", NAT_POSTROUTING_CHAIN),
         ("nat", "PREROUTING", NAT_DNS_PREROUTING_CHAIN),
@@ -292,6 +294,7 @@ def _teardown_iptables_stack() -> None:
         ("mangle", MANGLE_FORWARD_CHAIN),
         ("mangle", MANGLE_OUTPUT_CHAIN),
         ("filter", FILTER_FORWARD_CHAIN),
+        ("filter", FILTER_INPUT_CHAIN),
         ("filter", FILTER_OUTPUT_CHAIN),
         ("nat", NAT_POSTROUTING_CHAIN),
         ("nat", NAT_DNS_PREROUTING_CHAIN),
@@ -302,6 +305,13 @@ def _teardown_iptables_stack() -> None:
 
 def _append(table: str, chain: str, rule_args: list[str]) -> None:
     _run_logged(["iptables", "-t", table, "-A", chain, *rule_args])
+
+
+def _ensure_nft_chain(table: str, chain: str) -> None:
+    rc, _ = _run(["nft", "list", "chain", "ip", table, chain])
+    if rc != 0:
+        _run_logged(["nft", "add", "chain", "ip", table, chain])
+    _run_logged(["nft", "flush", "chain", "ip", table, chain])
 
 
 def _ensure_ip_rules() -> None:
@@ -409,6 +419,11 @@ def _compat_chain_exists(table: str, chain: str) -> bool:
     return rc == 0
 
 
+def _compat_builtin_chain_exists(table: str, chain: str) -> bool:
+    rc, _ = _run(["nft", "list", "chain", "ip", table, chain])
+    return rc == 0
+
+
 def _ensure_compat_chain(table: str, chain: str) -> None:
     if not _compat_chain_exists(table, chain):
         _run_logged(["nft", "add", "chain", "ip", table, chain])
@@ -423,6 +438,8 @@ def _compat_jump_exists(table: str, builtin_chain: str, target_chain: str) -> bo
 
 
 def _ensure_compat_jump(table: str, builtin_chain: str, target_chain: str) -> None:
+    if not _compat_builtin_chain_exists(table, builtin_chain):
+        return
     if _compat_jump_exists(table, builtin_chain, target_chain):
         return
     _run_logged(["nft", "insert", "rule", "ip", table, builtin_chain, "jump", target_chain])
@@ -451,11 +468,13 @@ def _delete_compat_chain(table: str, chain: str) -> None:
 def _teardown_nftables_stack() -> None:
     for table, builtin_chain, target_chain in [
         ("filter", "FORWARD", FILTER_FORWARD_CHAIN),
+        ("filter", "INPUT", FILTER_INPUT_CHAIN),
         ("filter", "OUTPUT", FILTER_OUTPUT_CHAIN),
     ]:
         _delete_compat_jump(table, builtin_chain, target_chain)
     for table, chain in [
         ("filter", FILTER_FORWARD_CHAIN),
+        ("filter", FILTER_INPUT_CHAIN),
         ("filter", FILTER_OUTPUT_CHAIN),
     ]:
         _delete_compat_chain(table, chain)
@@ -506,10 +525,18 @@ def _build_marking_rules(
                     (
                         "mangle",
                         MANGLE_OUTPUT_CHAIN,
+                        ["-m", "set", "--match-set", match_set, "dst", "-j", "CONNMARK", "--set-mark", matched_mark],
+                    )
+                )
+                rules.append(
+                    (
+                        "mangle",
+                        MANGLE_OUTPUT_CHAIN,
                         ["-m", "set", "--match-set", match_set, "dst", "-j", "MARK", "--set-mark", matched_mark],
                     )
                 )
                 rules.append(("mangle", MANGLE_OUTPUT_CHAIN, ["-m", "set", "--match-set", match_set, "dst", "-j", "RETURN"]))
+        rules.append(("mangle", MANGLE_OUTPUT_CHAIN, ["-j", "CONNMARK", "--set-mark", other_mark]))
         rules.append(("mangle", MANGLE_OUTPUT_CHAIN, ["-j", "MARK", "--set-mark", other_mark]))
 
     for selector in non_localhost_selectors(gateway_settings):
@@ -527,6 +554,18 @@ def _build_marking_rules(
                 )
         rules.append(("mangle", MANGLE_PREROUTING_CHAIN, ["-s", selector, "-j", "MARK", "--set-mark", other_mark]))
 
+    return rules
+
+
+def _build_input_counter_rules(gateway_settings: GatewaySettings, default_iface: str | None) -> list[list[str]]:
+    rules: list[list[str]] = []
+    if localhost_selector_enabled(gateway_settings) and default_iface is not None:
+        rules.append(
+            ["-i", default_iface, "-m", "connmark", "--mark", settings.fwmark_local, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "RETURN"]
+        )
+        rules.append(
+            ["-i", settings.tunnel_interface, "-m", "connmark", "--mark", settings.fwmark_vpn, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "RETURN"]
+        )
     return rules
 
 
@@ -577,8 +616,8 @@ def _build_marking_rules_nft(
 
     if localhost_selector_enabled(gateway_settings):
         for match_set in match_sets:
-            rules.append((NFT_CHAIN_MANGLE_OUTPUT, f"ip daddr @{match_set} meta mark set {matched_mark} return"))
-        rules.append((NFT_CHAIN_MANGLE_OUTPUT, f"meta mark set {other_mark}"))
+            rules.append((NFT_CHAIN_MANGLE_OUTPUT, f"ip daddr @{match_set} ct mark set {matched_mark} meta mark set {matched_mark} counter return"))
+        rules.append((NFT_CHAIN_MANGLE_OUTPUT, f"ct mark set {other_mark} meta mark set {other_mark} counter"))
 
     for selector in non_localhost_selectors(gateway_settings):
         for match_set in match_sets:
@@ -587,6 +626,14 @@ def _build_marking_rules_nft(
             )
         rules.append((NFT_CHAIN_MANGLE_PREROUTING, f"ip saddr {selector} meta mark set {other_mark}"))
 
+    return rules
+
+
+def _build_input_counter_rules_nft(gateway_settings: GatewaySettings, default_iface: str | None) -> list[str]:
+    rules: list[str] = []
+    if localhost_selector_enabled(gateway_settings) and default_iface is not None:
+        rules.append(f'iifname "{default_iface}" ct mark {settings.fwmark_local} ct state related,established counter return')
+        rules.append(f'iifname "{settings.tunnel_interface}" ct mark {settings.fwmark_vpn} ct state related,established counter return')
     return rules
 
 
@@ -632,11 +679,11 @@ def _build_postrouting_rules_nft(
     gateway_settings: GatewaySettings,
     default_iface: str | None,
 ) -> list[str]:
-    rules = [f'oifname "{settings.tunnel_interface}" meta mark {settings.fwmark_vpn} masquerade']
+    rules = [f'oifname "{settings.tunnel_interface}" meta mark {settings.fwmark_vpn} counter masquerade']
     if default_iface is not None:
         for selector in non_localhost_selectors(gateway_settings):
             rules.append(
-                f'ip saddr {selector} oifname "{default_iface}" meta mark {settings.fwmark_local} masquerade'
+                f'ip saddr {selector} oifname "{default_iface}" meta mark {settings.fwmark_local} counter masquerade'
             )
     return rules
 
@@ -705,14 +752,14 @@ def _build_filter_forward_rules_nft(
             continue
         rules.extend(
             [
-                f'ip saddr {selector} oifname "{default_iface}" meta mark {settings.fwmark_local} accept',
-                f'iifname "{default_iface}" ip daddr {selector} ct state related,established accept',
+                f'ip saddr {selector} oifname "{default_iface}" meta mark {settings.fwmark_local} counter accept',
+                f'iifname "{default_iface}" ip daddr {selector} ct state related,established counter accept',
             ]
         )
     rules.extend(
         [
-            f'oifname "{settings.tunnel_interface}" meta mark {settings.fwmark_vpn} accept',
-            f'iifname "{settings.tunnel_interface}" ct state related,established accept',
+            f'oifname "{settings.tunnel_interface}" meta mark {settings.fwmark_vpn} counter accept',
+            f'iifname "{settings.tunnel_interface}" ct state related,established counter accept',
         ]
     )
     return rules
@@ -746,6 +793,15 @@ def _build_local_passthrough_rules(gateway_settings: GatewaySettings, default_if
     return rules
 
 
+def _build_local_passthrough_output_rules(gateway_settings: GatewaySettings) -> list[tuple[str, str, list[str]]]:
+    if not localhost_selector_enabled(gateway_settings):
+        return []
+    return [
+        ("mangle", MANGLE_OUTPUT_CHAIN, ["-j", "CONNMARK", "--set-mark", settings.fwmark_local]),
+        ("mangle", MANGLE_OUTPUT_CHAIN, ["-j", "MARK", "--set-mark", settings.fwmark_local]),
+    ]
+
+
 def _build_local_passthrough_nat_rules(gateway_settings: GatewaySettings, default_iface: str | None) -> list[list[str]]:
     if default_iface is None:
         return []
@@ -759,17 +815,23 @@ def _build_local_passthrough_rules_nft(gateway_settings: GatewaySettings, defaul
     for selector in non_localhost_selectors(gateway_settings):
         rules.extend(
             [
-                f'ip saddr {selector} oifname "{default_iface}" accept',
-                f'iifname "{default_iface}" ip daddr {selector} ct state related,established accept',
+                f'ip saddr {selector} oifname "{default_iface}" counter accept',
+                f'iifname "{default_iface}" ip daddr {selector} ct state related,established counter accept',
             ]
         )
     return rules
 
 
+def _build_local_passthrough_output_rules_nft(gateway_settings: GatewaySettings) -> list[tuple[str, str]]:
+    if not localhost_selector_enabled(gateway_settings):
+        return []
+    return [(NFT_CHAIN_MANGLE_OUTPUT, f"ct mark set {settings.fwmark_local} meta mark set {settings.fwmark_local} counter")]
+
+
 def _build_local_passthrough_nat_rules_nft(gateway_settings: GatewaySettings, default_iface: str | None) -> list[str]:
     if default_iface is None:
         return []
-    return [f'ip saddr {selector} oifname "{default_iface}" masquerade' for selector in non_localhost_selectors(gateway_settings)]
+    return [f'ip saddr {selector} oifname "{default_iface}" counter masquerade' for selector in non_localhost_selectors(gateway_settings)]
 
 
 def build_routing_plan(
@@ -928,8 +990,10 @@ def apply_routing_plan(
         _teardown_iptables_stack()
         _ensure_nftables_base()
         _ensure_compat_chain("filter", FILTER_FORWARD_CHAIN)
+        _ensure_compat_chain("filter", FILTER_INPUT_CHAIN)
         _ensure_compat_chain("filter", FILTER_OUTPUT_CHAIN)
         _ensure_compat_jump("filter", "FORWARD", FILTER_FORWARD_CHAIN)
+        _ensure_compat_jump("filter", "INPUT", FILTER_INPUT_CHAIN)
         _ensure_compat_jump("filter", "OUTPUT", FILTER_OUTPUT_CHAIN)
         prefixes = sync_prefix_ipset(policy, gateway_settings)
         for chain, expr in _build_marking_rules_nft(gateway_settings, policy, active_node):
@@ -942,6 +1006,8 @@ def apply_routing_plan(
             _append_nft(NFT_CHAIN_NAT_POSTROUTING, expr)
         for expr in _build_filter_forward_rules_nft(gateway_settings, default_iface):
             _append_compat_nft("filter", FILTER_FORWARD_CHAIN, expr)
+        for expr in _build_input_counter_rules_nft(gateway_settings, default_iface):
+            _append_compat_nft("filter", FILTER_INPUT_CHAIN, expr)
         if policy.kill_switch_enabled:
             for expr in _build_kill_switch_forward_rules_nft(gateway_settings):
                 _append_compat_nft("filter", FILTER_FORWARD_CHAIN, expr)
@@ -952,6 +1018,7 @@ def apply_routing_plan(
         _ensure_chain("mangle", MANGLE_FORWARD_CHAIN)
         _ensure_chain("mangle", MANGLE_OUTPUT_CHAIN)
         _ensure_chain("filter", FILTER_FORWARD_CHAIN)
+        _ensure_chain("filter", FILTER_INPUT_CHAIN)
         _ensure_chain("filter", FILTER_OUTPUT_CHAIN)
         _ensure_chain("nat", NAT_POSTROUTING_CHAIN)
         _ensure_chain("nat", NAT_DNS_PREROUTING_CHAIN)
@@ -960,6 +1027,7 @@ def apply_routing_plan(
         _ensure_jump("mangle", "FORWARD", MANGLE_FORWARD_CHAIN)
         _ensure_jump("mangle", "OUTPUT", MANGLE_OUTPUT_CHAIN)
         _ensure_jump("filter", "FORWARD", FILTER_FORWARD_CHAIN)
+        _ensure_jump("filter", "INPUT", FILTER_INPUT_CHAIN)
         _ensure_jump("filter", "OUTPUT", FILTER_OUTPUT_CHAIN)
         _ensure_jump("nat", "POSTROUTING", NAT_POSTROUTING_CHAIN)
         _ensure_jump("nat", "PREROUTING", NAT_DNS_PREROUTING_CHAIN)
@@ -976,6 +1044,8 @@ def apply_routing_plan(
             _append("nat", NAT_POSTROUTING_CHAIN, rule)
         for rule in _build_forward_rules(gateway_settings, default_iface):
             _append("filter", FILTER_FORWARD_CHAIN, rule)
+        for rule in _build_input_counter_rules(gateway_settings, default_iface):
+            _append("filter", FILTER_INPUT_CHAIN, rule)
 
         if policy.kill_switch_enabled:
             for rule in _build_kill_switch_forward_rules(gateway_settings):
@@ -997,8 +1067,16 @@ def apply_local_passthrough(gateway_settings: GatewaySettings) -> None:
     if firewall_backend(gateway_settings) == NFTABLES_BACKEND:
         _teardown_iptables_stack()
         _ensure_nftables_base()
+        _ensure_compat_chain("filter", FILTER_INPUT_CHAIN)
         _ensure_compat_chain("filter", FILTER_FORWARD_CHAIN)
+        _ensure_compat_chain("filter", FILTER_OUTPUT_CHAIN)
+        _ensure_compat_jump("filter", "INPUT", FILTER_INPUT_CHAIN)
         _ensure_compat_jump("filter", "FORWARD", FILTER_FORWARD_CHAIN)
+        _ensure_compat_jump("filter", "OUTPUT", FILTER_OUTPUT_CHAIN)
+        for chain, expr in _build_local_passthrough_output_rules_nft(gateway_settings):
+            _append_nft(chain, expr)
+        for expr in _build_input_counter_rules_nft(gateway_settings, default_iface):
+            _append_compat_nft("filter", FILTER_INPUT_CHAIN, expr)
         for expr in _build_local_passthrough_nat_rules_nft(gateway_settings, default_iface):
             _append_nft(NFT_CHAIN_NAT_POSTROUTING, expr)
         for expr in _build_local_passthrough_rules_nft(gateway_settings, default_iface):
@@ -1006,10 +1084,20 @@ def apply_local_passthrough(gateway_settings: GatewaySettings) -> None:
         return
 
     _teardown_nftables_stack()
+    _ensure_chain("mangle", MANGLE_OUTPUT_CHAIN)
+    _ensure_chain("filter", FILTER_INPUT_CHAIN)
     _ensure_chain("filter", FILTER_FORWARD_CHAIN)
+    _ensure_chain("filter", FILTER_OUTPUT_CHAIN)
     _ensure_chain("nat", NAT_POSTROUTING_CHAIN)
+    _ensure_jump("mangle", "OUTPUT", MANGLE_OUTPUT_CHAIN)
+    _ensure_jump("filter", "INPUT", FILTER_INPUT_CHAIN)
     _ensure_jump("filter", "FORWARD", FILTER_FORWARD_CHAIN)
+    _ensure_jump("filter", "OUTPUT", FILTER_OUTPUT_CHAIN)
     _ensure_jump("nat", "POSTROUTING", NAT_POSTROUTING_CHAIN)
+    for table, chain, rule in _build_local_passthrough_output_rules(gateway_settings):
+        _append(table, chain, rule)
+    for rule in _build_input_counter_rules(gateway_settings, default_iface):
+        _append("filter", FILTER_INPUT_CHAIN, rule)
     for rule in _build_local_passthrough_nat_rules(gateway_settings, default_iface):
         _append("nat", NAT_POSTROUTING_CHAIN, rule)
     for rule in _build_local_passthrough_rules(gateway_settings, default_iface):

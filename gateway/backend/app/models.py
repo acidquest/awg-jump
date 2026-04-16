@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import BIGINT, Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -211,3 +211,66 @@ class SystemMetric(Base):
     memory_total_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     memory_used_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     memory_free_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class TrafficMetricState(Base):
+    __tablename__ = "traffic_metric_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    local_interface_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    vpn_interface_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    local_rx_raw_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    local_tx_raw_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    vpn_rx_raw_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    vpn_tx_raw_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    local_rx_total_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    local_tx_total_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    vpn_rx_total_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    vpn_tx_total_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+
+
+class TrafficMetricRaw(Base):
+    __tablename__ = "traffic_metric_raw"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True, nullable=False)
+    local_interface_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    vpn_interface_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    local_rx_total_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    local_tx_total_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    vpn_rx_total_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    vpn_tx_total_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+
+
+class TrafficMetricMinute(Base):
+    __tablename__ = "traffic_metric_minute"
+
+    bucket_start: Mapped[datetime] = mapped_column(DateTime, primary_key=True)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    local_rx_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    local_tx_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    vpn_rx_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    vpn_tx_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+
+
+class TrafficMetricHour(Base):
+    __tablename__ = "traffic_metric_hour"
+
+    bucket_start: Mapped[datetime] = mapped_column(DateTime, primary_key=True)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    local_rx_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    local_tx_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    vpn_rx_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    vpn_tx_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+
+
+class TrafficMetricDay(Base):
+    __tablename__ = "traffic_metric_day"
+
+    bucket_start: Mapped[datetime] = mapped_column(DateTime, primary_key=True)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    local_rx_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    local_tx_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    vpn_rx_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+    vpn_tx_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)

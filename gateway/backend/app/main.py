@@ -23,6 +23,7 @@ from app.services.routing import apply_local_passthrough, apply_routing_plan, sy
 from app.services.traffic_sources import migrate_legacy_source_settings
 from app.services.runtime import reset_active_node_uptime, resolve_live_tunnel_status, stop_tunnel
 from app.services.system_metrics import collect_system_metrics
+from app.services.traffic_metrics import RAW_SAMPLE_INTERVAL_SECONDS, collect_traffic_metrics
 
 
 logging.basicConfig(
@@ -193,6 +194,87 @@ async def _ensure_sqlite_columns() -> None:
         await conn.execute(
             text(
                 """
+                CREATE TABLE IF NOT EXISTS traffic_metric_state (
+                    id INTEGER PRIMARY KEY,
+                    collected_at DATETIME NOT NULL,
+                    local_interface_name VARCHAR(64),
+                    vpn_interface_name VARCHAR(64) NOT NULL,
+                    local_rx_raw_bytes BIGINT NOT NULL DEFAULT 0,
+                    local_tx_raw_bytes BIGINT NOT NULL DEFAULT 0,
+                    vpn_rx_raw_bytes BIGINT NOT NULL DEFAULT 0,
+                    vpn_tx_raw_bytes BIGINT NOT NULL DEFAULT 0,
+                    local_rx_total_bytes BIGINT NOT NULL DEFAULT 0,
+                    local_tx_total_bytes BIGINT NOT NULL DEFAULT 0,
+                    vpn_rx_total_bytes BIGINT NOT NULL DEFAULT 0,
+                    vpn_tx_total_bytes BIGINT NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS traffic_metric_raw (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    collected_at DATETIME NOT NULL,
+                    local_interface_name VARCHAR(64),
+                    vpn_interface_name VARCHAR(64) NOT NULL,
+                    local_rx_total_bytes BIGINT NOT NULL DEFAULT 0,
+                    local_tx_total_bytes BIGINT NOT NULL DEFAULT 0,
+                    vpn_rx_total_bytes BIGINT NOT NULL DEFAULT 0,
+                    vpn_tx_total_bytes BIGINT NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_traffic_metric_raw_collected_at ON traffic_metric_raw (collected_at)")
+        )
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS traffic_metric_minute (
+                    bucket_start DATETIME PRIMARY KEY,
+                    sample_count INTEGER NOT NULL DEFAULT 0,
+                    local_rx_bytes BIGINT NOT NULL DEFAULT 0,
+                    local_tx_bytes BIGINT NOT NULL DEFAULT 0,
+                    vpn_rx_bytes BIGINT NOT NULL DEFAULT 0,
+                    vpn_tx_bytes BIGINT NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS traffic_metric_hour (
+                    bucket_start DATETIME PRIMARY KEY,
+                    sample_count INTEGER NOT NULL DEFAULT 0,
+                    local_rx_bytes BIGINT NOT NULL DEFAULT 0,
+                    local_tx_bytes BIGINT NOT NULL DEFAULT 0,
+                    vpn_rx_bytes BIGINT NOT NULL DEFAULT 0,
+                    vpn_tx_bytes BIGINT NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS traffic_metric_day (
+                    bucket_start DATETIME PRIMARY KEY,
+                    sample_count INTEGER NOT NULL DEFAULT 0,
+                    local_rx_bytes BIGINT NOT NULL DEFAULT 0,
+                    local_tx_bytes BIGINT NOT NULL DEFAULT 0,
+                    vpn_rx_bytes BIGINT NOT NULL DEFAULT 0,
+                    vpn_tx_bytes BIGINT NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
                 CREATE TABLE IF NOT EXISTS first_node_bootstrap_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     target_host VARCHAR(256) NOT NULL,
@@ -273,6 +355,19 @@ async def _metrics_loop(stop_event: asyncio.Event) -> None:
             continue
 
 
+async def _traffic_metrics_loop(stop_event: asyncio.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            async with AsyncSessionLocal() as session:
+                await collect_traffic_metrics(session)
+        except Exception as exc:
+            logger.error("[gateway-traffic-metrics] sample failed: %s", exc)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=RAW_SAMPLE_INTERVAL_SECONDS)
+        except asyncio.TimeoutError:
+            continue
+
+
 async def _external_ip_loop(stop_event: asyncio.Event) -> None:
     while not stop_event.is_set():
         try:
@@ -313,9 +408,11 @@ async def _failover_loop(stop_event: asyncio.Event) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     metrics_stop = asyncio.Event()
+    traffic_metrics_stop = asyncio.Event()
     external_ip_stop = asyncio.Event()
     failover_stop = asyncio.Event()
     metrics_task: asyncio.Task | None = None
+    traffic_metrics_task: asyncio.Task | None = None
     external_ip_task: asyncio.Task | None = None
     failover_task: asyncio.Task | None = None
     ensure_directories()
@@ -351,14 +448,18 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.error("[gateway-startup] external IP refresh failed: %s", exc)
     metrics_task = asyncio.create_task(_metrics_loop(metrics_stop))
+    traffic_metrics_task = asyncio.create_task(_traffic_metrics_loop(traffic_metrics_stop))
     external_ip_task = asyncio.create_task(_external_ip_loop(external_ip_stop))
     failover_task = asyncio.create_task(_failover_loop(failover_stop))
     yield
     metrics_stop.set()
+    traffic_metrics_stop.set()
     external_ip_stop.set()
     failover_stop.set()
     if metrics_task is not None:
         await metrics_task
+    if traffic_metrics_task is not None:
+        await traffic_metrics_task
     if external_ip_task is not None:
         await external_ip_task
     if failover_task is not None:

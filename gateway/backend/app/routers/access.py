@@ -13,6 +13,7 @@ from app.services.external_ip import serialize_external_ip_info
 from app.services.routing import apply_local_passthrough, apply_routing_plan, build_prefix_summary, build_routing_plan, sync_firewall_backend
 from app.services.runtime import probe_node_latency_details, reset_active_node_uptime, resolve_live_tunnel_status, start_tunnel, stop_tunnel
 from app.services.system_metrics import get_metrics_history
+from app.services.traffic_metrics import get_traffic_usage_summary
 
 
 router = APIRouter(prefix="/api/access", tags=["access"])
@@ -48,6 +49,7 @@ async def _load_runtime_state(db: AsyncSession, settings_row: GatewaySettings) -
 async def _build_status_payload(db: AsyncSession, settings_row: GatewaySettings) -> dict:
     policy, active_node, prefix_summary, probe = await _load_runtime_state(db, settings_row)
     latest_metric, _history = await get_metrics_history(db, hours=1)
+    traffic_summary = await get_traffic_usage_summary(db)
     external_ip_info = serialize_external_ip_info(settings_row, policy)
 
     return {
@@ -80,6 +82,7 @@ async def _build_status_payload(db: AsyncSession, settings_row: GatewaySettings)
             "memory_used_bytes": latest_metric.memory_used_bytes if latest_metric else None,
             "memory_free_bytes": latest_metric.memory_free_bytes if latest_metric else None,
         },
+        "traffic": traffic_summary,
         "runtime_mode": settings_row.runtime_mode,
         "routing_mode": {
             "target": "local" if policy.prefixes_route_local else "awg",

@@ -79,6 +79,41 @@ https://<gateway-host>/api/access
     "memory_used_bytes": 734003200,
     "memory_free_bytes": 1413470448
   },
+  "traffic": {
+    "current": {
+      "collected_at": "2026-04-15T18:20:00+00:00",
+      "local_interface_name": "eth0",
+      "vpn_interface_name": "awg-gw0",
+      "local": {
+        "rx_bytes": 12837412,
+        "tx_bytes": 19384756
+      },
+      "vpn": {
+        "rx_bytes": 22193847,
+        "tx_bytes": 28734123
+      }
+    },
+    "last_hour": {
+      "local": {
+        "rx_bytes": 884123,
+        "tx_bytes": 1293456
+      },
+      "vpn": {
+        "rx_bytes": 1532456,
+        "tx_bytes": 1884321
+      }
+    },
+    "last_day": {
+      "local": {
+        "rx_bytes": 18441234,
+        "tx_bytes": 25993456
+      },
+      "vpn": {
+        "rx_bytes": 31532456,
+        "tx_bytes": 38884321
+      }
+    }
+  },
   "runtime_mode": "userspace",
   "routing_mode": {
     "target": "local",
@@ -99,11 +134,19 @@ https://<gateway-host>/api/access
 - активный firewall stack
 - число активных префиксов
 - CPU и память
+- трафик gateway только через контейнер, отдельно по `local` и `vpn`, входящий (`rx_bytes`) и исходящий (`tx_bytes`)
 - runtime mode
 - routing mode
 - состояние kill switch
 
 Набор полей можно расширять дальше без изменения модели доступа.
+
+## Нюансы по traffic counters
+
+- API отдает абсолютные счётчики `BIGINT` в байтах, пригодные для Home Assistant и других систем мониторинга.
+- Поля `traffic.current.*.rx_bytes` и `traffic.current.*.tx_bytes` монотонно растут внутри логики gateway и переживают сброс системных firewall counters.
+- Если underlying-счётчик сбросился в ноль, gateway начинает новый отсчёт корректно и продолжает суммарный total без отрицательных дельт.
+- Это именно трафик, прошедший через правила gateway-контейнера, а не весь трафик интерфейсов хоста.
 
 ## Ротация ключа
 
