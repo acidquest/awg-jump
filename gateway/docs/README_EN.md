@@ -19,7 +19,7 @@
 
 ## Overview
 
-`AWG Gateway` in [`gateway/`](../README.md) is a standalone Linux-only gateway contained inside the `awg-jump` repository. It is designed for the case where the entry node already exists and the gateway only needs to:
+`AWG Gateway` in `gateway/` is a standalone Linux-only gateway contained inside the `awg-jump` repository. It is designed for the case where the entry node already exists and the gateway only needs to:
 
 - import the entry node peer config from a `.conf` exported by `awg-jump`;
 - start a local tunnel runtime based on AmneziaWG;
@@ -31,7 +31,6 @@
 
 Related documents:
 
-- [Gateway short README](../README.md)
 - [Key-based access API](api_access_ru.md)
 - [i18n module format](i18n_ru.md)
 

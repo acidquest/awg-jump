@@ -66,7 +66,6 @@ API контейнера `awg-jump` также биндуется на `127.0.0.
 
 - [Полная документация (RU)](docs/README_RU.md)
 - [Full documentation (EN)](docs/README_EN.md)
-- [Gateway-only block](gateway/README.md)
 - [Deploy via Docker Hub (RU)](docs/DEPLOY_DOCKER_HUB_RU.md)
 - [Deploy via Docker Hub (EN)](docs/DEPLOY_DOCKER_HUB_EN.md)
 

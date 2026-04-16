@@ -39,11 +39,10 @@ The repository contains two Docker images:
 
 ## AWG Gateway
 
-The repository also contains a dedicated [`gateway/`](../gateway/README.md) block for a standalone gateway deployment. It is an autonomous Linux-only gateway container that imports an entry node peer config from `awg-jump`, starts a local AWG tunnel runtime, applies policy routing and split DNS, and does not manage the upstream node directly.
+The repository also contains a dedicated `gateway/` block for a standalone gateway deployment. It is an autonomous Linux-only gateway container that imports an entry node peer config from `awg-jump`, starts a local AWG tunnel runtime, applies policy routing and split DNS, and does not manage the upstream node directly.
 
 Primary gateway documents:
 
-- [Gateway README](../gateway/README.md)
 - [AWG Gateway full documentation (RU)](../gateway/docs/README_RU.md)
 - [AWG Gateway full documentation (EN)](../gateway/docs/README_EN.md)
 - [Key-based telemetry/control API](../gateway/docs/api_access_ru.md)

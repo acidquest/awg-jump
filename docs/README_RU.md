@@ -39,11 +39,10 @@
 
 ## AWG Gateway
 
-В репозитории также есть отдельный блок [`gateway/`](../gateway/README.md) для сценария standalone-шлюза. Это автономный Linux-only gateway-контейнер, который импортирует peer-конфиг entry node из `awg-jump`, поднимает локальный AWG tunnel runtime, применяет policy routing и split DNS, но не управляет самой upstream-нодой напрямую.
+В репозитории также есть отдельный блок `gateway/` для сценария standalone-шлюза. Это автономный Linux-only gateway-контейнер, который импортирует peer-конфиг entry node из `awg-jump`, поднимает локальный AWG tunnel runtime, применяет policy routing и split DNS, но не управляет самой upstream-нодой напрямую.
 
 Основные документы по шлюзу:
 
-- [Gateway README](../gateway/README.md)
 - [Полная документация AWG Gateway (RU)](../gateway/docs/README_RU.md)
 - [Full AWG Gateway documentation (EN)](../gateway/docs/README_EN.md)
 - [API по ключу для телеметрии и управления](../gateway/docs/api_access_ru.md)
