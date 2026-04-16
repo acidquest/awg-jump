@@ -26,9 +26,7 @@
 
 - [backend](backend) — автономный gateway backend.
 - [frontend](frontend) — операторский UI.
-- [docs/session_log_ru.md](docs/session_log_ru.md) — отчёт по сессиям 1-9.
 - [docs/i18n_ru.md](docs/i18n_ru.md) — формат языковых модулей.
-- [docs/future_integration_notes_ru.md](docs/future_integration_notes_ru.md) — только точки расширения, без интеграции.
 - [docs/api_access_ru.md](docs/api_access_ru.md) — API по ключу для телеметрии и управления.
 
 ## Локальный запуск
