@@ -506,6 +506,15 @@ select.form-input option { background: var(--bg-3); }
   text-transform: uppercase;
   text-align: center;
   vertical-align: middle;
+  align-self: center;
+  flex: 0 0 auto;
+}
+
+.device-identity-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .device-api-toggle.active {

@@ -2854,7 +2854,7 @@ function DevicesPage() {
         rowClassName={(rowIndex) => (sortedDevices[rowIndex]?.is_marked ? 'device-row-marked' : '')}
         rows={sortedDevices.map((device) => [
           <div key={`identity-${device.id}`}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <div className="device-identity-row">
               <div style={{ fontWeight: 600 }}>{device.display_name}</div>
               <button
                 type="button"
@@ -2865,11 +2865,6 @@ function DevicesPage() {
               </button>
             </div>
             <div className="text-muted text-sm">{device.hostname || device.identity_key}</div>
-            {device.ip_history.length ? (
-              <div className="text-muted text-sm">
-                {t('ipHistory')}: {device.ip_history.map((row) => row.ip_address).join(', ')}
-              </div>
-            ) : null}
           </div>,
           <div key={`state-${device.id}`}>
             <span className={`badge ${device.presence_state === 'active' ? 'badge-online' : device.presence_state === 'present' ? 'badge-warning' : 'badge-offline'}`}>
