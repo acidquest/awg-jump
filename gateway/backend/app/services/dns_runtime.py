@@ -16,6 +16,7 @@ from app.models import DnsDomainRule, DnsManualAddress, DnsUpstream, GatewaySett
 from app.services.dns import build_dnsmasq_config
 from app.services.external_ip import effective_fqdn_prefixes
 from app.services.nftables_manager import TABLE_NAME as NFT_TABLE_NAME
+from app.services.protected_dns import status as protected_dns_status, stop_all as stop_protected_dns, sync as sync_protected_dns
 from app.services.routing import firewall_backend, fqdn_ipset_name
 
 
@@ -45,6 +46,7 @@ def status() -> dict:
         "pid_path": str(pid_path()),
         "last_error": _DNS_LAST_ERROR,
         "runtime_user": _DNS_RUNTIME_USER,
+        **protected_dns_status(),
     }
 
 
@@ -77,6 +79,19 @@ async def render_runtime_config(db: AsyncSession) -> str:
 async def restart_dnsmasq(db: AsyncSession) -> dict:
     global _DNS_PROCESS, _DNS_LAST_ERROR
     stop_dnsmasq()
+    upstreams = (await db.execute(select(DnsUpstream).order_by(DnsUpstream.zone))).scalars().all()
+    sync_protected_dns(
+        [
+            {
+                "protocol": item.protocol,
+                "endpoint_host": item.endpoint_host,
+                "endpoint_port": item.endpoint_port or 853,
+                "endpoint_url": item.endpoint_url,
+                "bootstrap_address": item.bootstrap_address,
+            }
+            for item in upstreams
+        ]
+    )
     config_path().write_text(await render_runtime_config(db), encoding="utf-8")
     proc = subprocess.Popen(
         [
@@ -172,3 +187,4 @@ def stop_dnsmasq() -> None:
             _DNS_PROCESS.kill()
     _remove_pidfile()
     _DNS_PROCESS = None
+    stop_protected_dns()

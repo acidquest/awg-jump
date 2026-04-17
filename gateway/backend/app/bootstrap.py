@@ -61,6 +61,7 @@ async def ensure_bootstrap_state(db: AsyncSession) -> None:
                 servers=["77.88.8.8"],
                 description="",
                 is_builtin=True,
+                protocol="plain",
             )
         )
 
@@ -73,6 +74,7 @@ async def ensure_bootstrap_state(db: AsyncSession) -> None:
                 servers=[server.strip() for server in settings.default_dns_servers.split(",") if server.strip()],
                 description="",
                 is_builtin=True,
+                protocol="plain",
             )
         )
 

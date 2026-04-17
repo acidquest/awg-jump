@@ -7,9 +7,10 @@ import logging
 import re
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/dns", tags=["dns"])
 
 _ZONE_KEY_PATTERN = re.compile(r"[^a-z0-9]+")
+_SUPPORTED_PROTOCOLS = {"plain", "dot", "doh"}
 
 
 class DomainCreate(BaseModel):
@@ -64,24 +66,71 @@ class DnsZoneResponse(BaseModel):
     dns_servers: list[str]
     description: str
     is_builtin: bool
+    protocol: str
+    endpoint_host: str
+    endpoint_port: int | None
+    endpoint_url: str
+    bootstrap_address: str
     updated_at: datetime
 
 
 class DnsZoneCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
-    dns_servers: list[str] = Field(min_length=1, max_length=3)
+    protocol: str = "plain"
+    dns_servers: list[str] = Field(default_factory=list, max_length=3)
+    endpoint_host: str = ""
+    endpoint_port: int | None = None
+    endpoint_url: str = ""
+    bootstrap_address: str = ""
     domains: list[str] = Field(default_factory=list)
+
+    @field_validator("protocol")
+    @classmethod
+    def validate_protocol(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in _SUPPORTED_PROTOCOLS:
+            raise ValueError(f"Unsupported DNS protocol: {value}")
+        return normalized
 
     @field_validator("dns_servers")
     @classmethod
     def validate_dns_servers(cls, value: list[str]) -> list[str]:
-        return _normalize_dns_servers(value)
+        return _normalize_dns_servers(value) if value else []
+
+    @model_validator(mode="after")
+    def validate_protocol_fields(self) -> "DnsZoneCreate":
+        _validate_zone_payload(
+            protocol=self.protocol,
+            dns_servers=self.dns_servers,
+            endpoint_host=self.endpoint_host,
+            endpoint_port=self.endpoint_port,
+            endpoint_url=self.endpoint_url,
+            bootstrap_address=self.bootstrap_address,
+        )
+        if self.protocol == "dot" and self.endpoint_port is None:
+            self.endpoint_port = 853
+        return self
 
 
 class DnsZoneUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=128)
-    dns_servers: Optional[list[str]] = Field(default=None, min_length=1, max_length=3)
+    protocol: Optional[str] = None
+    dns_servers: Optional[list[str]] = Field(default=None, max_length=3)
+    endpoint_host: Optional[str] = None
+    endpoint_port: Optional[int] = None
+    endpoint_url: Optional[str] = None
+    bootstrap_address: Optional[str] = None
     description: Optional[str] = None
+
+    @field_validator("protocol")
+    @classmethod
+    def validate_protocol(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        normalized = value.strip().lower()
+        if normalized not in _SUPPORTED_PROTOCOLS:
+            raise ValueError(f"Unsupported DNS protocol: {value}")
+        return normalized
 
     @field_validator("dns_servers")
     @classmethod
@@ -157,8 +206,84 @@ def _zone_to_response(zone: DnsZoneSettings) -> DnsZoneResponse:
         dns_servers=json.loads(zone.dns_servers),
         description=zone.description,
         is_builtin=zone.is_builtin,
+        protocol=zone.protocol,
+        endpoint_host=zone.endpoint_host,
+        endpoint_port=zone.endpoint_port,
+        endpoint_url=zone.endpoint_url,
+        bootstrap_address=zone.bootstrap_address,
         updated_at=zone.updated_at,
     )
+
+
+def _is_ip_address(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def _normalize_bootstrap_address(raw: str) -> str:
+    candidate = raw.strip()
+    if not candidate:
+        return ""
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError as exc:
+        raise ValueError(f"Invalid bootstrap IP address: {raw}") from exc
+
+
+def _extract_hostname_from_url(raw_url: str) -> str:
+    parsed = urlparse(raw_url.strip())
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("DoH endpoint must be a valid https:// URL")
+    return parsed.hostname.rstrip(".").lower()
+
+
+def _validate_zone_payload(
+    *,
+    protocol: str,
+    dns_servers: list[str],
+    endpoint_host: str,
+    endpoint_port: int | None,
+    endpoint_url: str,
+    bootstrap_address: str,
+) -> None:
+    normalized_host = endpoint_host.strip().rstrip(".").lower()
+    normalized_url = endpoint_url.strip()
+    normalized_bootstrap = _normalize_bootstrap_address(bootstrap_address)
+
+    if protocol == "plain":
+        if not dns_servers:
+            raise ValueError("At least one DNS server is required for plain DNS zones")
+        return
+
+    if protocol == "dot":
+        if not normalized_host:
+            raise ValueError("DoT zones require an endpoint host")
+        if endpoint_port is not None and not (1 <= endpoint_port <= 65535):
+            raise ValueError("DoT port must be in range 1..65535")
+        if not _is_ip_address(normalized_host) and not normalized_bootstrap:
+            raise ValueError("DoT zones with hostname endpoints require a bootstrap IP")
+        return
+
+    if protocol == "doh":
+        doh_host = _extract_hostname_from_url(normalized_url)
+        if not _is_ip_address(doh_host) and not normalized_bootstrap:
+            raise ValueError("DoH zones with hostname endpoints require a bootstrap IP")
+        return
+
+
+async def _ensure_protocol_slot_available(session: AsyncSession, protocol: str, current_zone: str | None = None) -> None:
+    if protocol not in {"dot", "doh"}:
+        return
+    result = await session.execute(select(DnsZoneSettings).where(DnsZoneSettings.protocol == protocol))
+    for item in result.scalars().all():
+        if item.is_builtin:
+            continue
+        if current_zone is not None and item.zone == current_zone:
+            continue
+        raise HTTPException(status_code=409, detail=f"Only one {protocol.upper()} zone can exist")
 
 
 async def _get_zone_or_404(session: AsyncSession, zone_key: str) -> DnsZoneSettings:
@@ -229,6 +354,7 @@ async def create_zone(
     session: AsyncSession = Depends(get_db),
 ) -> DnsZoneResponse:
     await dns_mgr.get_zones(session)
+    await _ensure_protocol_slot_available(session, body.protocol)
 
     zone_key_base = _normalize_zone_key(body.name)
     zone_key = zone_key_base
@@ -243,6 +369,11 @@ async def create_zone(
         dns_servers=json.dumps(body.dns_servers),
         description="",
         is_builtin=False,
+        protocol=body.protocol,
+        endpoint_host=body.endpoint_host.strip().rstrip(".").lower() if body.protocol == "dot" else "",
+        endpoint_port=body.endpoint_port if body.protocol == "dot" else None,
+        endpoint_url=body.endpoint_url.strip() if body.protocol == "doh" else "",
+        bootstrap_address=_normalize_bootstrap_address(body.bootstrap_address) if body.protocol in {"dot", "doh"} else "",
         updated_at=datetime.utcnow(),
     )
     session.add(zone)
@@ -282,10 +413,37 @@ async def update_zone(
     await dns_mgr.get_zones(session)
     obj = await _get_zone_or_404(session, zone)
 
+    protocol = body.protocol if body.protocol is not None else obj.protocol
+    dns_servers = body.dns_servers if body.dns_servers is not None else json.loads(obj.dns_servers)
+    endpoint_host = body.endpoint_host if body.endpoint_host is not None else obj.endpoint_host
+    endpoint_port = body.endpoint_port if body.endpoint_port is not None else obj.endpoint_port
+    endpoint_url = body.endpoint_url if body.endpoint_url is not None else obj.endpoint_url
+    bootstrap_address = body.bootstrap_address if body.bootstrap_address is not None else obj.bootstrap_address
+
+    if obj.is_builtin and protocol != "plain":
+        raise HTTPException(status_code=400, detail="Built-in DNS zones must stay plain")
+    await _ensure_protocol_slot_available(session, protocol, current_zone=obj.zone)
+    try:
+        _validate_zone_payload(
+            protocol=protocol,
+            dns_servers=dns_servers,
+            endpoint_host=endpoint_host,
+            endpoint_port=endpoint_port,
+            endpoint_url=endpoint_url,
+            bootstrap_address=bootstrap_address,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     if body.name is not None:
         obj.name = body.name.strip()
     if body.dns_servers is not None:
         obj.dns_servers = json.dumps(body.dns_servers)
+    obj.protocol = protocol
+    obj.endpoint_host = endpoint_host.strip().rstrip(".").lower() if protocol == "dot" else ""
+    obj.endpoint_port = (853 if endpoint_port is None else endpoint_port) if protocol == "dot" else None
+    obj.endpoint_url = endpoint_url.strip() if protocol == "doh" else ""
+    obj.bootstrap_address = _normalize_bootstrap_address(bootstrap_address) if protocol in {"dot", "doh"} else ""
     if body.description is not None:
         obj.description = body.description
     obj.updated_at = datetime.utcnow()

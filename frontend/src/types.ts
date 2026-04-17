@@ -128,6 +128,11 @@ export interface DnsZone {
   dns_servers: string[]
   description: string
   is_builtin: boolean
+  protocol: 'plain' | 'dot' | 'doh'
+  endpoint_host: string
+  endpoint_port: number | null
+  endpoint_url: string
+  bootstrap_address: string
   updated_at: string
 }
 
@@ -138,6 +143,18 @@ export interface DnsStatus {
   conf_file: string
   local_zone_dns?: string[]
   vpn_zone_dns?: string[]
+  stubby?: {
+    enabled: boolean
+    running: boolean
+    listen: string
+    config: string
+  }
+  cloudflared?: {
+    enabled: boolean
+    running: boolean
+    listen: string
+    config: string
+  }
 }
 
 export interface SystemStatus {

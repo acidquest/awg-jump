@@ -23,7 +23,17 @@ import { DnsDomain, DnsManualAddress, DnsStatus, DnsZone } from '../types'
 import { formatDateTimeLocal } from '../utils/time'
 
 type Notice = { type: 'success' | 'error'; message: string } | null
-type ZonePayload = { name: string; dns_servers: string[]; description?: string }
+type DnsZoneProtocol = 'plain' | 'dot' | 'doh'
+type ZonePayload = {
+  name: string
+  protocol: DnsZoneProtocol
+  dns_servers: string[]
+  endpoint_host: string
+  endpoint_port: number | null
+  endpoint_url: string
+  bootstrap_address: string
+  description?: string
+}
 
 const IPV4_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/
 const IPV6_REGEX = /^[0-9a-fA-F:]+$/
@@ -78,10 +88,10 @@ export default function DNS() {
   const reloadMut = useMutation({
     mutationFn: reloadDns,
     onSuccess: () => {
-      setNotice({ type: 'success', message: 'dnsmasq reloaded.' })
+      setNotice({ type: 'success', message: 'DNS runtime reloaded.' })
       refreshDnsData()
     },
-    onError: () => setNotice({ type: 'error', message: 'Failed to reload dnsmasq.' }),
+    onError: () => setNotice({ type: 'error', message: 'Failed to reload DNS runtime.' }),
   })
 
   const updateZoneMut = useMutation({
@@ -139,21 +149,19 @@ export default function DNS() {
   const localCount = domains.filter((d) => d.enabled && d.zone === 'local').length
   const zoneMap = new Map(zones.map((zone) => [zone.zone, zone]))
   const zoneColumnsClass = getZoneColumnsClass(zones.length)
+  const dotZoneExists = zones.some((zone) => !zone.is_builtin && zone.protocol === 'dot')
+  const dohZoneExists = zones.some((zone) => !zone.is_builtin && zone.protocol === 'doh')
 
   return (
     <>
       <div className="page-header">
         <div>
           <div className="page-title">Split DNS</div>
-          <div className="page-subtitle">Policy-based domain name resolution</div>
+          <div className="page-subtitle">Policy-based domain name resolution with Plain DNS, DoT, and DoH zones</div>
         </div>
         <div className="flex gap-2">
-          <button
-            className="btn btn-secondary btn-sm"
-            onClick={() => reloadMut.mutate()}
-            disabled={reloadMut.isPending}
-          >
-            {reloadMut.isPending ? <span className="spinner" /> : 'Reload dnsmasq'}
+          <button className="btn btn-secondary btn-sm" onClick={() => reloadMut.mutate()} disabled={reloadMut.isPending}>
+            {reloadMut.isPending ? <span className="spinner" /> : 'Reload DNS runtime'}
           </button>
           <button className="btn btn-primary" onClick={() => setAddZoneOpen(true)}>
             + Add Zone
@@ -163,24 +171,23 @@ export default function DNS() {
 
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="flex items-center justify-between" style={{ flexWrap: 'wrap', gap: 12 }}>
-          <div className="flex items-center gap-3">
-            <div
-              style={{
-                width: 10,
-                height: 10,
-                borderRadius: '50%',
-                background: status?.running ? 'var(--green)' : 'var(--red)',
-                flexShrink: 0,
-              }}
-            />
-            <div style={{ fontWeight: 600, fontSize: 14, color: status?.running ? undefined : 'var(--red)' }}>
-              dnsmasq {status?.running ? 'running' : 'stopped'}
-            </div>
-          </div>
-
-          <InfoChip label="Listen" value={status ? `${status.listen_ip}:53, 127.0.0.1:53` : '—'} />
-          <InfoChip label="Local" value={zoneMap.get('local')?.dns_servers.join(', ') ?? '—'} accent />
-          <InfoChip label="Upstream" value={zoneMap.get('vpn')?.dns_servers.join(', ') ?? '—'} />
+          <StatusChip
+            label="dnsmasq"
+            running={Boolean(status?.running)}
+            details={status ? `${status.listen_ip}:53, 127.0.0.1:53` : '—'}
+          />
+          <StatusChip
+            label="stubby"
+            running={Boolean(status?.stubby?.running)}
+            details={status?.stubby?.enabled ? status.stubby.listen : 'disabled'}
+          />
+          <StatusChip
+            label="cloudflared"
+            running={Boolean(status?.cloudflared?.running)}
+            details={status?.cloudflared?.enabled ? status.cloudflared.listen : 'disabled'}
+          />
+          <InfoChip label="Local" value={renderZoneTarget(zoneMap.get('local'))} accent />
+          <InfoChip label="Upstream" value={renderZoneTarget(zoneMap.get('vpn'))} />
 
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ textAlign: 'center' }}>
@@ -217,6 +224,10 @@ export default function DNS() {
           </div>
         ) : null}
 
+        <div className="text-muted text-sm" style={{ marginBottom: 14 }}>
+          One custom DoT zone and one custom DoH zone can exist at the same time.
+        </div>
+
         {zonesLoading ? (
           <div style={{ textAlign: 'center', padding: 40 }}><span className="spinner" /></div>
         ) : zonesError ? (
@@ -224,12 +235,7 @@ export default function DNS() {
         ) : (
           <div className={`card-grid ${zoneColumnsClass}`}>
             {zones.map((zone) => (
-              <ZoneCard
-                key={zone.zone}
-                zone={zone}
-                onEdit={() => setEditZone(zone)}
-                onDelete={() => setDeleteZoneTarget(zone)}
-              />
+              <ZoneCard key={zone.zone} zone={zone} onEdit={() => setEditZone(zone)} onDelete={() => setDeleteZoneTarget(zone)} />
             ))}
           </div>
         )}
@@ -239,23 +245,11 @@ export default function DNS() {
         <div className="card-header" style={{ alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div className="card-title">
             Domains
-            {disabledCount > 0 ? (
-              <span className="text-muted text-sm" style={{ marginLeft: 8, fontWeight: 400 }}>
-                ({disabledCount} disabled)
-              </span>
-            ) : null}
+            {disabledCount > 0 ? <span className="text-muted text-sm" style={{ marginLeft: 8, fontWeight: 400 }}>({disabledCount} disabled)</span> : null}
           </div>
           <div className="flex gap-2" style={{ marginLeft: 'auto', flexWrap: 'wrap' }}>
-            <input
-              className="form-input"
-              placeholder="Filter domains…"
-              value={domainFilter}
-              onChange={(e) => setDomainFilter(e.target.value)}
-              style={{ width: 220, fontSize: 13 }}
-            />
-            <button className="btn btn-primary btn-sm" onClick={() => setAddDomainOpen(true)}>
-              + Add Domain
-            </button>
+            <input className="form-input" placeholder="Filter domains…" value={domainFilter} onChange={(e) => setDomainFilter(e.target.value)} style={{ width: 220, fontSize: 13 }} />
+            <button className="btn btn-primary btn-sm" onClick={() => setAddDomainOpen(true)}>+ Add Domain</button>
           </div>
         </div>
 
@@ -299,16 +293,8 @@ export default function DNS() {
         <div className="card-header" style={{ alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div className="card-title">Manual Replace Addresses</div>
           <div className="flex gap-2" style={{ marginLeft: 'auto', flexWrap: 'wrap' }}>
-            <input
-              className="form-input"
-              placeholder="Filter domains…"
-              value={manualAddressFilter}
-              onChange={(e) => setManualAddressFilter(e.target.value)}
-              style={{ width: 220, fontSize: 13 }}
-            />
-            <button className="btn btn-primary btn-sm" onClick={() => setAddManualAddressOpen(true)}>
-              + Add
-            </button>
+            <input className="form-input" placeholder="Filter domains…" value={manualAddressFilter} onChange={(e) => setManualAddressFilter(e.target.value)} style={{ width: 220, fontSize: 13 }} />
+            <button className="btn btn-primary btn-sm" onClick={() => setAddManualAddressOpen(true)}>+ Add</button>
           </div>
         </div>
 
@@ -359,12 +345,21 @@ export default function DNS() {
       ) : null}
 
       {addZoneOpen ? (
-        <AddZoneModal
+        <ZoneModal
+          title="Add zone"
+          helperText={`Available protected slots: DoT ${dotZoneExists ? 'used' : 'free'}, DoH ${dohZoneExists ? 'used' : 'free'}.`}
+          dotSlotTaken={dotZoneExists}
+          dohSlotTaken={dohZoneExists}
           onClose={() => setAddZoneOpen(false)}
-          onSaved={() => {
-            setAddZoneOpen(false)
-            refreshDnsData()
-          }}
+          onSave={(payload, domains) =>
+            createDnsZone({
+              ...payload,
+              domains,
+            }).then(() => {
+              setAddZoneOpen(false)
+              refreshDnsData()
+            })
+          }
         />
       ) : null}
 
@@ -379,11 +374,14 @@ export default function DNS() {
       ) : null}
 
       {editZone ? (
-        <EditZoneModal
-          zone={editZone}
-          saving={updateZoneMut.isPending}
+        <ZoneModal
+          title="Edit zone"
+          initialZone={editZone}
+          dotSlotTaken={dotZoneExists && editZone.protocol !== 'dot'}
+          dohSlotTaken={dohZoneExists && editZone.protocol !== 'doh'}
           onClose={() => setEditZone(null)}
           onSave={(payload) => updateZoneMut.mutate({ zone: editZone.zone, payload })}
+          saving={updateZoneMut.isPending}
         />
       ) : null}
 
@@ -415,11 +413,7 @@ export default function DNS() {
           </div>
           <div className="modal-actions">
             <button className="btn btn-secondary" onClick={() => setDeleteTarget(null)}>Cancel</button>
-            <button
-              className="btn btn-danger"
-              onClick={() => deleteMut.mutate(deleteTarget.id)}
-              disabled={deleteMut.isPending}
-            >
+            <button className="btn btn-danger" onClick={() => deleteMut.mutate(deleteTarget.id)} disabled={deleteMut.isPending}>
               {deleteMut.isPending ? <span className="spinner" /> : 'Delete'}
             </button>
           </div>
@@ -433,11 +427,7 @@ export default function DNS() {
           </div>
           <div className="modal-actions">
             <button className="btn btn-secondary" onClick={() => setDeleteManualAddressTarget(null)}>Cancel</button>
-            <button
-              className="btn btn-danger"
-              onClick={() => deleteManualAddressMut.mutate(deleteManualAddressTarget.id)}
-              disabled={deleteManualAddressMut.isPending}
-            >
+            <button className="btn btn-danger" onClick={() => deleteManualAddressMut.mutate(deleteManualAddressTarget.id)} disabled={deleteManualAddressMut.isPending}>
               {deleteManualAddressMut.isPending ? <span className="spinner" /> : 'Delete'}
             </button>
           </div>
@@ -447,45 +437,30 @@ export default function DNS() {
   )
 }
 
-function ZoneCard({
-  zone,
-  onEdit,
-  onDelete,
-}: {
-  zone: DnsZone
-  onEdit: () => void
-  onDelete: () => void
-}) {
+function StatusChip({ label, running, details }: { label: string; running: boolean; details: string }) {
+  return (
+    <div style={{ minWidth: 140 }}>
+      <div className="text-muted text-sm">{label}</div>
+      <div style={{ fontWeight: 600, fontSize: 14, color: running ? undefined : 'var(--red)' }}>
+        {running ? 'running' : 'stopped'}
+      </div>
+      <div className="text-mono text-sm">{details}</div>
+    </div>
+  )
+}
+
+function ZoneCard({ zone, onEdit, onDelete }: { zone: DnsZone; onEdit: () => void; onDelete: () => void }) {
   const isLocal = zone.zone === 'local'
   const isUpstream = zone.zone === 'vpn'
   const canDelete = !zone.is_builtin && !isLocal && !isUpstream
-  const accent = isLocal ? 'var(--accent)' : isUpstream ? '#60a5fa' : '#a78bfa'
+  const accent = isLocal ? 'var(--accent)' : isUpstream ? '#60a5fa' : zone.protocol === 'dot' ? '#f59e0b' : zone.protocol === 'doh' ? '#34d399' : '#a78bfa'
   const bg = isLocal ? 'var(--accent-dim)' : isUpstream ? 'rgba(59,130,246,0.15)' : 'rgba(167,139,250,0.14)'
 
   return (
-    <div
-      style={{
-        background: 'var(--bg-3)',
-        border: '1px solid var(--border)',
-        borderRadius: 8,
-        padding: 14,
-        minHeight: 136,
-      }}
-    >
+    <div style={{ background: 'var(--bg-3)', border: '1px solid var(--border)', borderRadius: 8, padding: 14, minHeight: 164 }}>
       <div className="flex items-center justify-between" style={{ marginBottom: 10, gap: 10 }}>
         <div className="flex items-center gap-3">
-          <div
-            style={{
-              width: 34,
-              height: 34,
-              borderRadius: 10,
-              display: 'grid',
-              placeItems: 'center',
-              background: bg,
-              color: accent,
-              flexShrink: 0,
-            }}
-          >
+          <div style={{ width: 34, height: 34, borderRadius: 10, display: 'grid', placeItems: 'center', background: bg, color: accent, flexShrink: 0 }}>
             {isLocal ? <LocalIcon /> : <ShieldIcon />}
           </div>
           <div style={{ minWidth: 0 }}>
@@ -495,56 +470,45 @@ function ZoneCard({
         </div>
         <div className="flex gap-2">
           <button className="btn btn-secondary btn-sm" onClick={onEdit}>Edit</button>
-          {canDelete ? (
-            <button className="btn btn-danger btn-sm" onClick={onDelete}>Delete</button>
-          ) : null}
+          {canDelete ? <button className="btn btn-danger btn-sm" onClick={onDelete}>Delete</button> : null}
         </div>
       </div>
-      <div className="text-mono" style={{ fontSize: 13, wordBreak: 'break-word' }}>
-        {zone.dns_servers.join(', ')}
+      <div style={{ marginBottom: 8 }}>
+        <ProtocolBadge protocol={zone.protocol} />
       </div>
-      <div className="text-muted text-sm" style={{ marginTop: 8 }}>
-        Updated {formatTimestamp(zone.updated_at)}
-      </div>
+      <div className="text-mono" style={{ fontSize: 13, wordBreak: 'break-word' }}>{renderZoneTarget(zone)}</div>
+      {zone.bootstrap_address ? <div className="text-muted text-sm" style={{ marginTop: 6 }}>bootstrap {zone.bootstrap_address}</div> : null}
+      <div className="text-muted text-sm" style={{ marginTop: 8 }}>Updated {formatTimestamp(zone.updated_at)}</div>
     </div>
   )
 }
 
-function DomainRow({
-  domain,
-  zone,
-  onToggle,
-  onDelete,
-  togglePending,
-}: {
-  domain: DnsDomain
-  zone?: DnsZone
-  onToggle: () => void
-  onDelete: () => void
-  togglePending: boolean
-}) {
+function ProtocolBadge({ protocol }: { protocol: DnsZoneProtocol }) {
+  const labels: Record<DnsZoneProtocol, string> = {
+    plain: 'Plain DNS',
+    dot: 'DoT',
+    doh: 'DoH',
+  }
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', borderRadius: 999, padding: '4px 10px', fontSize: 12, fontWeight: 600, background: 'var(--bg-2)', border: '1px solid var(--border)' }}>
+      {labels[protocol]}
+    </span>
+  )
+}
+
+function DomainRow({ domain, zone, onToggle, onDelete, togglePending }: { domain: DnsDomain; zone?: DnsZone; onToggle: () => void; onDelete: () => void; togglePending: boolean }) {
   return (
     <tr>
       <td className="text-mono" style={{ opacity: domain.enabled ? 1 : 0.45 }}>{domain.domain}</td>
       <td><ZoneBadge zone={zone} zoneKey={domain.zone} /></td>
       <td>
         <label className="toggle" title={domain.enabled ? 'Disable' : 'Enable'}>
-          <input
-            type="checkbox"
-            checked={domain.enabled}
-            onChange={onToggle}
-            disabled={togglePending}
-          />
+          <input type="checkbox" checked={domain.enabled} onChange={onToggle} disabled={togglePending} />
           <span className="toggle-slider" />
         </label>
       </td>
       <td>
-        <button
-          className="btn btn-ghost btn-icon"
-          title="Delete"
-          onClick={onDelete}
-          style={{ color: 'var(--red)' }}
-        >
+        <button className="btn btn-ghost btn-icon" title="Delete" onClick={onDelete} style={{ color: 'var(--red)' }}>
           <TrashIcon />
         </button>
       </td>
@@ -552,17 +516,7 @@ function DomainRow({
   )
 }
 
-function ManualAddressRow({
-  item,
-  onToggle,
-  onDelete,
-  togglePending,
-}: {
-  item: DnsManualAddress
-  onToggle: () => void
-  onDelete: () => void
-  togglePending: boolean
-}) {
+function ManualAddressRow({ item, onToggle, onDelete, togglePending }: { item: DnsManualAddress; onToggle: () => void; onDelete: () => void; togglePending: boolean }) {
   return (
     <tr>
       <td className="text-mono" style={{ opacity: item.enabled ? 1 : 0.45 }}>{item.domain}</td>
@@ -585,36 +539,16 @@ function ManualAddressRow({
 function ZoneBadge({ zone, zoneKey }: { zone?: DnsZone; zoneKey: string }) {
   const isLocal = zoneKey === 'local'
   const isUpstream = zoneKey === 'vpn'
-
   return (
-    <span
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
-        background: isLocal ? 'var(--accent-dim)' : isUpstream ? 'rgba(59,130,246,0.15)' : 'rgba(167,139,250,0.14)',
-        color: isLocal ? 'var(--accent)' : isUpstream ? '#93c5fd' : '#c4b5fd',
-        borderRadius: 999,
-        padding: '4px 10px',
-        fontSize: 12,
-        fontWeight: 600,
-      }}
-    >
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: isLocal ? 'var(--accent-dim)' : isUpstream ? 'rgba(59,130,246,0.15)' : 'rgba(167,139,250,0.14)', color: isLocal ? 'var(--accent)' : isUpstream ? '#93c5fd' : '#c4b5fd', borderRadius: 999, padding: '4px 10px', fontSize: 12, fontWeight: 600 }}>
       {isLocal ? <LocalIcon small /> : <ShieldIcon small />}
       {zone?.name ?? zoneKey}
+      {zone ? <span style={{ opacity: 0.8 }}>{protocolShortLabel(zone.protocol)}</span> : null}
     </span>
   )
 }
 
-function AddDomainModal({
-  zones,
-  onClose,
-  onSaved,
-}: {
-  zones: DnsZone[]
-  onClose: () => void
-  onSaved: () => void
-}) {
+function AddDomainModal({ zones, onClose, onSaved }: { zones: DnsZone[]; onClose: () => void; onSaved: () => void }) {
   const [domain, setDomain] = useState('')
   const selectableZones = zones.filter((zone) => !zone.is_builtin)
   const [zone, setZone] = useState(selectableZones.length ? selectableZones[0].zone : 'local')
@@ -633,10 +567,7 @@ function AddDomainModal({
   const mut = useMutation({
     mutationFn: () => createDnsDomain({ domain, zone: selectableZones.length ? zone : 'local', enabled: true }),
     onSuccess: onSaved,
-    onError: (e: unknown) => {
-      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Error'
-      setError(msg)
-    },
+    onError: (e: unknown) => setError(getErrorMessage(e, 'Error')),
   })
 
   return (
@@ -644,42 +575,22 @@ function AddDomainModal({
       {error ? <div className="error-box">{error}</div> : null}
       <div className="form-group">
         <label className="form-label">Domain / TLD</label>
-        <input
-          className="form-input mono"
-          value={domain}
-          onChange={(e) => setDomain(e.target.value)}
-          placeholder="example.com"
-          autoFocus
-          onKeyDown={(e) => { if (e.key === 'Enter') mut.mutate() }}
-        />
+        <input className="form-input mono" value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="example.com" autoFocus onKeyDown={(e) => { if (e.key === 'Enter') mut.mutate() }} />
       </div>
       <div className="form-group">
         <label className="form-label">Zone</label>
-        <select
-          className="form-input"
-          value={selectableZones.length ? zone : 'local'}
-          onChange={(e) => setZone(e.target.value)}
-          disabled={!selectableZones.length}
-        >
+        <select className="form-input" value={selectableZones.length ? zone : 'local'} onChange={(e) => setZone(e.target.value)} disabled={!selectableZones.length}>
           {selectableZones.length ? selectableZones.map((item) => (
-            <option key={item.zone} value={item.zone}>{item.name}</option>
+            <option key={item.zone} value={item.zone}>{item.name} ({protocolShortLabel(item.protocol)})</option>
           )) : (
             <option value="local">Local</option>
           )}
         </select>
-        {!selectableZones.length ? (
-          <div className="text-muted text-sm" style={{ marginTop: 4 }}>
-            Only Local and Upstream zones exist. New domains are added to Local.
-          </div>
-        ) : null}
+        {!selectableZones.length ? <div className="text-muted text-sm" style={{ marginTop: 4 }}>Only Local and Upstream zones exist. New domains are added to Local.</div> : null}
       </div>
       <div className="modal-actions">
         <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-        <button
-          className="btn btn-primary"
-          onClick={() => mut.mutate()}
-          disabled={mut.isPending || !domain.trim()}
-        >
+        <button className="btn btn-primary" onClick={() => mut.mutate()} disabled={mut.isPending || !domain.trim()}>
           {mut.isPending ? <span className="spinner" /> : 'Add'}
         </button>
       </div>
@@ -695,10 +606,7 @@ function AddManualAddressModal({ onClose, onSaved }: { onClose: () => void; onSa
   const mut = useMutation({
     mutationFn: () => createDnsManualAddress({ domain, address, enabled: true }),
     onSuccess: onSaved,
-    onError: (e: unknown) => {
-      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Error'
-      setError(msg)
-    },
+    onError: (e: unknown) => setError(getErrorMessage(e, 'Error')),
   })
 
   return (
@@ -706,36 +614,21 @@ function AddManualAddressModal({ onClose, onSaved }: { onClose: () => void; onSa
       {error ? <div className="error-box">{error}</div> : null}
       <div className="form-group">
         <label className="form-label">Domain</label>
-        <input
-          className="form-input mono"
-          value={domain}
-          onChange={(e) => setDomain(e.target.value)}
-          placeholder="example.com"
-          autoFocus
-        />
+        <input className="form-input mono" value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="example.com" autoFocus />
         <div className="text-muted text-sm" style={{ marginTop: 4 }}>
           Use a dnsmasq-style domain target without wildcards, for example <span className="text-mono">example.com</span>, <span className="text-mono">sub.example.com</span> or <span className="text-mono">com</span>.
         </div>
       </div>
       <div className="form-group">
         <label className="form-label">Address</label>
-        <input
-          className="form-input mono"
-          value={address}
-          onChange={(e) => setAddress(e.target.value)}
-          placeholder="192.168.1.100"
-        />
+        <input className="form-input mono" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="192.168.1.100" />
         <div className="text-muted text-sm" style={{ marginTop: 4 }}>
           IPv4 or IPv6 address. dnsmasq will generate <span className="text-mono">address=/domain/ip</span>.
         </div>
       </div>
       <div className="modal-actions">
         <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-        <button
-          className="btn btn-primary"
-          onClick={() => mut.mutate()}
-          disabled={mut.isPending || !domain.trim() || !address.trim()}
-        >
+        <button className="btn btn-primary" onClick={() => mut.mutate()} disabled={mut.isPending || !domain.trim() || !address.trim()}>
           {mut.isPending ? <span className="spinner" /> : 'Add'}
         </button>
       </div>
@@ -743,121 +636,132 @@ function AddManualAddressModal({ onClose, onSaved }: { onClose: () => void; onSa
   )
 }
 
-function AddZoneModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const [name, setName] = useState('')
-  const [server, setServer] = useState('')
+function ZoneModal({
+  title,
+  initialZone,
+  helperText,
+  dotSlotTaken,
+  dohSlotTaken,
+  onClose,
+  onSave,
+  saving = false,
+}: {
+  title: string
+  initialZone?: DnsZone
+  helperText?: string
+  dotSlotTaken: boolean
+  dohSlotTaken: boolean
+  onClose: () => void
+  onSave: (payload: ZonePayload, domains: string[]) => Promise<unknown> | void
+  saving?: boolean
+}) {
+  const [name, setName] = useState(initialZone?.name ?? '')
+  const [protocol, setProtocol] = useState<DnsZoneProtocol>(initialZone?.protocol ?? 'plain')
+  const [dnsServers, setDnsServers] = useState(initialZone?.dns_servers.join('\n') ?? '')
+  const [endpointHost, setEndpointHost] = useState(initialZone?.endpoint_host ?? '')
+  const [endpointPort, setEndpointPort] = useState(initialZone?.endpoint_port ? String(initialZone.endpoint_port) : '853')
+  const [endpointUrl, setEndpointUrl] = useState(initialZone?.endpoint_url ?? '')
+  const [bootstrapAddress, setBootstrapAddress] = useState(initialZone?.bootstrap_address ?? '')
   const [domains, setDomains] = useState('')
   const [error, setError] = useState('')
+  const [pending, setPending] = useState(false)
 
-  const mut = useMutation({
-    mutationFn: () => createDnsZone({
-      name,
-      dns_servers: [server],
-      domains: splitItems(domains),
-    }),
-    onSuccess: onSaved,
-    onError: (e: unknown) => {
-      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Error'
-      setError(msg)
-    },
-  })
+  async function submit() {
+    const payload: ZonePayload = {
+      name: name.trim(),
+      protocol,
+      dns_servers: protocol === 'plain' ? splitItems(dnsServers) : [],
+      endpoint_host: protocol === 'dot' ? endpointHost.trim() : '',
+      endpoint_port: protocol === 'dot' ? Number(endpointPort || '853') : null,
+      endpoint_url: protocol === 'doh' ? endpointUrl.trim() : '',
+      bootstrap_address: protocol === 'plain' ? '' : bootstrapAddress.trim(),
+      description: initialZone?.description ?? '',
+    }
+
+    const validationError = validateZonePayload(payload, { dotSlotTaken, dohSlotTaken, editingProtocol: initialZone?.protocol })
+    if (!payload.name) {
+      setError('Zone name is required.')
+      return
+    }
+    if (validationError) {
+      setError(validationError)
+      return
+    }
+
+    setPending(true)
+    setError('')
+    try {
+      await onSave(payload, splitItems(domains))
+    } catch (e) {
+      setError(getErrorMessage(e, 'Request failed'))
+    } finally {
+      setPending(false)
+    }
+  }
 
   return (
-    <Modal open title="Add zone" onClose={onClose}>
+    <Modal open title={title} onClose={onClose}>
       {error ? <div className="error-box">{error}</div> : null}
+      {helperText ? <div className="text-muted text-sm" style={{ marginBottom: 12 }}>{helperText}</div> : null}
       <div className="form-group">
         <label className="form-label">Zone name</label>
         <input className="form-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Gemini" autoFocus />
       </div>
       <div className="form-group">
-        <label className="form-label">Zone DNS server</label>
-        <input className="form-input mono" value={server} onChange={(e) => setServer(e.target.value)} placeholder="1.2.3.4 or dns.example.com" />
+        <label className="form-label">Protocol</label>
+        <select className="form-input" value={protocol} onChange={(e) => setProtocol(e.target.value as DnsZoneProtocol)}>
+          <option value="plain">Plain DNS</option>
+          <option value="dot" disabled={dotSlotTaken}>DNS over TLS (DoT)</option>
+          <option value="doh" disabled={dohSlotTaken}>DNS over HTTPS (DoH)</option>
+        </select>
       </div>
-      <div className="form-group">
-        <label className="form-label">Domain names</label>
-        <textarea
-          className="form-input mono"
-          rows={8}
-          value={domains}
-          onChange={(e) => setDomains(e.target.value)}
-          placeholder={'gemini.com\napi.gemini.com'}
-        />
-      </div>
-      <div className="modal-actions">
-        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-        <button
-          className="btn btn-primary"
-          onClick={() => {
-            if (!isValidDnsServer(server)) {
-              setError('Enter a valid DNS server IP or hostname.')
-              return
-            }
-            mut.mutate()
-          }}
-          disabled={mut.isPending || !name.trim() || !server.trim()}
-        >
-          {mut.isPending ? <span className="spinner" /> : 'Add Zone'}
-        </button>
-      </div>
-    </Modal>
-  )
-}
 
-function EditZoneModal({
-  zone,
-  saving,
-  onClose,
-  onSave,
-}: {
-  zone: DnsZone
-  saving: boolean
-  onClose: () => void
-  onSave: (payload: ZonePayload) => void
-}) {
-  const [name, setName] = useState(zone.name)
-  const [servers, setServers] = useState(zone.dns_servers.join('\n'))
-  const [error, setError] = useState('')
+      {protocol === 'plain' ? (
+        <div className="form-group">
+          <label className="form-label">DNS servers</label>
+          <textarea className="form-input mono" rows={4} value={dnsServers} onChange={(e) => setDnsServers(e.target.value)} placeholder={'77.88.8.8\n1.1.1.1'} />
+        </div>
+      ) : null}
 
-  return (
-    <Modal open title="Edit zone" onClose={onClose}>
-      {error ? <div className="error-box">{error}</div> : null}
-      <div className="form-group">
-        <label className="form-label">Zone name</label>
-        <input className="form-input" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-      </div>
-      <div className="form-group">
-        <label className="form-label">DNS servers</label>
-        <textarea
-          className="form-input mono"
-          rows={4}
-          value={servers}
-          onChange={(e) => setServers(e.target.value)}
-          placeholder={'77.88.8.8\n1.1.1.1'}
-        />
-      </div>
+      {protocol === 'dot' ? (
+        <>
+          <div className="form-group">
+            <label className="form-label">DoT host</label>
+            <input className="form-input mono" value={endpointHost} onChange={(e) => setEndpointHost(e.target.value)} placeholder="dns.example.com or 1.1.1.1" />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Port</label>
+            <input className="form-input mono" value={endpointPort} onChange={(e) => setEndpointPort(e.target.value)} placeholder="853" />
+          </div>
+        </>
+      ) : null}
+
+      {protocol === 'doh' ? (
+        <div className="form-group">
+          <label className="form-label">DoH URL</label>
+          <input className="form-input mono" value={endpointUrl} onChange={(e) => setEndpointUrl(e.target.value)} placeholder="https://dns.example.com/dns-query" />
+        </div>
+      ) : null}
+
+      {protocol !== 'plain' ? (
+        <div className="form-group">
+          <label className="form-label">Bootstrap IP</label>
+          <input className="form-input mono" value={bootstrapAddress} onChange={(e) => setBootstrapAddress(e.target.value)} placeholder="203.0.113.53" />
+          <div className="text-muted text-sm" style={{ marginTop: 4 }}>Required when the protected upstream is configured with a hostname instead of an IP address.</div>
+        </div>
+      ) : null}
+
+      {!initialZone ? (
+        <div className="form-group">
+          <label className="form-label">Domain names</label>
+          <textarea className="form-input mono" rows={8} value={domains} onChange={(e) => setDomains(e.target.value)} placeholder={'gemini.com\napi.gemini.com'} />
+        </div>
+      ) : null}
+
       <div className="modal-actions">
-        <button className="btn btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
-        <button
-          className="btn btn-primary"
-          onClick={() => {
-            const dnsServers = splitItems(servers)
-            if (!name.trim()) {
-              setError('Zone name is required.')
-              return
-            }
-            if (!dnsServers.length) {
-              setError('At least one DNS server is required.')
-              return
-            }
-            if (!dnsServers.every(isValidDnsServer)) {
-              setError('Enter valid DNS server IPs or hostnames.')
-              return
-            }
-            onSave({ name, dns_servers: dnsServers, description: zone.description })
-          }}
-          disabled={saving}
-        >
-          {saving ? <span className="spinner" /> : 'Save'}
+        <button className="btn btn-secondary" onClick={onClose} disabled={saving || pending}>Cancel</button>
+        <button className="btn btn-primary" onClick={() => void submit()} disabled={saving || pending}>
+          {saving || pending ? <span className="spinner" /> : initialZone ? 'Save' : 'Add Zone'}
         </button>
       </div>
     </Modal>
@@ -868,9 +772,7 @@ function InfoChip({ label, value, accent }: { label: string; value: string; acce
   return (
     <div style={{ fontSize: 13 }}>
       <div className="text-muted text-sm">{label}</div>
-      <div className="text-mono" style={{ color: accent ? 'var(--accent)' : undefined, fontWeight: accent ? 600 : undefined }}>
-        {value}
-      </div>
+      <div className="text-mono" style={{ color: accent ? 'var(--accent)' : undefined, fontWeight: accent ? 600 : undefined }}>{value}</div>
     </div>
   )
 }
@@ -898,6 +800,49 @@ function isValidIp(value: string) {
 function isValidDnsServer(value: string) {
   const trimmed = value.trim()
   return isValidIp(trimmed) || HOSTNAME_REGEX.test(trimmed)
+}
+
+function protocolShortLabel(protocol: DnsZoneProtocol) {
+  if (protocol === 'dot') return 'DoT'
+  if (protocol === 'doh') return 'DoH'
+  return 'DNS'
+}
+
+function renderZoneTarget(zone?: DnsZone) {
+  if (!zone) return '—'
+  if (zone.protocol === 'dot') {
+    return `${zone.endpoint_host}:${zone.endpoint_port ?? 853}`
+  }
+  if (zone.protocol === 'doh') {
+    return zone.endpoint_url || '—'
+  }
+  return zone.dns_servers.join(', ') || '—'
+}
+
+function validateZonePayload(payload: ZonePayload, limits: { dotSlotTaken: boolean; dohSlotTaken: boolean; editingProtocol?: DnsZoneProtocol }) {
+  if (payload.protocol === 'plain') {
+    if (!payload.dns_servers.length) return 'At least one DNS server is required.'
+    if (!payload.dns_servers.every(isValidDnsServer)) return 'Enter valid DNS server IPs or hostnames.'
+    return ''
+  }
+  if (payload.protocol === 'dot') {
+    if (limits.dotSlotTaken && limits.editingProtocol !== 'dot') return 'A DoT zone already exists.'
+    if (!payload.endpoint_host.trim()) return 'DoT host is required.'
+    if (!isValidDnsServer(payload.endpoint_host)) return 'Enter a valid DoT host or IP.'
+    const port = payload.endpoint_port ?? 853
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return 'DoT port must be in range 1..65535.'
+    if (!isValidIp(payload.endpoint_host) && !isValidIp(payload.bootstrap_address)) return 'Bootstrap IP is required for hostname-based DoT upstreams.'
+    return ''
+  }
+  if (limits.dohSlotTaken && limits.editingProtocol !== 'doh') return 'A DoH zone already exists.'
+  try {
+    const parsed = new URL(payload.endpoint_url)
+    if (parsed.protocol !== 'https:') return 'DoH URL must start with https://.'
+    if (!isValidIp(parsed.hostname) && !isValidIp(payload.bootstrap_address)) return 'Bootstrap IP is required for hostname-based DoH upstreams.'
+    return ''
+  } catch {
+    return 'Enter a valid DoH URL.'
+  }
 }
 
 function getErrorMessage(error: unknown, fallback: string) {

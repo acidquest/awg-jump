@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from app.models import DnsDomainRule, DnsManualAddress, DnsUpstream
+from app.services.protected_dns import dnsmasq_target
 
 
 def _to_dnsmasq_domain(domain: str) -> str:
@@ -23,7 +24,8 @@ def build_dnsmasq_preview(
     nft_table_name: str = "awg_gw",
 ) -> str:
     upstream_by_zone = {item.zone: item for item in upstreams}
-    vpn_servers = upstream_by_zone.get("vpn").servers if upstream_by_zone.get("vpn") else []
+    vpn_zone = upstream_by_zone.get("vpn")
+    vpn_servers = zone_targets(vpn_zone) if vpn_zone else []
     lines = [
         "# AWG Gateway split DNS preview",
         "no-resolv",
@@ -37,7 +39,8 @@ def build_dnsmasq_preview(
     for rule in sorted(domain_rules, key=lambda item: item.domain):
         if not rule.enabled or rule.zone == "vpn":
             continue
-        zone_servers = upstream_by_zone.get(rule.zone).servers if upstream_by_zone.get(rule.zone) else []
+        zone_item = upstream_by_zone.get(rule.zone)
+        zone_servers = zone_targets(zone_item) if zone_item else []
         if not zone_servers:
             continue
         dnsmasq_domain = _to_dnsmasq_domain(rule.domain)
@@ -67,6 +70,12 @@ def build_dnsmasq_preview(
                 lines.append(f"ipset=/{fqdn}/{ipset_name}")
     lines.append("")
     return "\n".join(lines)
+
+
+def zone_targets(zone: DnsUpstream | None) -> list[str]:
+    if zone is None:
+        return []
+    return dnsmasq_target(zone.protocol, list(zone.servers or []))
 
 
 def build_dnsmasq_config(

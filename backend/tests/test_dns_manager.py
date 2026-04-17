@@ -20,7 +20,13 @@ def test_write_config_uses_idna_domains(tmp_path, monkeypatch):
         SimpleNamespace(domain="example.ru", enabled=True, upstream="local"),
     ]
 
-    dns_manager._write_config(domains, {"local": ["77.88.8.8"], "vpn": ["1.1.1.1"]})
+    dns_manager._write_config(
+        domains,
+        {
+            "local": {"protocol": "plain", "dns_servers": ["77.88.8.8"]},
+            "vpn": {"protocol": "plain", "dns_servers": ["1.1.1.1"]},
+        },
+    )
 
     content = conf_path.read_text()
     assert "server=/xn--p1ai/77.88.8.8" in content
@@ -74,7 +80,13 @@ def test_write_config_supports_custom_zone_overrides(tmp_path, monkeypatch):
         SimpleNamespace(domain="gemini.com", enabled=True, upstream="gemini"),
     ]
 
-    dns_manager._write_config(domains, {"vpn": ["1.1.1.1"], "gemini": ["1.2.3.4"]})
+    dns_manager._write_config(
+        domains,
+        {
+            "vpn": {"protocol": "plain", "dns_servers": ["1.1.1.1"]},
+            "gemini": {"protocol": "plain", "dns_servers": ["1.2.3.4"]},
+        },
+    )
 
     content = conf_path.read_text()
     assert "server=/gemini.com/1.2.3.4" in content
@@ -91,8 +103,33 @@ def test_write_config_supports_manual_replace_addresses(tmp_path, monkeypatch):
         SimpleNamespace(domain="sub.example.com", address="192.168.1.101", enabled=True),
     ]
 
-    dns_manager._write_config([], {"vpn": ["1.1.1.1"]}, manual_addresses)
+    dns_manager._write_config([], {"vpn": {"protocol": "plain", "dns_servers": ["1.1.1.1"]}}, manual_addresses)
 
     content = conf_path.read_text()
     assert "address=/example.com/192.168.1.100" in content
     assert "address=/sub.example.com/192.168.1.101" in content
+
+
+def test_write_config_routes_dot_and_doh_zones_to_local_proxies(tmp_path, monkeypatch):
+    conf_path = tmp_path / "dnsmasq-awg.conf"
+
+    monkeypatch.setattr(dns_manager, "_CONF_FILE", str(conf_path))
+    monkeypatch.setattr(dns_manager, "get_awg0_ip", lambda: "10.77.7.1")
+
+    domains = [
+        SimpleNamespace(domain="secure.example", enabled=True, upstream="dot-zone"),
+        SimpleNamespace(domain="api.example", enabled=True, upstream="doh-zone"),
+    ]
+
+    dns_manager._write_config(
+        domains,
+        {
+            "vpn": {"protocol": "plain", "dns_servers": ["1.1.1.1"]},
+            "dot-zone": {"protocol": "dot", "dns_servers": []},
+            "doh-zone": {"protocol": "doh", "dns_servers": []},
+        },
+    )
+
+    content = conf_path.read_text()
+    assert "server=/secure.example/127.0.0.1#5453" in content
+    assert "server=/api.example/127.0.0.1#5053" in content

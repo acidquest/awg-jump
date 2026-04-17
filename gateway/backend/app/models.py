@@ -171,6 +171,11 @@ class DnsUpstream(Base):
     servers: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     description: Mapped[str] = mapped_column(String(256), default="", nullable=False)
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    protocol: Mapped[str] = mapped_column(String(16), default="plain", nullable=False)
+    endpoint_host: Mapped[str] = mapped_column(String(253), default="", nullable=False)
+    endpoint_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    endpoint_url: Mapped[str] = mapped_column(String(512), default="", nullable=False)
+    bootstrap_address: Mapped[str] = mapped_column(String(64), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 

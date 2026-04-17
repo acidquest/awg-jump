@@ -51,6 +51,17 @@ RUN npm ci
 COPY frontend/ .
 RUN npm run build
 
+FROM debian:bookworm-slim AS cloudflared-builder
+
+ARG CLOUDFLARED_VERSION=2025.4.0
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" \
+    -o /usr/local/bin/cloudflared \
+    && chmod +x /usr/local/bin/cloudflared
+
 # ============================================================
 # Stage 4 — финальный образ
 # ============================================================
@@ -67,6 +78,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     iproute2 \
     ipset \
     iptables \
+    stubby \
     iputils-ping \
     net-tools \
     openssh-client \
@@ -78,6 +90,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=awg-builder /out/amneziawg-go /usr/local/bin/amneziawg-go
 COPY --from=awg-tools-builder /out/usr/bin/awg /usr/local/bin/awg
+COPY --from=cloudflared-builder /usr/local/bin/cloudflared /usr/local/bin/cloudflared
 COPY --from=python-builder /opt/venv /opt/venv
 COPY --from=frontend-builder /frontend/dist /app/static
 

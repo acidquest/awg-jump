@@ -1961,6 +1961,8 @@ function DnsPage() {
     [data.manual_addresses, manualFilter],
   )
   const selectableZones = data.upstreams.filter((item: any) => item.zone === 'local' || !item.is_builtin)
+  const dotZoneExists = data.upstreams.some((item: any) => !item.is_builtin && item.protocol === 'dot')
+  const dohZoneExists = data.upstreams.some((item: any) => !item.is_builtin && item.protocol === 'doh')
 
   return (
     <>
@@ -1985,11 +1987,11 @@ function DnsPage() {
       {error ? <div className="error-box">{error}</div> : null}
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="flex items-center justify-between" style={{ flexWrap: 'wrap', gap: 12 }}>
-          <div>
-            <div style={{ fontWeight: 600, fontSize: 14 }}>{data.preview ? t('dnsRunning') : t('dnsStopped')}</div>
-          </div>
-          <InfoChip label={t('localZoneDns')} value={localUpstream?.servers?.join(', ') ?? '—'} accent />
-          <InfoChip label={t('upstreamZoneDns')} value={vpnUpstream?.servers?.join(', ') ?? '—'} />
+          <GatewayStatusChip label="dnsmasq" running={Boolean(data.running)} details={data.pid ? `pid ${data.pid}` : '—'} />
+          <GatewayStatusChip label="stubby" running={Boolean(data.stubby?.running)} details={data.stubby?.enabled ? data.stubby.listen : t('dnsServiceDisabled')} />
+          <GatewayStatusChip label="cloudflared" running={Boolean(data.cloudflared?.running)} details={data.cloudflared?.enabled ? data.cloudflared.listen : t('dnsServiceDisabled')} />
+          <InfoChip label={t('localZoneDns')} value={renderGatewayZoneTarget(localUpstream)} accent />
+          <InfoChip label={t('upstreamZoneDns')} value={renderGatewayZoneTarget(vpnUpstream)} />
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--accent)' }}>{data.domains.length}</div>
             <div className="text-muted text-sm">{t('domains')}</div>
@@ -1999,6 +2001,7 @@ function DnsPage() {
 
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="card-title" style={{ marginBottom: 14 }}>{t('dnsZones')}</div>
+        <div className="text-muted text-sm" style={{ marginBottom: 14 }}>{t('dnsProtectedZoneLimitHint')}</div>
         <div className={`card-grid ${gatewayZoneColumnsClass(data.upstreams.length)}`}>
           {data.upstreams.map((zone: any) => (
             <GatewayZoneCard
@@ -2167,6 +2170,8 @@ function DnsPage() {
         <GatewayDnsZoneModal
           title={t('addZone')}
           description={t('addZoneDescription')}
+          dotSlotTaken={dotZoneExists}
+          dohSlotTaken={dohZoneExists}
           onClose={() => setZoneModalOpen(false)}
           onSubmit={async (payload) => {
             await api.post('/dns/zones', payload)
@@ -2180,6 +2185,8 @@ function DnsPage() {
           title={t('edit')}
           description={t('addZoneDescription')}
           initialZone={editingZone}
+          dotSlotTaken={dotZoneExists && editingZone.protocol !== 'dot'}
+          dohSlotTaken={dohZoneExists && editingZone.protocol !== 'doh'}
           onClose={() => setEditingZone(null)}
           onSubmit={async (payload) => {
             await api.put(`/dns/zones/${editingZone.zone}`, { ...payload, domains: undefined })
@@ -2377,6 +2384,8 @@ function GatewayDnsDomainModal({
 function GatewayDnsZoneModal({
   title,
   description,
+  dotSlotTaken,
+  dohSlotTaken,
   onClose,
   onSubmit,
   initialZone,
@@ -2384,22 +2393,58 @@ function GatewayDnsZoneModal({
 }: {
   title: string
   description: string
+  dotSlotTaken: boolean
+  dohSlotTaken: boolean
   onClose: () => void
-  onSubmit: (payload: { name: string; servers: string[]; domains?: string[] }) => Promise<void>
+  onSubmit: (payload: {
+    name: string
+    protocol: 'plain' | 'dot' | 'doh'
+    servers: string[]
+    endpoint_host: string
+    endpoint_port: number | null
+    endpoint_url: string
+    bootstrap_address: string
+    domains?: string[]
+  }) => Promise<void>
   initialZone?: any
   editing?: boolean
 }) {
   const { t } = useI18n()
   const [name, setName] = useState(initialZone?.name ?? '')
-  const [server, setServer] = useState(initialZone?.servers?.[0] ?? '')
+  const [protocol, setProtocol] = useState<'plain' | 'dot' | 'doh'>(initialZone?.protocol ?? 'plain')
+  const [server, setServer] = useState(initialZone?.servers?.join('\n') ?? '')
+  const [endpointHost, setEndpointHost] = useState(initialZone?.endpoint_host ?? '')
+  const [endpointPort, setEndpointPort] = useState(initialZone?.endpoint_port ? String(initialZone.endpoint_port) : '853')
+  const [endpointUrl, setEndpointUrl] = useState(initialZone?.endpoint_url ?? '')
+  const [bootstrapAddress, setBootstrapAddress] = useState(initialZone?.bootstrap_address ?? '')
   const [domains, setDomains] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    if (!name.trim() || !server.trim()) {
-      setError('Name and DNS server are required')
+    if (!name.trim()) {
+      setError(t('zoneNameRequired'))
+      return
+    }
+    const validationError = validateGatewayZonePayload(
+      {
+        protocol,
+        servers: splitDnsItems(server),
+        endpoint_host: endpointHost.trim(),
+        endpoint_port: Number(endpointPort || '853'),
+        endpoint_url: endpointUrl.trim(),
+        bootstrap_address: bootstrapAddress.trim(),
+      },
+      {
+        dotSlotTaken,
+        dohSlotTaken,
+        editingProtocol: initialZone?.protocol,
+      },
+      t,
+    )
+    if (validationError) {
+      setError(validationError)
       return
     }
     setSaving(true)
@@ -2407,7 +2452,12 @@ function GatewayDnsZoneModal({
     try {
       await onSubmit({
         name: name.trim(),
-        servers: [server.trim()],
+        protocol,
+        servers: protocol === 'plain' ? splitDnsItems(server) : [],
+        endpoint_host: protocol === 'dot' ? endpointHost.trim() : '',
+        endpoint_port: protocol === 'dot' ? Number(endpointPort || '853') : null,
+        endpoint_url: protocol === 'doh' ? endpointUrl.trim() : '',
+        bootstrap_address: protocol === 'plain' ? '' : bootstrapAddress.trim(),
         domains: editing ? undefined : splitDnsItems(domains),
       })
     } catch (err: any) {
@@ -2432,9 +2482,44 @@ function GatewayDnsZoneModal({
             <input className="form-input" value={name} onChange={(event) => setName(event.target.value)} autoFocus />
           </div>
           <div className="form-group">
-            <label className="form-label">{t('zoneDnsServer')}</label>
-            <input className="form-input mono" value={server} onChange={(event) => setServer(event.target.value)} placeholder="1.2.3.4 or dns.example.com" />
+            <label className="form-label">{t('zoneProtocol')}</label>
+            <select className="form-input" value={protocol} onChange={(event) => setProtocol(event.target.value as 'plain' | 'dot' | 'doh')}>
+              <option value="plain">{t('dnsProtocolPlain')}</option>
+              <option value="dot" disabled={dotSlotTaken}>{t('dnsProtocolDot')}</option>
+              <option value="doh" disabled={dohSlotTaken}>{t('dnsProtocolDoh')}</option>
+            </select>
           </div>
+          {protocol === 'plain' ? (
+            <div className="form-group">
+              <label className="form-label">{t('zoneDnsServer')}</label>
+              <textarea className="form-input mono" rows={4} value={server} onChange={(event) => setServer(event.target.value)} placeholder={'1.2.3.4\n8.8.8.8'} />
+            </div>
+          ) : null}
+          {protocol === 'dot' ? (
+            <>
+              <div className="form-group">
+                <label className="form-label">{t('dnsDotHost')}</label>
+                <input className="form-input mono" value={endpointHost} onChange={(event) => setEndpointHost(event.target.value)} placeholder="dns.example.com or 1.1.1.1" />
+              </div>
+              <div className="form-group">
+                <label className="form-label">{t('dnsDotPort')}</label>
+                <input className="form-input mono" value={endpointPort} onChange={(event) => setEndpointPort(event.target.value)} placeholder="853" />
+              </div>
+            </>
+          ) : null}
+          {protocol === 'doh' ? (
+            <div className="form-group">
+              <label className="form-label">{t('dnsDohUrl')}</label>
+              <input className="form-input mono" value={endpointUrl} onChange={(event) => setEndpointUrl(event.target.value)} placeholder="https://dns.example.com/dns-query" />
+            </div>
+          ) : null}
+          {protocol !== 'plain' ? (
+            <div className="form-group">
+              <label className="form-label">{t('dnsBootstrapIp')}</label>
+              <input className="form-input mono" value={bootstrapAddress} onChange={(event) => setBootstrapAddress(event.target.value)} placeholder="203.0.113.53" />
+              <div className="text-muted text-sm" style={{ marginTop: 6 }}>{t('dnsBootstrapHint')}</div>
+            </div>
+          ) : null}
           {!editing ? (
             <div className="form-group">
               <label className="form-label">{t('domainNames')}</label>
@@ -2463,8 +2548,9 @@ function GatewayZoneCard({
   const isLocal = zone.zone === 'local'
   const isUpstream = zone.zone === 'vpn'
   const canDelete = !zone.is_builtin && !isLocal && !isUpstream
+  const protocolAccent = zone.protocol === 'dot' ? '#f59e0b' : zone.protocol === 'doh' ? '#34d399' : '#c4b5fd'
   return (
-    <div className="card" style={{ background: 'var(--bg-3)', padding: 14, minHeight: 136 }}>
+    <div className="card" style={{ background: 'var(--bg-3)', padding: 14, minHeight: 164 }}>
       <div className="flex items-center justify-between" style={{ marginBottom: 8, gap: 10 }}>
         <div className="flex items-center gap-2">
           <div style={{
@@ -2490,7 +2576,13 @@ function GatewayZoneCard({
           ) : null}
         </div>
       </div>
-      <div className="mono" style={{ fontSize: 13, wordBreak: 'break-word' }}>{(zone.servers || []).join(', ') || '—'}</div>
+      <div style={{ marginBottom: 8 }}>
+        <span className="badge" style={{ border: `1px solid ${protocolAccent}`, color: protocolAccent }}>
+          {gatewayProtocolLabel(zone.protocol, false)}
+        </span>
+      </div>
+      <div className="mono" style={{ fontSize: 13, wordBreak: 'break-word' }}>{renderGatewayZoneTarget(zone)}</div>
+      {zone.bootstrap_address ? <div className="text-muted text-sm" style={{ marginTop: 6 }}>bootstrap {zone.bootstrap_address}</div> : null}
     </div>
   )
 }
@@ -2598,8 +2690,18 @@ function GatewayZoneBadge({ zone, zoneKey }: { zone?: any; zoneKey: string }) {
   const isUpstream = zoneKey === 'vpn'
   return (
     <span className={`badge ${isLocal ? 'badge-pending' : isUpstream ? 'badge-online' : 'badge-warning'}`}>
-      {zone?.name ?? zoneKey}
+      {(zone?.name ?? zoneKey) + (zone ? ` · ${gatewayProtocolLabel(zone.protocol, true)}` : '')}
     </span>
+  )
+}
+
+function GatewayStatusChip({ label, running, details }: { label: string; running: boolean; details: string }) {
+  return (
+    <div style={{ minWidth: 140 }}>
+      <div className="text-muted text-sm">{label}</div>
+      <div style={{ fontWeight: 600, fontSize: 14, color: running ? undefined : 'var(--danger)' }}>{running ? 'running' : 'stopped'}</div>
+      <div className="mono text-sm">{details}</div>
+    </div>
   )
 }
 
@@ -2611,6 +2713,72 @@ function gatewayZoneColumnsClass(count: number) {
 
 function splitDnsItems(value: string) {
   return value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean)
+}
+
+function renderGatewayZoneTarget(zone?: any) {
+  if (!zone) return '—'
+  if (zone.protocol === 'dot') return `${zone.endpoint_host}:${zone.endpoint_port ?? 853}`
+  if (zone.protocol === 'doh') return zone.endpoint_url || '—'
+  return (zone.servers || []).join(', ') || '—'
+}
+
+function gatewayProtocolLabel(protocol: string, short = false) {
+  if (protocol === 'dot') return short ? 'DoT' : 'DNS over TLS (DoT)'
+  if (protocol === 'doh') return short ? 'DoH' : 'DNS over HTTPS (DoH)'
+  return short ? 'DNS' : 'Plain DNS'
+}
+
+function validateGatewayZonePayload(
+  payload: {
+    protocol: 'plain' | 'dot' | 'doh'
+    servers: string[]
+    endpoint_host: string
+    endpoint_port: number
+    endpoint_url: string
+    bootstrap_address: string
+  },
+  limits: {
+    dotSlotTaken: boolean
+    dohSlotTaken: boolean
+    editingProtocol?: 'plain' | 'dot' | 'doh'
+  },
+  t: (key: any) => string,
+) {
+  if (payload.protocol === 'plain') {
+    if (!payload.servers.length) return t('dnsPlainRequired')
+    if (!payload.servers.every((item) => isGatewayDnsServer(item))) return t('dnsPlainInvalid')
+    return ''
+  }
+  if (payload.protocol === 'dot') {
+    if (limits.dotSlotTaken && limits.editingProtocol !== 'dot') return t('dnsDotSlotTaken')
+    if (!payload.endpoint_host.trim()) return t('dnsDotHostRequired')
+    if (!isGatewayDnsServer(payload.endpoint_host)) return t('dnsDotHostInvalid')
+    if (!Number.isInteger(payload.endpoint_port) || payload.endpoint_port < 1 || payload.endpoint_port > 65535) return t('dnsDotPortInvalid')
+    if (!isGatewayIp(payload.endpoint_host) && !isGatewayIp(payload.bootstrap_address)) return t('dnsBootstrapRequired')
+    return ''
+  }
+  if (limits.dohSlotTaken && limits.editingProtocol !== 'doh') return t('dnsDohSlotTaken')
+  try {
+    const parsed = new URL(payload.endpoint_url)
+    if (parsed.protocol !== 'https:') return t('dnsDohUrlInvalid')
+    if (!isGatewayIp(parsed.hostname) && !isGatewayIp(payload.bootstrap_address)) return t('dnsBootstrapRequired')
+    return ''
+  } catch {
+    return t('dnsDohUrlInvalid')
+  }
+}
+
+function isGatewayIp(value: string) {
+  if (!value.trim()) return false
+  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(value)) {
+    return value.split('.').every((part) => Number(part) >= 0 && Number(part) <= 255)
+  }
+  return value.includes(':') && /^[0-9a-fA-F:]+$/.test(value)
+}
+
+function isGatewayDnsServer(value: string) {
+  const candidate = value.trim().toLowerCase()
+  return isGatewayIp(candidate) || /^(?=.{1,253}$)(?!-)(?:[a-z0-9-]{1,63}\.)*[a-z0-9-]{1,63}\.?$/i.test(candidate)
 }
 
 function LocalZoneIcon() {

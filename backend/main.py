@@ -52,6 +52,16 @@ async def _ensure_sqlite_columns() -> None:
             await conn.execute(text("ALTER TABLE dns_zone_settings ADD COLUMN name VARCHAR(128) NOT NULL DEFAULT ''"))
         if "is_builtin" not in zone_columns:
             await conn.execute(text("ALTER TABLE dns_zone_settings ADD COLUMN is_builtin BOOLEAN NOT NULL DEFAULT 0"))
+        if "protocol" not in zone_columns:
+            await conn.execute(text("ALTER TABLE dns_zone_settings ADD COLUMN protocol VARCHAR(16) NOT NULL DEFAULT 'plain'"))
+        if "endpoint_host" not in zone_columns:
+            await conn.execute(text("ALTER TABLE dns_zone_settings ADD COLUMN endpoint_host VARCHAR(253) NOT NULL DEFAULT ''"))
+        if "endpoint_port" not in zone_columns:
+            await conn.execute(text("ALTER TABLE dns_zone_settings ADD COLUMN endpoint_port INTEGER"))
+        if "endpoint_url" not in zone_columns:
+            await conn.execute(text("ALTER TABLE dns_zone_settings ADD COLUMN endpoint_url VARCHAR(512) NOT NULL DEFAULT ''"))
+        if "bootstrap_address" not in zone_columns:
+            await conn.execute(text("ALTER TABLE dns_zone_settings ADD COLUMN bootstrap_address VARCHAR(64) NOT NULL DEFAULT ''"))
         await conn.execute(
             text(
                 """
@@ -62,7 +72,11 @@ async def _ensure_sqlite_columns() -> None:
                     WHEN name IS NULL OR name = '' THEN zone
                     ELSE name
                 END,
-                    is_builtin = CASE WHEN zone IN ('local', 'vpn') THEN 1 ELSE is_builtin END
+                    is_builtin = CASE WHEN zone IN ('local', 'vpn') THEN 1 ELSE is_builtin END,
+                    protocol = COALESCE(NULLIF(protocol, ''), 'plain'),
+                    endpoint_host = COALESCE(endpoint_host, ''),
+                    endpoint_url = COALESCE(endpoint_url, ''),
+                    bootstrap_address = COALESCE(bootstrap_address, '')
                 """
             )
         )
