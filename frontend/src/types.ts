@@ -108,15 +108,26 @@ export interface GeoipStatus {
 export interface DnsDomain {
   id: number
   domain: string
-  upstream: 'yandex' | 'default'
+  zone: string
+  upstream: string
+  enabled: boolean
+  created_at: string | null
+}
+
+export interface DnsManualAddress {
+  id: number
+  domain: string
+  address: string
   enabled: boolean
   created_at: string | null
 }
 
 export interface DnsZone {
-  zone: 'local' | 'vpn'
+  zone: string
+  name: string
   dns_servers: string[]
   description: string
+  is_builtin: boolean
   updated_at: string
 }
 

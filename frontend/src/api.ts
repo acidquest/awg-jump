@@ -101,14 +101,23 @@ export const updateRoutingSettings = (data: { invert_geoip: boolean }) =>
 // ── DNS ───────────────────────────────────────────────────────────────────
 export const getDnsStatus = () => api.get('/dns/status')
 export const getDnsDomains = () => api.get('/dns/domains')
+export const getDnsManualAddresses = () => api.get('/dns/manual-addresses')
 export const getDnsZones = () => api.get('/dns/zones')
+export const createDnsZone = (data: Record<string, unknown>) => api.post('/dns/zones', data)
+export const deleteDnsZone = (zone: string) => api.delete(`/dns/zones/${zone}`)
 export const createDnsDomain = (data: Record<string, unknown>) => api.post('/dns/domains', data)
+export const createDnsManualAddress = (data: Record<string, unknown>) => api.post('/dns/manual-addresses', data)
+export const createDnsDomainsBulk = (data: Record<string, unknown>) => api.post('/dns/domains/bulk', data)
 export const updateDnsDomain = (id: number, data: Record<string, unknown>) =>
   api.put(`/dns/domains/${id}`, data)
+export const updateDnsManualAddress = (id: number, data: Record<string, unknown>) =>
+  api.put(`/dns/manual-addresses/${id}`, data)
 export const updateDnsZone = (zone: string, data: Record<string, unknown>) =>
   api.put(`/dns/zones/${zone}`, data)
 export const deleteDnsDomain = (id: number) => api.delete(`/dns/domains/${id}`)
+export const deleteDnsManualAddress = (id: number) => api.delete(`/dns/manual-addresses/${id}`)
 export const toggleDnsDomain = (id: number) => api.post(`/dns/domains/${id}/toggle`)
+export const toggleDnsManualAddress = (id: number) => api.post(`/dns/manual-addresses/${id}/toggle`)
 export const reloadDns = () => api.post('/dns/reload')
 
 // ── Backup ────────────────────────────────────────────────────────────────

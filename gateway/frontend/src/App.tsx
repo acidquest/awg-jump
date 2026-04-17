@@ -1889,11 +1889,29 @@ function RoutingPage() {
 
 function DnsPage() {
   const { t } = useI18n()
-  const { data, loading, error, reload } = useLoader<any>('/dns', { upstreams: [], domains: [], preview: '' })
+  const { data, loading, error, reload } = useLoader<any>('/dns', { upstreams: [], domains: [], manual_addresses: [], preview: '' })
   const [domainModalOpen, setDomainModalOpen] = useState(false)
+  const [zoneModalOpen, setZoneModalOpen] = useState(false)
+  const [editingZone, setEditingZone] = useState<any | null>(null)
+  const [deletingZone, setDeletingZone] = useState<any | null>(null)
+  const [deletingDomain, setDeletingDomain] = useState<any | null>(null)
+  const [deletingManualAddress, setDeletingManualAddress] = useState<any | null>(null)
+  const [filter, setFilter] = useState('')
+  const [manualFilter, setManualFilter] = useState('')
+  const [manualAddressModalOpen, setManualAddressModalOpen] = useState(false)
 
   const localUpstream = data.upstreams.find((item: any) => item.zone === 'local')
   const vpnUpstream = data.upstreams.find((item: any) => item.zone === 'vpn')
+  const disabledCount = data.domains.filter((item: any) => !item.enabled).length
+  const filteredDomains = useMemo(
+    () => data.domains.filter((item: any) => !filter || item.domain.toLowerCase().includes(filter.toLowerCase())),
+    [data.domains, filter],
+  )
+  const filteredManualAddresses = useMemo(
+    () => data.manual_addresses.filter((item: any) => !manualFilter || item.domain.toLowerCase().includes(manualFilter.toLowerCase())),
+    [data.manual_addresses, manualFilter],
+  )
+  const selectableZones = data.upstreams.filter((item: any) => item.zone === 'local' || !item.is_builtin)
 
   return (
     <>
@@ -1903,8 +1921,16 @@ function DnsPage() {
           <div className="page-subtitle">{t('dnsSubtitle')}</div>
         </div>
         <div className="flex gap-2">
-          <button className="btn btn-secondary btn-sm" onClick={() => void reload()}>{t('refresh')}</button>
-          <button className="btn btn-primary btn-sm" onClick={() => setDomainModalOpen(true)}>{t('addDomain')}</button>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={async () => {
+              await api.post('/dns/reload')
+              await reload()
+            }}
+          >
+            {t('reloadDns')}
+          </button>
+          <button className="btn btn-primary btn-sm" onClick={() => setZoneModalOpen(true)}>{t('addZone')}</button>
         </div>
       </div>
       {error ? <div className="error-box">{error}</div> : null}
@@ -1917,23 +1943,41 @@ function DnsPage() {
           <InfoChip label={t('upstreamZoneDns')} value={vpnUpstream?.servers?.join(', ') ?? '—'} />
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--accent)' }}>{data.domains.length}</div>
-            <div className="text-muted text-sm">{t('localZoneDomains')}</div>
+            <div className="text-muted text-sm">{t('domains')}</div>
           </div>
         </div>
       </div>
 
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="card-title" style={{ marginBottom: 14 }}>{t('dnsZones')}</div>
-        <div className="card-grid card-grid-2">
-          <ZoneCard title={t('localZoneDns')} description={t('localDnsDescription')} value={localUpstream?.servers?.join(', ') ?? '—'} />
-          <ZoneCard title={t('upstreamZoneDns')} description={t('vpnDnsDescription')} value={vpnUpstream?.servers?.join(', ') ?? '—'} />
+        <div className={`card-grid ${gatewayZoneColumnsClass(data.upstreams.length)}`}>
+          {data.upstreams.map((zone: any) => (
+            <GatewayZoneCard
+              key={zone.zone}
+              zone={zone}
+              onEdit={() => setEditingZone(zone)}
+              onDelete={() => setDeletingZone(zone)}
+            />
+          ))}
         </div>
       </div>
 
       <div className="card" style={{ marginBottom: 20 }}>
-        <div className="card-header">
-          <div className="card-title">{t('domains')}</div>
-          <button className="btn btn-primary btn-sm" onClick={() => setDomainModalOpen(true)}>{t('add')}</button>
+        <div className="card-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+          <div className="card-title">
+            {t('domains')}
+            {disabledCount ? <span className="text-muted text-sm" style={{ marginLeft: 8, fontWeight: 400 }}>({disabledCount} disabled)</span> : null}
+          </div>
+          <div className="flex gap-2" style={{ marginLeft: 'auto', flexWrap: 'wrap' }}>
+            <input
+              className="form-input"
+              placeholder={t('domainFilterPlaceholder')}
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+              style={{ width: 220, fontSize: 13 }}
+            />
+            <button className="btn btn-primary btn-sm" onClick={() => setDomainModalOpen(true)}>{t('add')}</button>
+          </div>
         </div>
         {loading ? <div style={{ padding: 40, textAlign: 'center' }}><span className="spinner" /></div> : null}
         <div className="table-wrap">
@@ -1941,18 +1985,40 @@ function DnsPage() {
             <thead>
               <tr>
                 <th>{t('domains')}</th>
-                <th>Zone</th>
+                <th>{t('zona')}</th>
                 <th>{t('status')}</th>
+                <th style={{ width: 70 }} />
               </tr>
             </thead>
             <tbody>
-              {data.domains.length === 0 ? (
-                <tr><td colSpan={3} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>{t('noDomainsConfigured')}</td></tr>
-              ) : data.domains.map((item: any) => (
+              {filteredDomains.length === 0 ? (
+                <tr><td colSpan={4} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>{t('noDomainsConfigured')}</td></tr>
+              ) : filteredDomains.map((item: any) => (
                 <tr key={item.id}>
-                  <td>{item.domain}</td>
-                  <td><span className={`badge ${item.zone === 'local' ? 'badge-online' : 'badge-pending'}`}>{item.zone}</span></td>
-                  <td><span className={`badge ${item.enabled ? 'badge-online' : 'badge-offline'}`}>{item.enabled ? 'enabled' : 'disabled'}</span></td>
+                  <td className="mono" style={{ opacity: item.enabled ? 1 : 0.45 }}>{item.domain}</td>
+                  <td><GatewayZoneBadge zone={data.upstreams.find((zone: any) => zone.zone === item.zone)} zoneKey={item.zone} /></td>
+                  <td>
+                    <label className="toggle" title={t('status')}>
+                      <input
+                        type="checkbox"
+                        checked={item.enabled}
+                        onChange={async () => {
+                          await api.post(`/dns/domains/${item.id}/toggle`)
+                          await reload()
+                        }}
+                      />
+                      <span className="toggle-slider" />
+                    </label>
+                  </td>
+                  <td>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      style={{ color: 'var(--danger)', padding: 4 }}
+                      onClick={() => setDeletingDomain(item)}
+                    >
+                      <TrashIconSmall />
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1960,29 +2026,571 @@ function DnsPage() {
         </div>
       </div>
 
-      <div className="section">
-        <div className="section-title">{t('preview')}</div>
-        <div className="terminal" style={{ minHeight: 220 }}>
-          <div className="terminal-line">
-            <span className="msg" style={{ whiteSpace: 'pre-wrap' }}>{data.preview}</span>
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+          <div className="card-title">{t('manualReplaceAddresses')}</div>
+          <div className="flex gap-2" style={{ marginLeft: 'auto', flexWrap: 'wrap' }}>
+            <input
+              className="form-input"
+              placeholder={t('domainFilterPlaceholder')}
+              value={manualFilter}
+              onChange={(event) => setManualFilter(event.target.value)}
+              style={{ width: 220, fontSize: 13 }}
+            />
+            <button className="btn btn-primary btn-sm" onClick={() => setManualAddressModalOpen(true)}>{t('add')}</button>
           </div>
         </div>
+        {loading ? <div style={{ padding: 40, textAlign: 'center' }}><span className="spinner" /></div> : null}
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>{t('domains')}</th>
+                <th>{t('addressLabel')}</th>
+                <th>{t('status')}</th>
+                <th style={{ width: 70 }} />
+              </tr>
+            </thead>
+            <tbody>
+              {filteredManualAddresses.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>
+                    {manualFilter ? t('manualReplaceNoMatch') : t('manualReplaceEmpty')}
+                  </td>
+                </tr>
+              ) : filteredManualAddresses.map((item: any) => (
+                <tr key={item.id}>
+                  <td className="mono" style={{ opacity: item.enabled ? 1 : 0.45 }}>{item.domain}</td>
+                  <td className="mono" style={{ opacity: item.enabled ? 1 : 0.45 }}>{item.address}</td>
+                  <td>
+                    <label className="toggle" title={t('status')}>
+                      <input
+                        type="checkbox"
+                        checked={item.enabled}
+                        onChange={async () => {
+                          await api.post(`/dns/manual-addresses/${item.id}/toggle`)
+                          await reload()
+                        }}
+                      />
+                      <span className="toggle-slider" />
+                    </label>
+                  </td>
+                  <td>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      style={{ color: 'var(--danger)', padding: 4 }}
+                      onClick={() => setDeletingManualAddress(item)}
+                    >
+                      <TrashIconSmall />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
+
       {domainModalOpen ? (
-        <ListModal
+        <GatewayDnsDomainModal
           title={t('addDomain')}
-          description={t('domainModalDescription')}
-          placeholder={'example.com\napi.example.com'}
-          submitLabel={t('add')}
+          zones={data.upstreams}
+          selectableZones={selectableZones}
           onClose={() => setDomainModalOpen(false)}
-          onSubmit={async (items) => {
-            await api.post('/dns/domains/bulk', { domains: items, zone: 'local', enabled: true })
+          onSubmit={async (items, zone) => {
+            await api.post('/dns/domains/bulk', { domains: items, zone, enabled: true })
             setDomainModalOpen(false)
             await reload()
           }}
         />
       ) : null}
+      {manualAddressModalOpen ? (
+        <GatewayManualAddressModal
+          onClose={() => setManualAddressModalOpen(false)}
+          onSubmit={async (domain, address) => {
+            await api.post('/dns/manual-addresses', { domain, address, enabled: true })
+            setManualAddressModalOpen(false)
+            await reload()
+          }}
+        />
+      ) : null}
+      {zoneModalOpen ? (
+        <GatewayDnsZoneModal
+          title={t('addZone')}
+          description={t('addZoneDescription')}
+          onClose={() => setZoneModalOpen(false)}
+          onSubmit={async (payload) => {
+            await api.post('/dns/zones', payload)
+            setZoneModalOpen(false)
+            await reload()
+          }}
+        />
+      ) : null}
+      {editingZone ? (
+        <GatewayDnsZoneModal
+          title={t('edit')}
+          description={t('addZoneDescription')}
+          initialZone={editingZone}
+          onClose={() => setEditingZone(null)}
+          onSubmit={async (payload) => {
+            await api.put(`/dns/zones/${editingZone.zone}`, { ...payload, domains: undefined })
+            setEditingZone(null)
+            await reload()
+          }}
+          editing
+        />
+      ) : null}
+      {deletingZone ? (
+        <GatewayDeleteZoneModal
+          zone={deletingZone}
+          onClose={() => setDeletingZone(null)}
+          onConfirm={async () => {
+            await api.delete(`/dns/zones/${deletingZone.zone}`)
+            setDeletingZone(null)
+            await reload()
+          }}
+        />
+      ) : null}
+      {deletingDomain ? (
+        <GatewayDeleteConfirmModal
+          title={t('deleteDomainTitle')}
+          message={t('deleteDomainConfirm').replace('{domain}', deletingDomain.domain)}
+          onClose={() => setDeletingDomain(null)}
+          onConfirm={async () => {
+            await api.delete(`/dns/domains/${deletingDomain.id}`)
+            setDeletingDomain(null)
+            await reload()
+          }}
+        />
+      ) : null}
+      {deletingManualAddress ? (
+        <GatewayDeleteConfirmModal
+          title={t('deleteManualAddressTitle')}
+          message={t('deleteManualAddressConfirm').replace('{domain}', deletingManualAddress.domain)}
+          onClose={() => setDeletingManualAddress(null)}
+          onConfirm={async () => {
+            await api.delete(`/dns/manual-addresses/${deletingManualAddress.id}`)
+            setDeletingManualAddress(null)
+            await reload()
+          }}
+        />
+      ) : null}
     </>
+  )
+}
+
+function GatewayManualAddressModal({
+  onClose,
+  onSubmit,
+}: {
+  onClose: () => void
+  onSubmit: (domain: string, address: string) => Promise<void>
+}) {
+  const { t } = useI18n()
+  const [domain, setDomain] = useState('')
+  const [address, setAddress] = useState('')
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    if (!domain.trim() || !address.trim()) {
+      setError('Domain and address are required')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      await onSubmit(domain.trim(), address.trim())
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || err.message || 'Request failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">{t('addManualReplaceAddress')}</div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>{t('close')}</button>
+        </div>
+        <div className="text-muted text-sm" style={{ marginBottom: 14 }}>{t('manualReplaceDescription')}</div>
+        {error ? <div className="error-box">{error}</div> : null}
+        <form onSubmit={submit}>
+          <div className="form-group">
+            <label className="form-label">{t('domains')}</label>
+            <input className="form-input mono" value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="example.com" autoFocus />
+            <div className="text-muted text-sm" style={{ marginTop: 6 }}>{t('manualReplaceDomainHint')}</div>
+          </div>
+          <div className="form-group">
+            <label className="form-label">{t('addressLabel')}</label>
+            <input className="form-input mono" value={address} onChange={(event) => setAddress(event.target.value)} placeholder="192.168.1.100" />
+            <div className="text-muted text-sm" style={{ marginTop: 6 }}>{t('manualReplaceAddressHint')}</div>
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-secondary" type="button" onClick={onClose}>{t('cancel')}</button>
+            <button className="btn btn-primary" type="submit" disabled={saving}>{saving ? <span className="spinner" /> : t('add')}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function GatewayDnsDomainModal({
+  title,
+  zones,
+  selectableZones,
+  onClose,
+  onSubmit,
+}: {
+  title: string
+  zones: any[]
+  selectableZones: any[]
+  onClose: () => void
+  onSubmit: (items: string[], zone: string) => Promise<void>
+}) {
+  const { t } = useI18n()
+  const [value, setValue] = useState('')
+  const [zone, setZone] = useState(selectableZones.length ? selectableZones[0].zone : 'local')
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!selectableZones.length) {
+      setZone('local')
+      return
+    }
+    if (!selectableZones.some((item) => item.zone === zone)) {
+      setZone(selectableZones[0].zone)
+    }
+  }, [selectableZones, zone])
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    const items = splitDnsItems(value)
+    if (items.length === 0) {
+      setError('At least one value is required')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      await onSubmit(items, selectableZones.length ? zone : 'local')
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || err.message || 'Request failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">{title}</div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>{t('close')}</button>
+        </div>
+        <div className="text-muted text-sm" style={{ marginBottom: 14 }}>{t('domainModalDescription')}</div>
+        {error ? <div className="error-box">{error}</div> : null}
+        <form onSubmit={submit}>
+          <div className="form-group">
+            <label className="form-label">{t('zone')}</label>
+            <select
+              className="form-input"
+              value={selectableZones.length ? zone : 'local'}
+              onChange={(event) => setZone(event.target.value)}
+              disabled={!selectableZones.length}
+            >
+              {selectableZones.length ? selectableZones.map((item) => (
+                <option key={item.zone} value={item.zone}>{item.name}</option>
+              )) : (
+                <option value="local">{zones.find((item) => item.zone === 'local')?.name ?? 'Local'}</option>
+              )}
+            </select>
+            {!selectableZones.length ? <div className="text-muted text-sm" style={{ marginTop: 6 }}>{t('onlyBuiltinZonesHint')}</div> : null}
+          </div>
+          <div className="form-group">
+            <textarea className="form-input mono" rows={8} value={value} onChange={(event) => setValue(event.target.value)} placeholder={'example.com\napi.example.com'} />
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-secondary" type="button" onClick={onClose}>{t('cancel')}</button>
+            <button className="btn btn-primary" type="submit" disabled={saving}>{saving ? <span className="spinner" /> : t('add')}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function GatewayDnsZoneModal({
+  title,
+  description,
+  onClose,
+  onSubmit,
+  initialZone,
+  editing = false,
+}: {
+  title: string
+  description: string
+  onClose: () => void
+  onSubmit: (payload: { name: string; servers: string[]; domains?: string[] }) => Promise<void>
+  initialZone?: any
+  editing?: boolean
+}) {
+  const { t } = useI18n()
+  const [name, setName] = useState(initialZone?.name ?? '')
+  const [server, setServer] = useState(initialZone?.servers?.[0] ?? '')
+  const [domains, setDomains] = useState('')
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    if (!name.trim() || !server.trim()) {
+      setError('Name and DNS server are required')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      await onSubmit({
+        name: name.trim(),
+        servers: [server.trim()],
+        domains: editing ? undefined : splitDnsItems(domains),
+      })
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || err.message || 'Request failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">{title}</div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>{t('close')}</button>
+        </div>
+        <div className="text-muted text-sm" style={{ marginBottom: 14 }}>{description}</div>
+        {error ? <div className="error-box">{error}</div> : null}
+        <form onSubmit={submit}>
+          <div className="form-group">
+            <label className="form-label">{t('zoneName')}</label>
+            <input className="form-input" value={name} onChange={(event) => setName(event.target.value)} autoFocus />
+          </div>
+          <div className="form-group">
+            <label className="form-label">{t('zoneDnsServer')}</label>
+            <input className="form-input mono" value={server} onChange={(event) => setServer(event.target.value)} placeholder="1.2.3.4 or dns.example.com" />
+          </div>
+          {!editing ? (
+            <div className="form-group">
+              <label className="form-label">{t('domainNames')}</label>
+              <textarea className="form-input mono" rows={8} value={domains} onChange={(event) => setDomains(event.target.value)} placeholder={'gemini.com\napi.gemini.com'} />
+            </div>
+          ) : null}
+          <div className="modal-actions">
+            <button className="btn btn-secondary" type="button" onClick={onClose}>{t('cancel')}</button>
+            <button className="btn btn-primary" type="submit" disabled={saving}>{saving ? <span className="spinner" /> : (editing ? t('save') : t('addZone'))}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function GatewayZoneCard({
+  zone,
+  onEdit,
+  onDelete,
+}: {
+  zone: any
+  onEdit: () => void
+  onDelete: () => void
+}) {
+  const isLocal = zone.zone === 'local'
+  const isUpstream = zone.zone === 'vpn'
+  const canDelete = !zone.is_builtin && !isLocal && !isUpstream
+  return (
+    <div className="card" style={{ background: 'var(--bg-3)', padding: 14, minHeight: 136 }}>
+      <div className="flex items-center justify-between" style={{ marginBottom: 8, gap: 10 }}>
+        <div className="flex items-center gap-2">
+          <div style={{
+            width: 32,
+            height: 32,
+            borderRadius: 10,
+            display: 'grid',
+            placeItems: 'center',
+            background: isLocal ? 'var(--accent-dim)' : isUpstream ? 'rgba(56,189,248,0.14)' : 'rgba(167,139,250,0.14)',
+            color: isLocal ? 'var(--accent)' : isUpstream ? 'var(--success)' : '#c4b5fd',
+          }}>
+            {isLocal ? <LocalZoneIcon /> : <UpstreamZoneIcon />}
+          </div>
+          <div>
+            <div style={{ fontWeight: 600 }}>{zone.name}</div>
+            <div className="text-muted text-sm">{zone.zone}</div>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <button className="btn btn-secondary btn-sm" onClick={onEdit}>Edit</button>
+          {canDelete ? (
+            <button className="btn btn-danger btn-sm" onClick={onDelete}>Delete</button>
+          ) : null}
+        </div>
+      </div>
+      <div className="mono" style={{ fontSize: 13, wordBreak: 'break-word' }}>{(zone.servers || []).join(', ') || '—'}</div>
+    </div>
+  )
+}
+
+function GatewayDeleteZoneModal({
+  zone,
+  onClose,
+  onConfirm,
+}: {
+  zone: any
+  onClose: () => void
+  onConfirm: () => Promise<void>
+}) {
+  const { t } = useI18n()
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">{t('deleteZoneTitle')}</div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>{t('close')}</button>
+        </div>
+        {error ? <div className="error-box">{error}</div> : null}
+        <div style={{ fontSize: 14 }}>
+          {t('deleteZoneConfirm').replace('{name}', zone.name)}
+        </div>
+        <div className="modal-actions">
+          <button className="btn btn-secondary" type="button" onClick={onClose} disabled={saving}>{t('cancel')}</button>
+          <button
+            className="btn btn-danger"
+            type="button"
+            disabled={saving}
+            onClick={async () => {
+              setSaving(true)
+              setError('')
+              try {
+                await onConfirm()
+              } catch (err: any) {
+                setError(err?.response?.data?.detail || err.message || 'Request failed')
+                setSaving(false)
+              }
+            }}
+          >
+            {saving ? <span className="spinner" /> : t('delete')}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function GatewayDeleteConfirmModal({
+  title,
+  message,
+  onClose,
+  onConfirm,
+}: {
+  title: string
+  message: string
+  onClose: () => void
+  onConfirm: () => Promise<void>
+}) {
+  const { t } = useI18n()
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">{title}</div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>{t('close')}</button>
+        </div>
+        {error ? <div className="error-box">{error}</div> : null}
+        <div style={{ fontSize: 14 }}>{message}</div>
+        <div className="modal-actions">
+          <button className="btn btn-secondary" type="button" onClick={onClose} disabled={saving}>{t('cancel')}</button>
+          <button
+            className="btn btn-danger"
+            type="button"
+            disabled={saving}
+            onClick={async () => {
+              setSaving(true)
+              setError('')
+              try {
+                await onConfirm()
+              } catch (err: any) {
+                setError(err?.response?.data?.detail || err.message || 'Request failed')
+                setSaving(false)
+              }
+            }}
+          >
+            {saving ? <span className="spinner" /> : t('delete')}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function GatewayZoneBadge({ zone, zoneKey }: { zone?: any; zoneKey: string }) {
+  const isLocal = zoneKey === 'local'
+  const isUpstream = zoneKey === 'vpn'
+  return (
+    <span className={`badge ${isLocal ? 'badge-pending' : isUpstream ? 'badge-online' : 'badge-warning'}`}>
+      {zone?.name ?? zoneKey}
+    </span>
+  )
+}
+
+function gatewayZoneColumnsClass(count: number) {
+  if (count >= 3 && count % 3 === 0) return 'card-grid-3'
+  if (count >= 2 && count % 2 === 0) return 'card-grid-2'
+  return 'card-grid-3'
+}
+
+function splitDnsItems(value: string) {
+  return value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean)
+}
+
+function LocalZoneIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 11.5L12 4l9 7.5" />
+      <path d="M5 10.5V20h14v-9.5" />
+      <path d="M9 20v-6h6v6" />
+    </svg>
+  )
+}
+
+function UpstreamZoneIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3l7 3v6c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6l7-3z" />
+      <path d="M9.5 12.5l1.8 1.8 3.2-4.3" />
+    </svg>
+  )
+}
+
+function TrashIconSmall() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14H6L5 6" />
+      <path d="M10 11v6M14 11v6" />
+      <path d="M9 6V4h6v2" />
+    </svg>
   )
 }
 

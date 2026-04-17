@@ -17,6 +17,7 @@ def test_dnsmasq_config_uses_single_bind_mode() -> None:
     assert "bind-interfaces" not in config
     assert "server=/example.com/9.9.9.9" in config
     assert "ipset=/api.example.com/routing_prefixes" in config
+    assert "# Special zone overrides" in config
 
 
 def test_to_dnsmasq_domain_converts_idn_to_idna() -> None:
@@ -37,3 +38,33 @@ def test_dnsmasq_config_converts_idn_domains_and_fqdn_prefixes() -> None:
 
     assert "server=/xn--d1acpjx3f.xn--p1ai/9.9.9.9" in config
     assert "ipset=/xn--80a1acny.xn--d1acpjx3f.xn--p1ai/routing_prefixes" in config
+
+
+def test_dnsmasq_config_supports_custom_zone_overrides() -> None:
+    config = build_dnsmasq_config(
+        [
+            SimpleNamespace(zone="vpn", servers=["1.1.1.1"]),
+            SimpleNamespace(zone="gemini", servers=["1.2.3.4"]),
+        ],
+        [SimpleNamespace(domain="gemini.com", zone="gemini", enabled=True)],
+        fqdn_prefixes=[],
+        ipset_name="routing_prefixes",
+    )
+
+    assert "server=/gemini.com/1.2.3.4" in config
+
+
+def test_dnsmasq_config_supports_manual_replace_addresses() -> None:
+    config = build_dnsmasq_config(
+        [SimpleNamespace(zone="vpn", servers=["1.1.1.1"])],
+        [],
+        manual_addresses=[
+            SimpleNamespace(domain="example.com", address="192.168.1.100", enabled=True),
+            SimpleNamespace(domain="sub.example.com", address="192.168.1.101", enabled=True),
+        ],
+        fqdn_prefixes=[],
+        ipset_name="routing_prefixes",
+    )
+
+    assert "address=/example.com/192.168.1.100" in config
+    assert "address=/sub.example.com/192.168.1.101" in config

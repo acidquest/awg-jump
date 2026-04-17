@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from app.models import DnsDomainRule, DnsUpstream
+from app.models import DnsDomainRule, DnsManualAddress, DnsUpstream
 
 
 def _to_dnsmasq_domain(domain: str) -> str:
@@ -15,6 +15,7 @@ def _to_dnsmasq_domain(domain: str) -> str:
 def build_dnsmasq_preview(
     upstreams: Iterable[DnsUpstream],
     domain_rules: Iterable[DnsDomainRule],
+    manual_addresses: Iterable[DnsManualAddress] | None = None,
     fqdn_prefixes: Iterable[str] | None = None,
     ipset_name: str = "routing_prefixes",
     *,
@@ -22,7 +23,6 @@ def build_dnsmasq_preview(
     nft_table_name: str = "awg_gw",
 ) -> str:
     upstream_by_zone = {item.zone: item for item in upstreams}
-    local_servers = upstream_by_zone.get("local").servers if upstream_by_zone.get("local") else []
     vpn_servers = upstream_by_zone.get("vpn").servers if upstream_by_zone.get("vpn") else []
     lines = [
         "# AWG Gateway split DNS preview",
@@ -33,13 +33,23 @@ def build_dnsmasq_preview(
     for server in vpn_servers:
         lines.append(f"server={server}")
     lines.append("")
-    lines.append("# Local zone overrides")
+    lines.append("# Special zone overrides")
     for rule in sorted(domain_rules, key=lambda item: item.domain):
-        if not rule.enabled or rule.zone != "local":
+        if not rule.enabled or rule.zone == "vpn":
+            continue
+        zone_servers = upstream_by_zone.get(rule.zone).servers if upstream_by_zone.get(rule.zone) else []
+        if not zone_servers:
             continue
         dnsmasq_domain = _to_dnsmasq_domain(rule.domain)
-        for server in local_servers:
+        for server in zone_servers:
             lines.append(f"server=/{dnsmasq_domain}/{server}")
+    manual_values = [item for item in (manual_addresses or []) if item.enabled]
+    if manual_values:
+        lines.append("")
+        lines.append("# Manual replace addresses")
+        for item in sorted(manual_values, key=lambda x: x.domain):
+            dnsmasq_domain = _to_dnsmasq_domain(item.domain)
+            lines.append(f"address=/{dnsmasq_domain}/{item.address}")
     fqdn_values = sorted(
         {
             _to_dnsmasq_domain(item)
@@ -62,6 +72,7 @@ def build_dnsmasq_preview(
 def build_dnsmasq_config(
     upstreams: Iterable[DnsUpstream],
     domain_rules: Iterable[DnsDomainRule],
+    manual_addresses: Iterable[DnsManualAddress] | None = None,
     fqdn_prefixes: Iterable[str] | None = None,
     ipset_name: str = "routing_prefixes",
     *,
@@ -71,6 +82,7 @@ def build_dnsmasq_config(
     preview = build_dnsmasq_preview(
         upstreams,
         domain_rules,
+        manual_addresses=manual_addresses,
         fqdn_prefixes=fqdn_prefixes,
         ipset_name=ipset_name,
         use_nftset=use_nftset,

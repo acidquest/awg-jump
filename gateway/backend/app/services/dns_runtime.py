@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import DnsDomainRule, DnsUpstream, GatewaySettings, RoutingPolicy
+from app.models import DnsDomainRule, DnsManualAddress, DnsUpstream, GatewaySettings, RoutingPolicy
 from app.services.dns import build_dnsmasq_config
 from app.services.external_ip import effective_fqdn_prefixes
 from app.services.nftables_manager import TABLE_NAME as NFT_TABLE_NAME
@@ -58,6 +58,7 @@ def runtime_uid() -> int | None:
 async def render_runtime_config(db: AsyncSession) -> str:
     upstreams = (await db.execute(select(DnsUpstream).order_by(DnsUpstream.zone))).scalars().all()
     rules = (await db.execute(select(DnsDomainRule).order_by(DnsDomainRule.domain))).scalars().all()
+    manual_addresses = (await db.execute(select(DnsManualAddress).order_by(DnsManualAddress.domain))).scalars().all()
     policy = await db.get(RoutingPolicy, 1)
     gateway_settings = await db.get(GatewaySettings, 1)
     fqdn_prefixes = effective_fqdn_prefixes(policy, gateway_settings)
@@ -65,6 +66,7 @@ async def render_runtime_config(db: AsyncSession) -> str:
     return build_dnsmasq_config(
         upstreams,
         rules,
+        manual_addresses=manual_addresses,
         fqdn_prefixes=fqdn_prefixes,
         ipset_name=ipset_name,
         use_nftset=firewall_backend(gateway_settings) == "nftables",

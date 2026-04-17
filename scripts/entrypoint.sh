@@ -90,7 +90,7 @@ from backend.models.interface import Interface, InterfaceMode
 from backend.models.geoip import GeoipSource
 import ipaddress
 from backend.config import settings
-from backend.models.dns_domain import DnsDomain, DnsUpstream
+from backend.models.dns_domain import DnsDomain
 
 
 def _awg0_ip(address: str) -> str:
@@ -184,7 +184,7 @@ async def init_defaults():
             for domain in _DEFAULT_DNS_DOMAINS:
                 session.add(DnsDomain(
                     domain=domain,
-                    upstream=DnsUpstream.LOCAL,
+                    upstream="local",
                     enabled=True,
                     created_at=datetime.now(timezone.utc),
                 ))

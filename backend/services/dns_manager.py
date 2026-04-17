@@ -17,6 +17,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import time
@@ -35,14 +36,20 @@ _PROCESS: Optional[subprocess.Popen] = None
 
 _DEFAULT_ZONE_SETTINGS = {
     "local": {
+        "name": "Local",
         "dns_servers": ["77.88.8.8"],
-        "description": "DNS for local routing zone (RU/etc)",
+        "description": "",
+        "is_builtin": True,
     },
     "vpn": {
+        "name": "Upstream",
         "dns_servers": ["1.1.1.1", "8.8.8.8"],
-        "description": "DNS for VPN routing zone",
+        "description": "",
+        "is_builtin": True,
     },
 }
+
+_HOSTNAME_REGEX = re.compile(r"^(?=.{1,253}$)(?!-)(?:[a-z0-9-]{1,63}\.)*[a-z0-9-]{1,63}\.?$", re.IGNORECASE)
 
 
 def _to_dnsmasq_domain(domain: str) -> str:
@@ -62,9 +69,28 @@ def get_awg0_ip() -> str:
         return settings.awg0_address.split("/")[0]
 
 
-def _write_config(domains: list, local_dns: list[str], vpn_dns: list[str]) -> None:
+def is_valid_dns_server(value: str) -> bool:
+    candidate = value.strip()
+    if not candidate:
+        return False
+    try:
+        ipaddress.ip_address(candidate)
+        return True
+    except ValueError:
+        return bool(_HOSTNAME_REGEX.match(candidate))
+
+
+def _normalize_dns_server(value: str) -> str:
+    candidate = value.strip()
+    if not is_valid_dns_server(candidate):
+        raise ValueError(f"Invalid DNS server: {value}")
+    return candidate.rstrip(".").lower()
+
+
+def _write_config(domains: list, zones_by_key: dict[str, list[str]], manual_addresses: list | None = None) -> None:
     """Генерирует конфиг dnsmasq из списка доменов и DNS-серверов зон."""
     listen_ip = get_awg0_ip()
+    vpn_dns = zones_by_key.get("vpn", [])
 
     lines = [
         "# AWG Split DNS — auto-generated, do not edit manually",
@@ -82,19 +108,31 @@ def _write_config(domains: list, local_dns: list[str], vpn_dns: list[str]) -> No
     for dns in vpn_dns:
         lines.append(f"server={dns}")
 
-    local_domains = [d for d in domains if d.enabled and getattr(d.upstream, "value", d.upstream) == "yandex"]
-    if local_domains:
+    special_domains = [d for d in domains if d.enabled and getattr(d, "upstream", "") != "vpn"]
+    if special_domains:
         lines.append("")
-        lines.append(f"# Local zone domains -> {', '.join(local_dns)}")
-        for d in sorted(local_domains, key=lambda x: x.domain):
+        lines.append("# Special zone overrides")
+        for d in sorted(special_domains, key=lambda x: (getattr(x, "upstream", ""), x.domain)):
+            zone_key = getattr(d, "upstream", "")
+            zone_dns = zones_by_key.get(zone_key, [])
+            if not zone_dns:
+                continue
             dnsmasq_domain = _to_dnsmasq_domain(d.domain)
-            for dns in local_dns:
+            for dns in zone_dns:
                 lines.append(f"server=/{dnsmasq_domain}/{dns}")
+
+    manual_rules = [item for item in (manual_addresses or []) if item.enabled]
+    if manual_rules:
+        lines.append("")
+        lines.append("# Manual replace addresses")
+        for item in sorted(manual_rules, key=lambda x: x.domain):
+            dnsmasq_domain = _to_dnsmasq_domain(item.domain)
+            lines.append(f"address=/{dnsmasq_domain}/{item.address}")
 
     Path(_CONF_FILE).write_text("\n".join(lines) + "\n")
     logger.info(
-        "dnsmasq config written: listen=%s, local_domains=%d, local_dns=%s, vpn_dns=%s",
-        listen_ip, len(local_domains), local_dns, vpn_dns,
+        "dnsmasq config written: listen=%s, override_domains=%d, manual_addresses=%d, zones=%s",
+        listen_ip, len(special_domains), len(manual_rules), sorted(zones_by_key),
     )
 
 
@@ -110,8 +148,10 @@ async def _ensure_zone_settings(db: AsyncSession) -> None:
             db.add(
                 DnsZoneSettings(
                     zone=zone,
+                    name=payload["name"],
                     dns_servers=json.dumps(payload["dns_servers"]),
                     description=payload["description"],
+                    is_builtin=payload["is_builtin"],
                 )
             )
             changed = True
@@ -120,13 +160,16 @@ async def _ensure_zone_settings(db: AsyncSession) -> None:
         await db.commit()
 
 
-async def get_zone_dns(db: AsyncSession, zone: str) -> list[str]:
+async def get_zones(db: AsyncSession):
     from backend.models.dns_zone_settings import DnsZoneSettings
 
     await _ensure_zone_settings(db)
-    row = await db.scalar(
-        select(DnsZoneSettings).where(DnsZoneSettings.zone == zone)
-    )
+    result = await db.execute(select(DnsZoneSettings).order_by(DnsZoneSettings.zone))
+    return result.scalars().all()
+
+
+async def get_zone_dns(db: AsyncSession, zone: str) -> list[str]:
+    row = next((item for item in await get_zones(db) if item.zone == zone), None)
     if row is None:
         raise RuntimeError(f"DNS zone settings not found for zone={zone!r}")
 
@@ -177,7 +220,7 @@ def start() -> None:
 
     if not Path(_CONF_FILE).exists():
         # Минимальный конфиг если вызвали до apply_from_db
-        _write_config([], _DEFAULT_ZONE_SETTINGS["local"]["dns_servers"], _DEFAULT_ZONE_SETTINGS["vpn"]["dns_servers"])
+        _write_config([], {zone: payload["dns_servers"] for zone, payload in _DEFAULT_ZONE_SETTINGS.items()})
 
     test_cmd = [
         "dnsmasq",
@@ -214,18 +257,11 @@ def start() -> None:
 
 
 def _reload_process() -> None:
-    """Перечитывает конфиг dnsmasq без перезапуска (SIGHUP)."""
-    pid = _get_pid()
-    if pid is None or not is_running():
-        logger.warning("dnsmasq not running, starting instead of reload")
-        start()
-        return
-    try:
-        os.kill(pid, signal.SIGHUP)
-        logger.info("dnsmasq config reloaded via SIGHUP (pid=%d)", pid)
-    except OSError as e:
-        logger.warning("dnsmasq SIGHUP failed: %s, restarting", e)
-        start()
+    """Применяет новый конфиг dnsmasq через полный restart процесса."""
+    if is_running():
+        logger.info("restarting dnsmasq to apply updated config")
+        stop()
+    start()
 
 
 def stop() -> None:
@@ -265,16 +301,22 @@ def _patch_resolv_conf() -> None:
 async def reload(db: AsyncSession) -> None:
     """Читает настройки и домены из БД, генерирует конфиг dnsmasq и перезагружает сервис."""
     from backend.models.dns_domain import DnsDomain
+    from backend.models.dns_manual_address import DnsManualAddress
 
-    local_dns = await get_zone_dns(db, "local")
-    vpn_dns = await get_zone_dns(db, "vpn")
+    zones = await get_zones(db)
+    zones_by_key = {zone.zone: await get_zone_dns(db, zone.zone) for zone in zones}
 
     result = await db.execute(
         select(DnsDomain).order_by(DnsDomain.domain)
     )
     domains = result.scalars().all()
 
-    _write_config(domains, local_dns, vpn_dns)
+    result = await db.execute(
+        select(DnsManualAddress).order_by(DnsManualAddress.domain)
+    )
+    manual_addresses = result.scalars().all()
+
+    _write_config(domains, zones_by_key, manual_addresses)
 
     if is_running():
         _reload_process()

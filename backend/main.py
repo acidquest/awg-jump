@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from backend.config import settings as _settings, validate_security_settings
 from backend.database import AsyncSessionLocal, engine, Base
@@ -25,6 +25,7 @@ from backend.models.interface import Interface
 from backend.models.geoip import GeoipSource
 from backend.models.routing_settings import RoutingSettings
 from backend.models.upstream_node import NodeStatus, UpstreamNode
+from backend.models.dns_manual_address import DnsManualAddress
 from backend.routers import auth, backup, dns, geoip, interfaces, nodes, peers, routing, system
 from backend.scheduler import scheduler, setup_scheduler
 import backend.services.awg as awg_svc
@@ -42,6 +43,47 @@ logger = logging.getLogger(__name__)
 
 
 # ── Startup helpers ───────────────────────────────────────────────────────
+
+async def _ensure_sqlite_columns() -> None:
+    async with engine.begin() as conn:
+        result = await conn.execute(text("PRAGMA table_info(dns_zone_settings)"))
+        zone_columns = {row[1] for row in result.fetchall()}
+        if "name" not in zone_columns:
+            await conn.execute(text("ALTER TABLE dns_zone_settings ADD COLUMN name VARCHAR(128) NOT NULL DEFAULT ''"))
+        if "is_builtin" not in zone_columns:
+            await conn.execute(text("ALTER TABLE dns_zone_settings ADD COLUMN is_builtin BOOLEAN NOT NULL DEFAULT 0"))
+        await conn.execute(
+            text(
+                """
+                UPDATE dns_zone_settings
+                SET name = CASE
+                    WHEN zone = 'local' AND (name IS NULL OR name = '') THEN 'Local'
+                    WHEN zone = 'vpn' AND (name IS NULL OR name = '') THEN 'Upstream'
+                    WHEN name IS NULL OR name = '' THEN zone
+                    ELSE name
+                END,
+                    is_builtin = CASE WHEN zone IN ('local', 'vpn') THEN 1 ELSE is_builtin END
+                """
+            )
+        )
+
+        result = await conn.execute(text("PRAGMA table_info(dns_domains)"))
+        result.fetchall()
+        await conn.execute(
+            text(
+                """
+                UPDATE dns_domains
+                SET upstream = CASE
+                    WHEN upstream = 'yandex' THEN 'local'
+                    WHEN upstream = 'default' THEN 'vpn'
+                    ELSE upstream
+                END
+                """
+            )
+        )
+        result = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='dns_manual_addresses'"))
+        if result.first() is None:
+            await conn.run_sync(lambda sync_conn: Base.metadata.tables["dns_manual_addresses"].create(sync_conn))
 
 async def _init_keys_and_obfuscation() -> None:
     """Генерирует AWG ключи и параметры обфускации если отсутствуют."""
@@ -162,6 +204,7 @@ async def lifespan(app: FastAPI):
     # Step 1: DB
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await _ensure_sqlite_columns()
 
     # Step 2: AWG keys + obfuscation
     try:

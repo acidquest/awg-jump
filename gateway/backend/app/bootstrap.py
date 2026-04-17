@@ -54,8 +54,10 @@ async def ensure_bootstrap_state(db: AsyncSession) -> None:
         db.add(
             DnsUpstream(
                 zone="local",
+                name="Local",
                 servers=["77.88.8.8"],
-                description="DNS servers for domains routed outside the tunnel",
+                description="",
+                is_builtin=True,
             )
         )
 
@@ -64,8 +66,10 @@ async def ensure_bootstrap_state(db: AsyncSession) -> None:
         db.add(
             DnsUpstream(
                 zone="vpn",
+                name="Upstream",
                 servers=[server.strip() for server in settings.default_dns_servers.split(",") if server.strip()],
-                description="DNS servers for domains resolved through the tunnel",
+                description="",
+                is_builtin=True,
             )
         )
 

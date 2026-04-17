@@ -1,30 +1,21 @@
 """
 DNS router — управление split DNS (dnsmasq).
-
-Эндпоинты:
-  GET  /api/dns/status           — статус dnsmasq
-  GET  /api/dns/domains          — список доменов
-  GET  /api/dns/zones            — список DNS зон
-  POST /api/dns/domains          — добавить домен
-  PUT  /api/dns/domains/{id}     — обновить домен
-  PUT  /api/dns/zones/{zone}     — обновить DNS зону
-  DELETE /api/dns/domains/{id}   — удалить домен
-  POST /api/dns/domains/{id}/toggle — вкл/выкл домен
-  POST /api/dns/reload           — перегенерировать конфиг и перезагрузить dnsmasq
 """
 import ipaddress
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
-from backend.models.dns_domain import DnsDomain, DnsUpstream
+from backend.models.dns_domain import DnsDomain
+from backend.models.dns_manual_address import DnsManualAddress
 from backend.models.dns_zone_settings import DnsZoneSettings
 from backend.routers.auth import get_current_user
 import backend.services.dns_manager as dns_mgr
@@ -32,18 +23,36 @@ import backend.services.dns_manager as dns_mgr
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/dns", tags=["dns"])
 
+_ZONE_KEY_PATTERN = re.compile(r"[^a-z0-9]+")
 
-# ── Schemas ───────────────────────────────────────────────────────────────
 
 class DomainCreate(BaseModel):
     domain: str
-    upstream: str = DnsUpstream.LOCAL.value
+    zone: str = "local"
+    enabled: bool = True
+
+
+class DomainBulkCreate(BaseModel):
+    domains: list[str] = Field(min_length=1)
+    zone: str = "local"
     enabled: bool = True
 
 
 class DomainUpdate(BaseModel):
     domain: Optional[str] = None
-    upstream: Optional[str] = None
+    zone: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class ManualAddressCreate(BaseModel):
+    domain: str
+    address: str
+    enabled: bool = True
+
+
+class ManualAddressUpdate(BaseModel):
+    domain: Optional[str] = None
+    address: Optional[str] = None
     enabled: Optional[bool] = None
 
 
@@ -51,68 +60,131 @@ class DnsZoneResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     zone: str
+    name: str
     dns_servers: list[str]
     description: str
+    is_builtin: bool
     updated_at: datetime
 
 
-class DnsZoneUpdate(BaseModel):
+class DnsZoneCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
     dns_servers: list[str] = Field(min_length=1, max_length=3)
-    description: Optional[str] = None
+    domains: list[str] = Field(default_factory=list)
 
     @field_validator("dns_servers")
     @classmethod
     def validate_dns_servers(cls, value: list[str]) -> list[str]:
-        if not value:
-            raise ValueError("dns_servers cannot be empty")
+        return _normalize_dns_servers(value)
 
-        validated: list[str] = []
-        for server in value:
-            try:
-                validated.append(str(ipaddress.ip_address(server)))
-            except ValueError as exc:
-                raise ValueError(f"Invalid IP address: {server}") from exc
-        return validated
+
+class DnsZoneUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    dns_servers: Optional[list[str]] = Field(default=None, min_length=1, max_length=3)
+    description: Optional[str] = None
+
+    @field_validator("dns_servers")
+    @classmethod
+    def validate_dns_servers(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        if value is None:
+            return value
+        return _normalize_dns_servers(value)
+
+
+def _normalize_dns_servers(servers: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for server in servers:
+        normalized_server = dns_mgr._normalize_dns_server(server)
+        if normalized_server not in normalized:
+            normalized.append(normalized_server)
+    if not normalized:
+        raise ValueError("dns_servers cannot be empty")
+    return normalized
 
 
 def _to_dict(d: DnsDomain) -> dict:
+    zone = getattr(d, "upstream", "local")
     return {
         "id": d.id,
         "domain": d.domain,
-        "upstream": d.upstream.value if isinstance(d.upstream, DnsUpstream) else d.upstream,
+        "zone": zone,
+        "upstream": zone,
         "enabled": d.enabled,
         "created_at": d.created_at.isoformat() if d.created_at else None,
     }
 
 
+def _manual_address_to_dict(item: DnsManualAddress) -> dict:
+    return {
+        "id": item.id,
+        "domain": item.domain,
+        "address": item.address,
+        "enabled": item.enabled,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+    }
+
+
 def _normalize_domain(raw: str) -> str:
-    """Приводит домен к нижнему регистру, убирает точку в начале и пробелы."""
     return raw.strip().lower().lstrip(".")
+
+
+def _normalize_address(raw: str) -> str:
+    candidate = raw.strip()
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid IP address: {raw}") from exc
+
+
+def _normalize_domain_list(raw_domains: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for item in raw_domains:
+        value = _normalize_domain(item)
+        if value and value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
+def _normalize_zone_key(name: str) -> str:
+    normalized = _ZONE_KEY_PATTERN.sub("-", name.strip().lower()).strip("-")
+    return normalized[:64] if normalized else "zone"
 
 
 def _zone_to_response(zone: DnsZoneSettings) -> DnsZoneResponse:
     return DnsZoneResponse(
         zone=zone.zone,
+        name=zone.name or zone.zone.title(),
         dns_servers=json.loads(zone.dns_servers),
         description=zone.description,
+        is_builtin=zone.is_builtin,
         updated_at=zone.updated_at,
     )
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────
+async def _get_zone_or_404(session: AsyncSession, zone_key: str) -> DnsZoneSettings:
+    zone = await session.scalar(select(DnsZoneSettings).where(DnsZoneSettings.zone == zone_key))
+    if zone is None:
+        raise HTTPException(status_code=404, detail="Zone not found")
+    return zone
+
+
+async def _ensure_domain_zone_exists(session: AsyncSession, zone_key: str) -> None:
+    zone = await session.scalar(select(DnsZoneSettings.id).where(DnsZoneSettings.zone == zone_key))
+    if zone is None:
+        raise HTTPException(status_code=400, detail=f"Unknown zone: {zone_key}")
+
 
 @router.get("/status")
 async def get_status(
     _user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Статус dnsmasq и параметры конфигурации."""
     status = dns_mgr.get_status()
     try:
         status["local_zone_dns"] = await dns_mgr.get_zone_dns(session, "local")
         status["vpn_zone_dns"] = await dns_mgr.get_zone_dns(session, "vpn")
-    except Exception as e:
-        logger.warning("Could not load DNS zone settings for status: %s", e)
+    except Exception as exc:
+        logger.warning("Could not load DNS zone settings for status: %s", exc)
     return status
 
 
@@ -121,11 +193,17 @@ async def list_domains(
     _user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> list[dict]:
-    """Список всех доменов в таблице split DNS."""
-    result = await session.execute(
-        select(DnsDomain).order_by(DnsDomain.domain)
-    )
+    result = await session.execute(select(DnsDomain).order_by(DnsDomain.domain))
     return [_to_dict(d) for d in result.scalars().all()]
+
+
+@router.get("/manual-addresses")
+async def list_manual_addresses(
+    _user: str = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    result = await session.execute(select(DnsManualAddress).order_by(DnsManualAddress.domain))
+    return [_manual_address_to_dict(item) for item in result.scalars().all()]
 
 
 @router.get("/zones", response_model=list[DnsZoneResponse])
@@ -133,13 +211,117 @@ async def list_zones(
     _user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> list[DnsZoneResponse]:
-    await dns_mgr.get_zone_dns(session, "local")
-    await dns_mgr.get_zone_dns(session, "vpn")
-
+    await dns_mgr.get_zones(session)
     result = await session.execute(
-        select(DnsZoneSettings).order_by(DnsZoneSettings.zone)
+        select(DnsZoneSettings).order_by(
+            case((DnsZoneSettings.zone == "local", 0), (DnsZoneSettings.zone == "vpn", 1), else_=2),
+            DnsZoneSettings.name,
+            DnsZoneSettings.zone,
+        )
     )
     return [_zone_to_response(zone) for zone in result.scalars().all()]
+
+
+@router.post("/zones", response_model=DnsZoneResponse, status_code=201)
+async def create_zone(
+    body: DnsZoneCreate,
+    _user: str = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> DnsZoneResponse:
+    await dns_mgr.get_zones(session)
+
+    zone_key_base = _normalize_zone_key(body.name)
+    zone_key = zone_key_base
+    suffix = 2
+    while await session.scalar(select(DnsZoneSettings.id).where(DnsZoneSettings.zone == zone_key)) is not None:
+        zone_key = f"{zone_key_base[:56]}-{suffix}"
+        suffix += 1
+
+    zone = DnsZoneSettings(
+        zone=zone_key,
+        name=body.name.strip(),
+        dns_servers=json.dumps(body.dns_servers),
+        description="",
+        is_builtin=False,
+        updated_at=datetime.utcnow(),
+    )
+    session.add(zone)
+    await session.flush()
+
+    for domain in _normalize_domain_list(body.domains):
+        existing = await session.scalar(select(DnsDomain.id).where(DnsDomain.domain == domain))
+        if existing is not None:
+            raise HTTPException(status_code=409, detail=f"Domain already exists: {domain}")
+        session.add(
+            DnsDomain(
+                domain=domain,
+                upstream=zone_key,
+                enabled=True,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+
+    await session.commit()
+    await session.refresh(zone)
+
+    try:
+        await dns_mgr.reload(session)
+    except Exception as exc:
+        logger.warning("DNS reload after zone create failed: %s", exc)
+
+    return _zone_to_response(zone)
+
+
+@router.put("/zones/{zone}", response_model=DnsZoneResponse)
+async def update_zone(
+    zone: str,
+    body: DnsZoneUpdate,
+    _user: str = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> DnsZoneResponse:
+    await dns_mgr.get_zones(session)
+    obj = await _get_zone_or_404(session, zone)
+
+    if body.name is not None:
+        obj.name = body.name.strip()
+    if body.dns_servers is not None:
+        obj.dns_servers = json.dumps(body.dns_servers)
+    if body.description is not None:
+        obj.description = body.description
+    obj.updated_at = datetime.utcnow()
+
+    await session.commit()
+    await session.refresh(obj)
+
+    try:
+        await dns_mgr.reload(session)
+    except Exception as exc:
+        logger.warning("DNS reload after zone update failed: %s", exc)
+
+    return _zone_to_response(obj)
+
+
+@router.delete("/zones/{zone}", status_code=204)
+async def delete_zone(
+    zone: str,
+    _user: str = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> None:
+    await dns_mgr.get_zones(session)
+    obj = await _get_zone_or_404(session, zone)
+    if obj.is_builtin or obj.zone in {"local", "vpn"}:
+        raise HTTPException(status_code=400, detail="Built-in DNS zones cannot be deleted")
+
+    rules = (await session.execute(select(DnsDomain).where(DnsDomain.upstream == zone))).scalars().all()
+    for rule in rules:
+        await session.delete(rule)
+    await session.delete(obj)
+    await session.commit()
+
+    try:
+        await dns_mgr.reload(session)
+    except Exception as exc:
+        logger.warning("DNS reload after zone delete failed: %s", exc)
 
 
 @router.post("/domains", status_code=201)
@@ -148,25 +330,20 @@ async def create_domain(
     _user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Добавить домен в таблицу split DNS."""
     domain = _normalize_domain(body.domain)
     if not domain:
         raise HTTPException(status_code=400, detail="Domain cannot be empty")
 
-    try:
-        upstream = DnsUpstream(body.upstream)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid upstream: {body.upstream!r}")
+    await dns_mgr.get_zones(session)
+    await _ensure_domain_zone_exists(session, body.zone)
 
-    existing = await session.scalar(
-        select(DnsDomain).where(DnsDomain.domain == domain)
-    )
+    existing = await session.scalar(select(DnsDomain).where(DnsDomain.domain == domain))
     if existing:
         raise HTTPException(status_code=409, detail="Domain already exists")
 
     obj = DnsDomain(
         domain=domain,
-        upstream=upstream,
+        upstream=body.zone,
         enabled=body.enabled,
         created_at=datetime.now(timezone.utc),
     )
@@ -176,10 +353,84 @@ async def create_domain(
 
     try:
         await dns_mgr.reload(session)
-    except Exception as e:
-        logger.warning("DNS reload after create failed: %s", e)
+    except Exception as exc:
+        logger.warning("DNS reload after create failed: %s", exc)
 
     return _to_dict(obj)
+
+
+@router.post("/manual-addresses", status_code=201)
+async def create_manual_address(
+    body: ManualAddressCreate,
+    _user: str = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    domain = _normalize_domain(body.domain)
+    if not domain:
+        raise HTTPException(status_code=400, detail="Domain cannot be empty")
+    address = _normalize_address(body.address)
+    existing = await session.scalar(select(DnsManualAddress).where(DnsManualAddress.domain == domain))
+    if existing:
+        raise HTTPException(status_code=409, detail="Manual replace address already exists")
+
+    obj = DnsManualAddress(
+        domain=domain,
+        address=address,
+        enabled=body.enabled,
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(obj)
+    await session.commit()
+    await session.refresh(obj)
+
+    try:
+        await dns_mgr.reload(session)
+    except Exception as exc:
+        logger.warning("DNS reload after manual address create failed: %s", exc)
+
+    return _manual_address_to_dict(obj)
+
+
+@router.post("/domains/bulk", status_code=201)
+async def create_domains_bulk(
+    body: DomainBulkCreate,
+    _user: str = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    await dns_mgr.get_zones(session)
+    await _ensure_domain_zone_exists(session, body.zone)
+
+    domains = _normalize_domain_list(body.domains)
+    if not domains:
+        raise HTTPException(status_code=400, detail="At least one domain is required")
+
+    existing_domains = (
+        await session.execute(select(DnsDomain.domain).where(DnsDomain.domain.in_(domains)))
+    ).scalars().all()
+    duplicates = sorted(set(existing_domains))
+    if duplicates:
+        raise HTTPException(status_code=409, detail=f"Domains already exist: {', '.join(duplicates)}")
+
+    created_ids: list[int] = []
+    for domain in domains:
+        obj = DnsDomain(
+            domain=domain,
+            upstream=body.zone,
+            enabled=body.enabled,
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(obj)
+        await session.flush()
+        created_ids.append(obj.id)
+
+    await session.commit()
+
+    try:
+        await dns_mgr.reload(session)
+    except Exception as exc:
+        logger.warning("DNS reload after bulk create failed: %s", exc)
+
+    return {"status": "added", "created": len(created_ids), "ids": created_ids}
 
 
 @router.put("/domains/{domain_id}")
@@ -189,18 +440,21 @@ async def update_domain(
     _user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Обновить домен (имя / upstream / enabled)."""
     obj = await session.get(DnsDomain, domain_id)
     if not obj:
         raise HTTPException(status_code=404, detail="Domain not found")
 
     if body.domain is not None:
-        obj.domain = _normalize_domain(body.domain)
-    if body.upstream is not None:
-        try:
-            obj.upstream = DnsUpstream(body.upstream)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid upstream: {body.upstream!r}")
+        domain = _normalize_domain(body.domain)
+        if not domain:
+            raise HTTPException(status_code=400, detail="Domain cannot be empty")
+        existing = await session.scalar(select(DnsDomain.id).where(DnsDomain.domain == domain, DnsDomain.id != domain_id))
+        if existing is not None:
+            raise HTTPException(status_code=409, detail="Domain already exists")
+        obj.domain = domain
+    if body.zone is not None:
+        await _ensure_domain_zone_exists(session, body.zone)
+        obj.upstream = body.zone
     if body.enabled is not None:
         obj.enabled = body.enabled
 
@@ -209,10 +463,47 @@ async def update_domain(
 
     try:
         await dns_mgr.reload(session)
-    except Exception as e:
-        logger.warning("DNS reload after update failed: %s", e)
+    except Exception as exc:
+        logger.warning("DNS reload after update failed: %s", exc)
 
     return _to_dict(obj)
+
+
+@router.put("/manual-addresses/{manual_address_id}")
+async def update_manual_address(
+    manual_address_id: int,
+    body: ManualAddressUpdate,
+    _user: str = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    obj = await session.get(DnsManualAddress, manual_address_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Manual replace address not found")
+
+    if body.domain is not None:
+        domain = _normalize_domain(body.domain)
+        if not domain:
+            raise HTTPException(status_code=400, detail="Domain cannot be empty")
+        existing = await session.scalar(
+            select(DnsManualAddress.id).where(DnsManualAddress.domain == domain, DnsManualAddress.id != manual_address_id)
+        )
+        if existing is not None:
+            raise HTTPException(status_code=409, detail="Manual replace address already exists")
+        obj.domain = domain
+    if body.address is not None:
+        obj.address = _normalize_address(body.address)
+    if body.enabled is not None:
+        obj.enabled = body.enabled
+
+    await session.commit()
+    await session.refresh(obj)
+
+    try:
+        await dns_mgr.reload(session)
+    except Exception as exc:
+        logger.warning("DNS reload after manual address update failed: %s", exc)
+
+    return _manual_address_to_dict(obj)
 
 
 @router.delete("/domains/{domain_id}", status_code=204)
@@ -221,7 +512,6 @@ async def delete_domain(
     _user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> None:
-    """Удалить домен из таблицы split DNS."""
     obj = await session.get(DnsDomain, domain_id)
     if not obj:
         raise HTTPException(status_code=404, detail="Domain not found")
@@ -231,8 +521,27 @@ async def delete_domain(
 
     try:
         await dns_mgr.reload(session)
-    except Exception as e:
-        logger.warning("DNS reload after delete failed: %s", e)
+    except Exception as exc:
+        logger.warning("DNS reload after delete failed: %s", exc)
+
+
+@router.delete("/manual-addresses/{manual_address_id}", status_code=204)
+async def delete_manual_address(
+    manual_address_id: int,
+    _user: str = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> None:
+    obj = await session.get(DnsManualAddress, manual_address_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Manual replace address not found")
+
+    await session.delete(obj)
+    await session.commit()
+
+    try:
+        await dns_mgr.reload(session)
+    except Exception as exc:
+        logger.warning("DNS reload after manual address delete failed: %s", exc)
 
 
 @router.post("/domains/{domain_id}/toggle")
@@ -241,7 +550,6 @@ async def toggle_domain(
     _user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Включить или отключить домен."""
     obj = await session.get(DnsDomain, domain_id)
     if not obj:
         raise HTTPException(status_code=404, detail="Domain not found")
@@ -252,43 +560,32 @@ async def toggle_domain(
 
     try:
         await dns_mgr.reload(session)
-    except Exception as e:
-        logger.warning("DNS reload after toggle failed: %s", e)
+    except Exception as exc:
+        logger.warning("DNS reload after toggle failed: %s", exc)
 
     return _to_dict(obj)
 
 
-@router.put("/zones/{zone}", response_model=DnsZoneResponse)
-async def update_zone(
-    zone: str,
-    body: DnsZoneUpdate,
+@router.post("/manual-addresses/{manual_address_id}/toggle")
+async def toggle_manual_address(
+    manual_address_id: int,
     _user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
-) -> DnsZoneResponse:
-    if zone not in {"local", "vpn"}:
-        raise HTTPException(status_code=404, detail="Zone not found")
+) -> dict:
+    obj = await session.get(DnsManualAddress, manual_address_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Manual replace address not found")
 
-    await dns_mgr.get_zone_dns(session, zone)
-    obj = await session.scalar(
-        select(DnsZoneSettings).where(DnsZoneSettings.zone == zone)
-    )
-    if obj is None:
-        raise HTTPException(status_code=404, detail="Zone not found")
-
-    obj.dns_servers = json.dumps(body.dns_servers)
-    if body.description is not None:
-        obj.description = body.description
-    obj.updated_at = datetime.utcnow()
-
+    obj.enabled = not obj.enabled
     await session.commit()
     await session.refresh(obj)
 
     try:
         await dns_mgr.reload(session)
-    except Exception as e:
-        logger.warning("DNS reload after zone update failed: %s", e)
+    except Exception as exc:
+        logger.warning("DNS reload after manual address toggle failed: %s", exc)
 
-    return _zone_to_response(obj)
+    return _manual_address_to_dict(obj)
 
 
 @router.post("/reload")
@@ -296,9 +593,8 @@ async def reload_dns(
     _user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Принудительно перегенерировать конфиг и перезагрузить dnsmasq."""
     try:
         await dns_mgr.reload(session)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
     return dns_mgr.get_status()

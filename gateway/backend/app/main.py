@@ -169,6 +169,42 @@ async def _ensure_sqlite_columns() -> None:
                     """
                 )
             )
+        result = await conn.execute(text("PRAGMA table_info(dns_upstreams)"))
+        dns_upstream_columns = {row[1] for row in result.fetchall()}
+        if "name" not in dns_upstream_columns:
+            await conn.execute(text("ALTER TABLE dns_upstreams ADD COLUMN name VARCHAR(128) NOT NULL DEFAULT ''"))
+        if "is_builtin" not in dns_upstream_columns:
+            await conn.execute(text("ALTER TABLE dns_upstreams ADD COLUMN is_builtin BOOLEAN NOT NULL DEFAULT 0"))
+        await conn.execute(
+            text(
+                """
+                UPDATE dns_upstreams
+                SET name = CASE
+                    WHEN zone = 'local' AND (name IS NULL OR name = '') THEN 'Local'
+                    WHEN zone = 'vpn' AND (name IS NULL OR name = '') THEN 'Upstream'
+                    WHEN name IS NULL OR name = '' THEN zone
+                    ELSE name
+                END,
+                    is_builtin = CASE WHEN zone IN ('local', 'vpn') THEN 1 ELSE is_builtin END
+                """
+            )
+        )
+        result = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='dns_manual_addresses'"))
+        if result.first() is None:
+            await conn.execute(
+                text(
+                    """
+                    CREATE TABLE dns_manual_addresses (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        domain VARCHAR(253) NOT NULL UNIQUE,
+                        address VARCHAR(64) NOT NULL,
+                        enabled BOOLEAN NOT NULL DEFAULT 1,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL
+                    )
+                    """
+                )
+            )
         result = await conn.execute(text("PRAGMA table_info(system_metrics)"))
         metric_columns = {row[1] for row in result.fetchall()}
         if not metric_columns:

@@ -163,9 +163,11 @@ class DnsUpstream(Base):
     __tablename__ = "dns_upstreams"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    zone: Mapped[str] = mapped_column(String(16), unique=True, nullable=False)
+    zone: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(128), default="", nullable=False)
     servers: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     description: Mapped[str] = mapped_column(String(256), default="", nullable=False)
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -176,6 +178,17 @@ class DnsDomainRule(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     domain: Mapped[str] = mapped_column(String(253), unique=True, nullable=False)
     zone: Mapped[str] = mapped_column(String(16), default="local", nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class DnsManualAddress(Base):
+    __tablename__ = "dns_manual_addresses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    domain: Mapped[str] = mapped_column(String(253), unique=True, nullable=False)
+    address: Mapped[str] = mapped_column(String(64), nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
