@@ -15,8 +15,9 @@ from app.bootstrap import ensure_bootstrap_state
 from app.config import ensure_directories, settings
 from app.database import AsyncSessionLocal, Base, engine
 from app.models import EntryNode, GatewaySettings, RoutingPolicy
-from app.routers import access, auth, backup, dns, nodes, routing, settings as settings_router, system
+from app.routers import access, auth, backup, devices, dns, nodes, routing, settings as settings_router, system
 from app.services.dns_runtime import restart_dnsmasq, stop_dnsmasq
+from app.services.device_tracking import DEVICE_TRACKING_INTERVAL_SECONDS, collect_device_inventory
 from app.services.external_ip import EXTERNAL_IP_REFRESH_INTERVAL_SECONDS, refresh_external_ip_info, validate_service_pair
 from app.services.failover import evaluate_failover_health, failover_to_next_available, start_tunnel_with_retries
 from app.services.routing import apply_local_passthrough, apply_routing_plan, sync_firewall_backend
@@ -106,6 +107,18 @@ async def _ensure_sqlite_columns() -> None:
         if "api_allowed_client_cidrs" not in columns:
             await conn.execute(
                 text("ALTER TABLE gateway_settings ADD COLUMN api_allowed_client_cidrs JSON NOT NULL DEFAULT '[]'")
+            )
+        if "device_tracking_enabled" not in columns:
+            await conn.execute(
+                text("ALTER TABLE gateway_settings ADD COLUMN device_tracking_enabled BOOLEAN NOT NULL DEFAULT 1")
+            )
+        if "device_activity_timeout_seconds" not in columns:
+            await conn.execute(
+                text("ALTER TABLE gateway_settings ADD COLUMN device_activity_timeout_seconds INTEGER NOT NULL DEFAULT 300")
+            )
+        if "device_api_default_scope" not in columns:
+            await conn.execute(
+                text("ALTER TABLE gateway_settings ADD COLUMN device_api_default_scope VARCHAR(16) NOT NULL DEFAULT 'all'")
             )
         if "external_ip_local_service_url" not in columns:
             await conn.execute(
@@ -327,6 +340,72 @@ async def _ensure_sqlite_columns() -> None:
                 """
             )
         )
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS tracked_devices (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    identity_key VARCHAR(128) NOT NULL UNIQUE,
+                    identity_source VARCHAR(16) NOT NULL DEFAULT 'ip',
+                    mac_address VARCHAR(32),
+                    current_ip VARCHAR(64),
+                    hostname VARCHAR(255),
+                    manual_alias VARCHAR(255) NOT NULL DEFAULT '',
+                    is_marked BOOLEAN NOT NULL DEFAULT 0,
+                    first_seen_at DATETIME NOT NULL,
+                    last_seen_at DATETIME NOT NULL,
+                    last_traffic_at DATETIME,
+                    last_presence_check_at DATETIME,
+                    last_present_at DATETIME,
+                    last_absent_at DATETIME,
+                    is_active BOOLEAN NOT NULL DEFAULT 0,
+                    is_present BOOLEAN NOT NULL DEFAULT 0,
+                    last_route_target VARCHAR(16) NOT NULL DEFAULT 'unknown',
+                    total_bytes BIGINT NOT NULL DEFAULT 0,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tracked_devices_identity_key ON tracked_devices (identity_key)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tracked_devices_mac_address ON tracked_devices (mac_address)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tracked_devices_current_ip ON tracked_devices (current_ip)"))
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS tracked_device_ips (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device_id INTEGER NOT NULL REFERENCES tracked_devices(id) ON DELETE CASCADE,
+                    ip_address VARCHAR(64) NOT NULL,
+                    is_current BOOLEAN NOT NULL DEFAULT 0,
+                    first_seen_at DATETIME NOT NULL,
+                    last_seen_at DATETIME NOT NULL,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tracked_device_ips_device_id ON tracked_device_ips (device_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tracked_device_ips_ip_address ON tracked_device_ips (ip_address)"))
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS tracked_device_flow_state (
+                    flow_key VARCHAR(255) PRIMARY KEY,
+                    device_id INTEGER REFERENCES tracked_devices(id) ON DELETE SET NULL,
+                    source_ip VARCHAR(64) NOT NULL,
+                    route_target VARCHAR(16) NOT NULL DEFAULT 'unknown',
+                    last_bytes BIGINT NOT NULL DEFAULT 0,
+                    last_seen_at DATETIME NOT NULL,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tracked_device_flow_state_source_ip ON tracked_device_flow_state (source_ip)"))
 
 
 async def _restore_runtime_state(session: AsyncSession) -> None:
@@ -441,16 +520,32 @@ async def _failover_loop(stop_event: asyncio.Event) -> None:
             continue
 
 
+async def _device_tracking_loop(stop_event: asyncio.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            async with AsyncSessionLocal() as session:
+                await collect_device_inventory(session)
+                await session.commit()
+        except Exception as exc:
+            logger.error("[gateway-device-tracking] cycle failed: %s", exc)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=DEVICE_TRACKING_INTERVAL_SECONDS)
+        except asyncio.TimeoutError:
+            continue
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     metrics_stop = asyncio.Event()
     traffic_metrics_stop = asyncio.Event()
     external_ip_stop = asyncio.Event()
     failover_stop = asyncio.Event()
+    device_tracking_stop = asyncio.Event()
     metrics_task: asyncio.Task | None = None
     traffic_metrics_task: asyncio.Task | None = None
     external_ip_task: asyncio.Task | None = None
     failover_task: asyncio.Task | None = None
+    device_tracking_task: asyncio.Task | None = None
     ensure_directories()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -487,11 +582,13 @@ async def lifespan(app: FastAPI):
     traffic_metrics_task = asyncio.create_task(_traffic_metrics_loop(traffic_metrics_stop))
     external_ip_task = asyncio.create_task(_external_ip_loop(external_ip_stop))
     failover_task = asyncio.create_task(_failover_loop(failover_stop))
+    device_tracking_task = asyncio.create_task(_device_tracking_loop(device_tracking_stop))
     yield
     metrics_stop.set()
     traffic_metrics_stop.set()
     external_ip_stop.set()
     failover_stop.set()
+    device_tracking_stop.set()
     if metrics_task is not None:
         await metrics_task
     if traffic_metrics_task is not None:
@@ -500,6 +597,8 @@ async def lifespan(app: FastAPI):
         await external_ip_task
     if failover_task is not None:
         await failover_task
+    if device_tracking_task is not None:
+        await device_tracking_task
     async with AsyncSessionLocal() as session:
         gateway_settings = await session.get(GatewaySettings, 1)
         if gateway_settings is not None:
@@ -521,6 +620,7 @@ app = FastAPI(
 app.include_router(auth.router)
 app.include_router(settings_router.router)
 app.include_router(access.router)
+app.include_router(devices.router)
 app.include_router(nodes.router)
 app.include_router(routing.router)
 app.include_router(dns.router)

@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models import EntryNode, GatewaySettings, RoutingPolicy
 from app.security import get_api_settings, require_api_control
+from app.services.device_tracking import get_devices_payload
 from app.services.external_ip import serialize_external_ip_info
 from app.services.routing import apply_local_passthrough, apply_routing_plan, build_prefix_summary, build_routing_plan, sync_firewall_backend
 from app.services.runtime import probe_node_latency_details, reset_active_node_uptime, resolve_live_tunnel_status, start_tunnel, stop_tunnel
@@ -99,6 +100,18 @@ async def api_status(
     settings_row: GatewaySettings = Depends(get_api_settings),
 ) -> dict:
     return await _build_status_payload(db, settings_row)
+
+
+@router.get("/devices")
+async def api_devices(
+    scope: str | None = Query(None, pattern="^(all|marked)$"),
+    db: AsyncSession = Depends(get_db),
+    settings_row: GatewaySettings = Depends(get_api_settings),
+) -> dict:
+    effective_scope = scope or settings_row.device_api_default_scope
+    if effective_scope not in {"all", "marked"}:
+        raise HTTPException(status_code=400, detail="Unsupported scope")
+    return await get_devices_payload(db, scope=effective_scope, include_ip_history=False)
 
 
 @router.post("/control/tunnel")

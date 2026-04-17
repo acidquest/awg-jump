@@ -23,6 +23,8 @@ class GatewaySettingsUpdate(BaseModel):
     allowed_client_cidrs: list[str] = []
     dns_intercept_enabled: bool = True
     experimental_nftables: bool = False
+    device_tracking_enabled: bool = True
+    device_activity_timeout_seconds: int = 300
     external_ip_local_service_url: str
     external_ip_vpn_service_url: str
 
@@ -35,6 +37,7 @@ class ApiSettingsUpdate(BaseModel):
     api_enabled: bool
     api_control_enabled: bool
     api_allowed_client_cidrs: list[str] = []
+    device_api_default_scope: str = "all"
 
 
 def serialize_api_settings(settings_row: GatewaySettings) -> dict:
@@ -43,6 +46,7 @@ def serialize_api_settings(settings_row: GatewaySettings) -> dict:
         "api_access_key": settings_row.api_access_key,
         "api_control_enabled": settings_row.api_control_enabled,
         "api_allowed_client_cidrs": settings_row.api_allowed_client_cidrs,
+        "device_api_default_scope": settings_row.device_api_default_scope,
     }
 
 
@@ -64,6 +68,8 @@ async def get_settings(
         "gateway_enabled": settings_row.gateway_enabled,
         "dns_intercept_enabled": settings_row.dns_intercept_enabled,
         "experimental_nftables": settings_row.experimental_nftables,
+        "device_tracking_enabled": settings_row.device_tracking_enabled,
+        "device_activity_timeout_seconds": settings_row.device_activity_timeout_seconds,
         "failover_enabled": settings_row.failover_enabled,
         "kernel_available": kernel_available,
         "kernel_message": kernel_message,
@@ -83,6 +89,8 @@ async def update_settings(
 ) -> dict:
     if payload.runtime_mode not in {mode.value for mode in RuntimeMode}:
         raise HTTPException(status_code=400, detail="Unsupported runtime_mode")
+    if payload.device_activity_timeout_seconds < 30:
+        raise HTTPException(status_code=400, detail="device_activity_timeout_seconds must be >= 30")
     try:
         local_service_url, vpn_service_url = validate_service_pair(
             payload.external_ip_local_service_url,
@@ -99,6 +107,8 @@ async def update_settings(
     settings_row.allowed_client_hosts = []
     settings_row.dns_intercept_enabled = payload.dns_intercept_enabled
     settings_row.experimental_nftables = payload.experimental_nftables
+    settings_row.device_tracking_enabled = payload.device_tracking_enabled
+    settings_row.device_activity_timeout_seconds = payload.device_activity_timeout_seconds
     settings_row.external_ip_local_service_url = local_service_url
     settings_row.external_ip_vpn_service_url = vpn_service_url
     db.add(settings_row)
@@ -130,6 +140,8 @@ async def update_api_settings(
     db: AsyncSession = Depends(get_db),
     user: AdminUser = Depends(get_current_user),
 ) -> dict:
+    if payload.device_api_default_scope not in {"all", "marked"}:
+        raise HTTPException(status_code=400, detail="Unsupported device_api_default_scope")
     try:
         normalized_allowed_cidrs = normalize_allowed_source_cidrs(payload.api_allowed_client_cidrs)
     except ValueError as exc:
@@ -140,6 +152,7 @@ async def update_api_settings(
     settings_row.api_enabled = payload.api_enabled
     settings_row.api_control_enabled = payload.api_enabled and payload.api_control_enabled
     settings_row.api_allowed_client_cidrs = normalized_allowed_cidrs
+    settings_row.device_api_default_scope = payload.device_api_default_scope
     db.add(settings_row)
     await db.flush()
     return {

@@ -141,6 +141,85 @@ https://<gateway-host>/api/access
 
 Набор полей можно расширять дальше без изменения модели доступа.
 
+### `GET /api/access/devices`
+
+Возвращает список устройств, которые gateway видел в выбранных source CIDR и смог инвентаризировать.
+
+Поддерживается query-параметр:
+
+- `scope=all` — вернуть все отслеживаемые устройства
+- `scope=marked` — вернуть только устройства, вручную отмеченные для внешнего API
+
+Если `scope` не передан, используется значение из UI:
+
+- `Settings` → `API доступ по ключу` → `Режим device API по умолчанию`
+
+В UI на странице `Devices` у каждого устройства есть метка `API`:
+
+- если `API` подсвечен, устройство считается `marked`
+- если `API` серый, устройство в выборку `scope=marked` не попадёт
+
+Пример ответа:
+
+```json
+{
+  "scope": "marked",
+  "status": "all",
+  "search": "",
+  "summary": {
+    "total": 2,
+    "all_devices": 14,
+    "marked": 2,
+    "active": 1,
+    "present": 2,
+    "inactive": 0
+  },
+  "devices": [
+    {
+      "id": 7,
+      "identity_key": "mac:aa:bb:cc:dd:ee:ff",
+      "identity_source": "mac",
+      "mac_address": "aa:bb:cc:dd:ee:ff",
+      "current_ip": "192.168.1.34",
+      "hostname": "media-box.lan",
+      "manual_alias": "TV Box",
+      "display_name": "TV Box",
+      "is_marked": true,
+      "is_active": true,
+      "is_present": true,
+      "presence_state": "active",
+      "last_route_target": "unknown",
+      "total_bytes": 84213,
+      "first_seen_at": "2026-04-17T10:35:02+00:00",
+      "last_seen_at": "2026-04-17T10:44:59+00:00",
+      "last_traffic_at": "2026-04-17T10:44:59+00:00",
+      "last_presence_check_at": "2026-04-17T10:44:59+00:00",
+      "last_present_at": "2026-04-17T10:44:59+00:00",
+      "last_absent_at": null,
+      "ip_history": []
+    }
+  ]
+}
+```
+
+Поля, которые сейчас отдаются:
+
+- внутренний `id` записи устройства
+- `identity_key` и `identity_source` (`mac` или `ip`)
+- текущий IP и MAC
+- `hostname`, `manual_alias` и вычисленный `display_name`
+- флаг `is_marked`
+- состояние активности и присутствия: `is_active`, `is_present`, `presence_state`
+- накопленные timestamps: `first_seen_at`, `last_seen_at`, `last_traffic_at`, `last_presence_check_at`, `last_present_at`, `last_absent_at`
+
+Нюансы:
+
+- устройство в первую очередь связывается с source IP, а при наличии ARP/neigh-записи может быть склеено по MAC
+- `presence_state=active` означает, что gateway недавно видел трафик от устройства
+- `presence_state=present` означает, что свежего трафика нет, но устройство всё ещё считается находящимся в сети по `ping` и/или `ip neigh`
+- `presence_state=inactive` означает, что устройство не подтвердилось ни трафиком, ни проверкой присутствия
+- поле `last_route_target` пока может быть `unknown`; его не стоит считать обязательным для интеграций
+
 ## Нюансы по traffic counters
 
 - API отдает абсолютные счётчики `BIGINT` в байтах, пригодные для Home Assistant и других систем мониторинга.
@@ -159,6 +238,29 @@ https://<gateway-host>/api/access
 ### `POST /api/settings/api-access/regenerate`
 
 Возвращает новый ключ в `api_settings.api_access_key`.
+
+## Примеры запросов
+
+Все устройства:
+
+```bash
+curl -s "https://<gateway-host>/api/access/devices?scope=all" \
+  -H "X-API-Key: <32-char-key>"
+```
+
+Только устройства, отмеченные через `API` в UI:
+
+```bash
+curl -s "https://<gateway-host>/api/access/devices?scope=marked" \
+  -H "X-API-Key: <32-char-key>"
+```
+
+Сводная телеметрия gateway:
+
+```bash
+curl -s "https://<gateway-host>/api/access/status" \
+  -H "X-API-Key: <32-char-key>"
+```
 
 ## Control mode: управление
 

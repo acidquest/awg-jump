@@ -70,6 +70,9 @@ class GatewaySettings(Base):
     api_access_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     api_control_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     api_allowed_client_cidrs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    device_tracking_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    device_activity_timeout_seconds: Mapped[int] = mapped_column(Integer, default=300, nullable=False)
+    device_api_default_scope: Mapped[str] = mapped_column(String(16), default="all", nullable=False)
     tunnel_status: Mapped[str] = mapped_column(String(32), default=TunnelStatus.stopped.value)
     tunnel_last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     tunnel_last_applied_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -287,3 +290,58 @@ class TrafficMetricDay(Base):
     local_tx_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
     vpn_rx_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
     vpn_tx_bytes: Mapped[int] = mapped_column(BIGINT, nullable=False, default=0)
+
+
+class TrackedDevice(Base):
+    __tablename__ = "tracked_devices"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    identity_key: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    identity_source: Mapped[str] = mapped_column(String(16), default="ip", nullable=False)
+    mac_address: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    current_ip: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    hostname: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    manual_alias: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    is_marked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    last_traffic_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_presence_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_present_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_absent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_present: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_route_target: Mapped[str] = mapped_column(String(16), default="unknown", nullable=False)
+    total_bytes: Mapped[int] = mapped_column(BIGINT, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class TrackedDeviceIp(Base):
+    __tablename__ = "tracked_device_ips"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("tracked_devices.id", ondelete="CASCADE"), nullable=False, index=True)
+    ip_address: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    device: Mapped["TrackedDevice"] = relationship()
+
+
+class TrackedDeviceFlowState(Base):
+    __tablename__ = "tracked_device_flow_state"
+
+    flow_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    device_id: Mapped[int | None] = mapped_column(ForeignKey("tracked_devices.id", ondelete="SET NULL"), nullable=True)
+    source_ip: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    route_target: Mapped[str] = mapped_column(String(16), default="unknown", nullable=False)
+    last_bytes: Mapped[int] = mapped_column(BIGINT, default=0, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    device: Mapped["TrackedDevice | None"] = relationship()

@@ -155,6 +155,8 @@ type GatewaySettingsData = {
   gateway_enabled: boolean
   dns_intercept_enabled: boolean
   experimental_nftables: boolean
+  device_tracking_enabled: boolean
+  device_activity_timeout_seconds: number
   failover_enabled: boolean
   kernel_available: boolean
   kernel_message: string | null
@@ -170,6 +172,51 @@ type ApiSettings = {
   api_access_key: string | null
   api_control_enabled: boolean
   api_allowed_client_cidrs: string[]
+  device_api_default_scope: 'all' | 'marked'
+}
+
+type DeviceRecord = {
+  id: number
+  identity_key: string
+  identity_source: string
+  mac_address: string | null
+  current_ip: string | null
+  hostname: string | null
+  manual_alias: string
+  display_name: string
+  is_marked: boolean
+  is_active: boolean
+  is_present: boolean
+  presence_state: 'active' | 'present' | 'inactive'
+  last_route_target: 'local' | 'vpn' | 'unknown'
+  total_bytes: number
+  first_seen_at: string | null
+  last_seen_at: string | null
+  last_traffic_at: string | null
+  last_presence_check_at: string | null
+  last_present_at: string | null
+  last_absent_at: string | null
+  ip_history: Array<{
+    ip_address: string
+    is_current: boolean
+    first_seen_at: string | null
+    last_seen_at: string | null
+  }>
+}
+
+type DeviceListResponse = {
+  scope: 'all' | 'marked'
+  status: 'all' | 'active' | 'present' | 'inactive'
+  search: string
+  summary: {
+    total: number
+    all_devices: number
+    marked: number
+    active: number
+    present: number
+    inactive: number
+  }
+  devices: DeviceRecord[]
 }
 
 type PrefixSummary = {
@@ -466,6 +513,7 @@ function AppLayout() {
   }> = [
     { to: '/', label: t('dashboard'), Icon: GridIcon },
     { to: '/nodes', label: t('nodes'), Icon: ServerIcon },
+    { to: '/devices', label: t('devices'), Icon: DeviceIcon },
     { to: '/policy', label: t('policy'), Icon: GlobeIcon },
     { to: '/routing', label: t('routing'), Icon: RouteIcon },
     { to: '/dns', label: t('dns'), Icon: DnsIcon },
@@ -508,6 +556,7 @@ function AppLayout() {
         <Routes>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/nodes" element={<NodesPage />} />
+          <Route path="/devices" element={<DevicesPage />} />
           <Route path="/policy" element={<PolicyPage />} />
           <Route path="/routing" element={<RoutingPage />} />
           <Route path="/dns" element={<DnsPage />} />
@@ -2665,6 +2714,212 @@ function BackupPage() {
   )
 }
 
+function DevicesPage() {
+  const { t } = useI18n()
+  const [search, setSearch] = useState('')
+  const [sortKey, setSortKey] = useState<'name' | 'status' | 'mac' | 'ip' | 'last_traffic' | 'last_seen'>('last_seen')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [editingDevice, setEditingDevice] = useState<DeviceRecord | null>(null)
+  const [editingAlias, setEditingAlias] = useState('')
+  const [aliasSaving, setAliasSaving] = useState(false)
+  const { data, loading, error, reload } = useLoader<DeviceListResponse>(
+    `/devices?scope=all&status=all&search=${encodeURIComponent(search)}`,
+    {
+      scope: 'all',
+      status: 'all',
+      search: '',
+      summary: { total: 0, all_devices: 0, marked: 0, active: 0, present: 0, inactive: 0 },
+      devices: [],
+    },
+  )
+  useBackgroundReload(reload, 10_000)
+
+  function updateSort(nextKey: typeof sortKey) {
+    if (nextKey === sortKey) {
+      setSortDir((value) => (value === 'asc' ? 'desc' : 'asc'))
+      return
+    }
+    setSortKey(nextKey)
+    setSortDir(nextKey === 'name' || nextKey === 'status' || nextKey === 'mac' || nextKey === 'ip' ? 'asc' : 'desc')
+  }
+
+  async function toggleMarked(device: DeviceRecord) {
+    await api.patch(`/devices/${device.id}`, { is_marked: !device.is_marked })
+    await reload()
+  }
+
+  function openAliasEditor(device: DeviceRecord) {
+    setEditingDevice(device)
+    setEditingAlias(device.manual_alias)
+  }
+
+  async function saveAlias() {
+    if (!editingDevice) return
+    setAliasSaving(true)
+    await api.patch(`/devices/${editingDevice.id}`, { manual_alias: editingAlias })
+    setAliasSaving(false)
+    setEditingDevice(null)
+    await reload()
+  }
+
+  const sortedDevices = [...data.devices].sort((left, right) => {
+    if (left.is_marked !== right.is_marked) {
+      return left.is_marked ? -1 : 1
+    }
+
+    const direction = sortDir === 'asc' ? 1 : -1
+    const stateRank = (device: DeviceRecord) => {
+      if (device.presence_state === 'active') return 0
+      if (device.presence_state === 'present') return 1
+      return 2
+    }
+    const timestamp = (value: string | null) => parseUtcDate(value)?.getTime() ?? 0
+    const ipToTuple = (value: string | null) => {
+      if (!value) return [-1, -1, -1, -1]
+      const parts = value.split('.').map((item) => Number(item))
+      if (parts.length !== 4 || parts.some((item) => Number.isNaN(item))) return [-1, -1, -1, -1]
+      return parts
+    }
+    const compareIp = (leftIp: string | null, rightIp: string | null) => {
+      const leftParts = ipToTuple(leftIp)
+      const rightParts = ipToTuple(rightIp)
+      for (let index = 0; index < 4; index += 1) {
+        if (leftParts[index] !== rightParts[index]) return leftParts[index] - rightParts[index]
+      }
+      return 0
+    }
+
+    let result = 0
+    if (sortKey === 'name') result = left.display_name.localeCompare(right.display_name, undefined, { sensitivity: 'base' })
+    if (sortKey === 'status') result = stateRank(left) - stateRank(right)
+    if (sortKey === 'mac') result = (left.mac_address || '').localeCompare(right.mac_address || '', undefined, { sensitivity: 'base' })
+    if (sortKey === 'ip') result = compareIp(left.current_ip, right.current_ip)
+    if (sortKey === 'last_traffic') result = timestamp(left.last_traffic_at) - timestamp(right.last_traffic_at)
+    if (sortKey === 'last_seen') result = timestamp(left.last_present_at || left.last_seen_at) - timestamp(right.last_present_at || right.last_seen_at)
+    if (result !== 0) return result * direction
+    return right.id - left.id
+  })
+
+  function renderSortableHeader(label: string, key: typeof sortKey) {
+    const active = sortKey === key
+    return (
+      <button
+        type="button"
+        className={`table-sort-btn${active ? ' active' : ''}`}
+        onClick={() => updateSort(key)}
+      >
+        <span>{label}</span>
+        <span className="table-sort-indicator">{active ? (sortDir === 'asc' ? '▲' : '▼') : '↕'}</span>
+      </button>
+    )
+  }
+
+  return (
+    <>
+      <div className="page-header">
+        <div>
+          <div className="page-title">{t('devices')}</div>
+        </div>
+      </div>
+      {error ? <div className="error-box">{error}</div> : null}
+      <div className="card-grid card-grid-4" style={{ marginBottom: 20 }}>
+        <StatCard title={t('trackedDevices')} value={String(data.summary.total)} label={t('filtered')} />
+        <StatCard title={t('markedDevices')} value={String(data.summary.marked)} label={t('manualSelection')} />
+        <StatCard title={t('activeDevices')} value={String(data.summary.active)} label={t('recentTraffic')} tone="online" />
+        <StatCard title={t('presentDevices')} value={String(data.summary.present)} label={t('networkPresence')} />
+      </div>
+      <div className="card" style={{ marginBottom: 18 }}>
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label className="form-label">{t('search')}</label>
+          <input
+            className="form-input"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder={t('deviceSearchPlaceholder')}
+          />
+        </div>
+      </div>
+      {loading ? <div style={{ padding: 40, textAlign: 'center' }}><span className="spinner" /></div> : null}
+      <SimpleTable
+        headers={[
+          renderSortableHeader(t('name'), 'name'),
+          renderSortableHeader(t('status'), 'status'),
+          renderSortableHeader('MAC', 'mac'),
+          renderSortableHeader('IP', 'ip'),
+          renderSortableHeader(t('lastTraffic'), 'last_traffic'),
+          renderSortableHeader(t('lastSeen'), 'last_seen'),
+          t('actions'),
+        ]}
+        emptyText={t('noDevicesTracked')}
+        rowClassName={(rowIndex) => (sortedDevices[rowIndex]?.is_marked ? 'device-row-marked' : '')}
+        rows={sortedDevices.map((device) => [
+          <div key={`identity-${device.id}`}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <div style={{ fontWeight: 600 }}>{device.display_name}</div>
+              <button
+                type="button"
+                className={`device-api-toggle${device.is_marked ? ' active' : ''}`}
+                onClick={() => { void toggleMarked(device) }}
+              >
+                {t('apiAccessTitle')}
+              </button>
+            </div>
+            <div className="text-muted text-sm">{device.hostname || device.identity_key}</div>
+            {device.ip_history.length ? (
+              <div className="text-muted text-sm">
+                {t('ipHistory')}: {device.ip_history.map((row) => row.ip_address).join(', ')}
+              </div>
+            ) : null}
+          </div>,
+          <div key={`state-${device.id}`}>
+            <span className={`badge ${device.presence_state === 'active' ? 'badge-online' : device.presence_state === 'present' ? 'badge-warning' : 'badge-offline'}`}>
+              {device.presence_state === 'active' ? t('deviceStateActive') : device.presence_state === 'present' ? t('deviceStatePresent') : t('deviceStateInactive')}
+            </span>
+          </div>,
+          <span key={`mac-${device.id}`} className="text-mono">{device.mac_address || '—'}</span>,
+          <span key={`ip-${device.id}`} className="text-mono">{device.current_ip || '—'}</span>,
+          <span key={`traffic-${device.id}`}>{fmtDateTime(device.last_traffic_at)}</span>,
+          <span key={`seen-${device.id}`}>{fmtDateTime(device.last_present_at || device.last_seen_at)}</span>,
+          <div key={`actions-${device.id}`} className="flex gap-2">
+            <button className="btn btn-ghost btn-sm" onClick={() => { openAliasEditor(device) }}>
+              {t('edit')}
+            </button>
+          </div>,
+        ])}
+      />
+      {editingDevice ? (
+        <div className="modal-overlay" onClick={() => { if (!aliasSaving) setEditingDevice(null) }}>
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">{t('edit')} {t('deviceAliasPrompt')}</div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setEditingDevice(null)} disabled={aliasSaving}>{t('close')}</button>
+            </div>
+            <div className="form-group">
+              <label className="form-label">{t('deviceAliasPrompt')}</label>
+              <input
+                className="form-input"
+                value={editingAlias}
+                onChange={(event) => setEditingAlias(event.target.value)}
+                placeholder={editingDevice.display_name}
+                autoFocus
+              />
+            </div>
+            <div className="text-muted text-sm">
+              {editingDevice.hostname || editingDevice.current_ip || editingDevice.identity_key}
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-secondary" type="button" onClick={() => setEditingDevice(null)} disabled={aliasSaving}>{t('cancel')}</button>
+              <button className="btn btn-primary" type="button" onClick={() => { void saveAlias() }} disabled={aliasSaving}>
+                {aliasSaving ? <span className="spinner" /> : t('save')}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
+  )
+}
+
 function SettingsPage() {
   const { locale, setLocale, t } = useI18n()
   const { data, reload, setData } = useLoader<GatewaySettingsData>('/settings', {
@@ -2674,6 +2929,8 @@ function SettingsPage() {
     gateway_enabled: true,
     dns_intercept_enabled: true,
     experimental_nftables: false,
+    device_tracking_enabled: true,
+    device_activity_timeout_seconds: 300,
     failover_enabled: false,
     kernel_available: false,
     kernel_message: null,
@@ -2688,6 +2945,7 @@ function SettingsPage() {
       api_access_key: null,
       api_control_enabled: false,
       api_allowed_client_cidrs: [],
+      device_api_default_scope: 'all',
     },
   })
   const [sourceInput, setSourceInput] = useState('')
@@ -2710,6 +2968,8 @@ function SettingsPage() {
       allowed_client_cidrs: data.allowed_client_cidrs,
       dns_intercept_enabled: data.dns_intercept_enabled,
       experimental_nftables: data.experimental_nftables,
+      device_tracking_enabled: data.device_tracking_enabled,
+      device_activity_timeout_seconds: data.device_activity_timeout_seconds,
       external_ip_local_service_url: localExternalIpServiceUrl,
       external_ip_vpn_service_url: vpnExternalIpServiceUrl,
       ...overrides,
@@ -2804,6 +3064,7 @@ function SettingsPage() {
       api_access_key: previous.api_access_key,
       api_control_enabled: apiEnabled ? apiControlEnabled : false,
       api_allowed_client_cidrs: previous.api_allowed_client_cidrs,
+      device_api_default_scope: previous.device_api_default_scope,
     }
     setData({ ...data, api_settings: nextState })
     try {
@@ -2811,6 +3072,7 @@ function SettingsPage() {
         api_enabled: apiEnabled,
         api_control_enabled: apiEnabled ? apiControlEnabled : false,
         api_allowed_client_cidrs: previous.api_allowed_client_cidrs,
+        device_api_default_scope: previous.device_api_default_scope,
       })
       setData({ ...data, api_settings: response.data.api_settings })
       setMessage(t('apiAccessUpdated'))
@@ -2834,6 +3096,7 @@ function SettingsPage() {
         api_enabled: data.api_settings.api_enabled,
         api_control_enabled: data.api_settings.api_control_enabled,
         api_allowed_client_cidrs: [...data.api_settings.api_allowed_client_cidrs, candidate],
+        device_api_default_scope: data.api_settings.device_api_default_scope,
       })
       setData({ ...data, api_settings: response.data.api_settings })
       setApiAllowedIpInput('')
@@ -2849,6 +3112,22 @@ function SettingsPage() {
         api_enabled: data.api_settings.api_enabled,
         api_control_enabled: data.api_settings.api_control_enabled,
         api_allowed_client_cidrs: data.api_settings.api_allowed_client_cidrs.filter((item) => item !== cidr),
+        device_api_default_scope: data.api_settings.device_api_default_scope,
+      })
+      setData({ ...data, api_settings: response.data.api_settings })
+      setMessage(t('apiAccessUpdated'))
+    } catch (err: any) {
+      setMessage(err?.response?.data?.detail || err.message || 'Request failed')
+    }
+  }
+
+  async function updateDeviceApiScope(nextScope: 'all' | 'marked') {
+    try {
+      const response = await api.put('/settings/api-access', {
+        api_enabled: data.api_settings.api_enabled,
+        api_control_enabled: data.api_settings.api_control_enabled,
+        api_allowed_client_cidrs: data.api_settings.api_allowed_client_cidrs,
+        device_api_default_scope: nextScope,
       })
       setData({ ...data, api_settings: response.data.api_settings })
       setMessage(t('apiAccessUpdated'))
@@ -2984,6 +3263,30 @@ function SettingsPage() {
                 {t('firewallBackend')}: {firewallBackendLabel(data.experimental_nftables ? 'nftables' : 'iptables', t)}
               </div>
             </div>
+            <div className="form-group">
+              <label className="form-label">{t('deviceTracking')}</label>
+              <label className="toggle" title={t('deviceTracking')}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(data.device_tracking_enabled)}
+                  onChange={(event) => setData({ ...data, device_tracking_enabled: event.target.checked })}
+                />
+                <span className="toggle-slider" />
+              </label>
+              <div className="text-muted text-sm" style={{ marginTop: 8 }}>{t('deviceTrackingDescription')}</div>
+            </div>
+            <div className="form-group">
+              <label className="form-label">{t('deviceActivityTimeout')}</label>
+              <input
+                className="form-input mono"
+                type="number"
+                min={30}
+                step={30}
+                value={data.device_activity_timeout_seconds}
+                onChange={(event) => setData({ ...data, device_activity_timeout_seconds: Number(event.target.value || 300) })}
+              />
+              <div className="text-muted text-sm" style={{ marginTop: 8 }}>{t('deviceActivityTimeoutDescription')}</div>
+            </div>
             <button className="btn btn-primary" type="submit">{t('save')}</button>
           </form>
         </div>
@@ -3081,6 +3384,18 @@ function SettingsPage() {
               <button className="btn btn-secondary" type="button" onClick={() => { void addApiAllowedIp() }}>{t('add')}</button>
             </div>
           </div>
+          <div className="form-group">
+            <label className="form-label">{t('deviceApiDefaultScope')}</label>
+            <select
+              className="form-input"
+              value={data.api_settings.device_api_default_scope}
+              onChange={(event) => { void updateDeviceApiScope(event.target.value as 'all' | 'marked') }}
+            >
+              <option value="all">{t('allDevices')}</option>
+              <option value="marked">{t('markedDevicesOnly')}</option>
+            </select>
+            <div className="text-muted text-sm" style={{ marginTop: 8 }}>{t('deviceApiDefaultScopeDescription')}</div>
+          </div>
         </div>
       </div>
     </>
@@ -3152,24 +3467,26 @@ function SimpleTable({
   headers,
   rows,
   emptyText,
+  rowClassName,
 }: {
-  headers: string[]
+  headers: React.ReactNode[]
   rows: React.ReactNode[][]
   emptyText: string
+  rowClassName?: (rowIndex: number) => string
 }) {
   return (
     <div className="table-wrap">
       <table>
         <thead>
           <tr>
-            {headers.map((header) => <th key={header}>{header}</th>)}
+            {headers.map((header, index) => <th key={index}>{header}</th>)}
           </tr>
         </thead>
         <tbody>
           {rows.length === 0 ? (
             <tr><td colSpan={headers.length} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>{emptyText}</td></tr>
           ) : rows.map((row, rowIndex) => (
-            <tr key={rowIndex}>
+            <tr key={rowIndex} className={rowClassName?.(rowIndex) || ''}>
               {row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}
             </tr>
           ))}
@@ -3526,6 +3843,16 @@ function ServerIcon({ size = 16 }: { size?: number }) {
       <rect x="2" y="14" width="20" height="8" rx="2" />
       <line x1="6" y1="6" x2="6.01" y2="6" />
       <line x1="6" y1="18" x2="6.01" y2="18" />
+    </svg>
+  )
+}
+
+function DeviceIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="5" y="2" width="14" height="20" rx="3" />
+      <line x1="9" y1="6" x2="15" y2="6" />
+      <line x1="12" y1="18" x2="12.01" y2="18" />
     </svg>
   )
 }

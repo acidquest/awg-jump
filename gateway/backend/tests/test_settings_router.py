@@ -19,6 +19,9 @@ class FakeDb:
             api_access_key=None,
             api_control_enabled=False,
             api_allowed_client_cidrs=[],
+            device_tracking_enabled=True,
+            device_activity_timeout_seconds=300,
+            device_api_default_scope="all",
             external_ip_local_service_url="https://ipinfo.io/ip",
             external_ip_vpn_service_url="https://ifconfig.me/ip",
         )
@@ -56,6 +59,8 @@ async def test_update_settings_returns_http_error_when_dnsmasq_restart_fails(mon
         allowed_client_cidrs=["192.168.10.0/24"],
         dns_intercept_enabled=True,
         experimental_nftables=False,
+        device_tracking_enabled=True,
+        device_activity_timeout_seconds=300,
         external_ip_local_service_url="https://ipinfo.io/ip",
         external_ip_vpn_service_url="https://ifconfig.me/ip",
     )
@@ -81,6 +86,7 @@ async def test_update_api_settings_generates_key_and_enables_control() -> None:
     assert result["api_settings"]["api_enabled"] is True
     assert result["api_settings"]["api_control_enabled"] is True
     assert result["api_settings"]["api_allowed_client_cidrs"] == []
+    assert result["api_settings"]["device_api_default_scope"] == "all"
     assert isinstance(result["api_settings"]["api_access_key"], str)
     assert len(result["api_settings"]["api_access_key"]) == 32
 
@@ -101,6 +107,7 @@ async def test_update_api_settings_disables_control_when_api_is_disabled() -> No
         "api_access_key": "A" * 32,
         "api_control_enabled": False,
         "api_allowed_client_cidrs": [],
+        "device_api_default_scope": "all",
     }
 
 
@@ -119,6 +126,7 @@ async def test_regenerate_api_access_key_replaces_existing_value() -> None:
     assert result["api_settings"]["api_enabled"] is True
     assert result["api_settings"]["api_control_enabled"] is False
     assert result["api_settings"]["api_allowed_client_cidrs"] == []
+    assert result["api_settings"]["device_api_default_scope"] == "all"
     assert isinstance(result["api_settings"]["api_access_key"], str)
     assert len(result["api_settings"]["api_access_key"]) == 32
     assert result["api_settings"]["api_access_key"] != "A" * 32
@@ -133,9 +141,11 @@ async def test_update_api_settings_normalizes_allowed_client_cidrs() -> None:
             api_enabled=True,
             api_control_enabled=False,
             api_allowed_client_cidrs=["203.0.113.10", "192.168.0.0/24"],
+            device_api_default_scope="marked",
         ),
         db=db,
         user=None,
     )
 
     assert result["api_settings"]["api_allowed_client_cidrs"] == ["203.0.113.10/32", "192.168.0.0/24"]
+    assert result["api_settings"]["device_api_default_scope"] == "marked"
