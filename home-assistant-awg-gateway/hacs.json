@@ -1,0 +1,7 @@
+{
+  "name": "AWG Gateway",
+  "render_readme": true,
+  "homeassistant": "2024.8.0",
+  "domains": ["awg_gateway"],
+  "content_in_root": false
+}

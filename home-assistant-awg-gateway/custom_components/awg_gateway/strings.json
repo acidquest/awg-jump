@@ -1,0 +1,131 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to AWG Gateway",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "use_https": "Use HTTPS",
+          "verify_ssl": "Verify SSL certificate",
+          "api_key": "API key",
+          "scan_interval_seconds": "Poll interval in seconds"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "invalid_auth": "Invalid API key",
+      "api_disabled": "Gateway API access is disabled",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This gateway is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "AWG Gateway options",
+        "data": {
+          "scan_interval_seconds": "Poll interval in seconds",
+          "verify_ssl": "Verify SSL certificate",
+          "device_scope": "Device tracker scope"
+        }
+      }
+    }
+  },
+  "entity": {
+    "switch": {
+      "tunnel": {
+        "name": "Tunnel"
+      },
+      "kill_switch": {
+        "name": "Kill switch"
+      }
+    },
+    "sensor": {
+      "tunnel_status": {
+        "name": "Tunnel status"
+      },
+      "active_node": {
+        "name": "Active node"
+      },
+      "active_node_latency": {
+        "name": "Active node latency"
+      },
+      "uptime": {
+        "name": "Uptime"
+      },
+      "active_stack": {
+        "name": "Active stack"
+      },
+      "active_prefixes_count": {
+        "name": "Active prefixes"
+      },
+      "configured_prefixes_count": {
+        "name": "Configured prefixes"
+      },
+      "cpu_usage": {
+        "name": "CPU usage"
+      },
+      "memory_total": {
+        "name": "Memory total"
+      },
+      "memory_used": {
+        "name": "Memory used"
+      },
+      "memory_free": {
+        "name": "Memory free"
+      },
+      "external_ip_local": {
+        "name": "Local external IP"
+      },
+      "external_ip_vpn": {
+        "name": "VPN external IP"
+      },
+      "runtime_mode": {
+        "name": "Runtime mode"
+      },
+      "routing_mode_target": {
+        "name": "Routing mode"
+      },
+      "traffic_local_rx_total": {
+        "name": "Local RX total"
+      },
+      "traffic_local_tx_total": {
+        "name": "Local TX total"
+      },
+      "traffic_vpn_rx_total": {
+        "name": "VPN RX total"
+      },
+      "traffic_vpn_tx_total": {
+        "name": "VPN TX total"
+      },
+      "traffic_last_hour_local_rx": {
+        "name": "Last hour local RX"
+      },
+      "traffic_last_hour_local_tx": {
+        "name": "Last hour local TX"
+      },
+      "traffic_last_hour_vpn_rx": {
+        "name": "Last hour VPN RX"
+      },
+      "traffic_last_hour_vpn_tx": {
+        "name": "Last hour VPN TX"
+      },
+      "traffic_last_day_local_rx": {
+        "name": "Last day local RX"
+      },
+      "traffic_last_day_local_tx": {
+        "name": "Last day local TX"
+      },
+      "traffic_last_day_vpn_rx": {
+        "name": "Last day VPN RX"
+      },
+      "traffic_last_day_vpn_tx": {
+        "name": "Last day VPN TX"
+      }
+    }
+  }
+}
