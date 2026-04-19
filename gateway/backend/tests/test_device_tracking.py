@@ -24,12 +24,21 @@ def test_parse_ip_neigh_output_extracts_mac_and_state() -> None:
     assert parsed["192.168.1.10"].state == "REACHABLE"
 
 
-def test_presence_from_neighbor_uses_reachable_states() -> None:
+def test_presence_from_neighbor_uses_only_confirmed_states() -> None:
+    present, mac = device_tracking._presence_from_neighbor(
+        device_tracking.NeighborInfo(ip_address="192.168.1.10", mac_address="aa:bb", state="REACHABLE")
+    )
+
+    assert present is True
+    assert mac == "aa:bb"
+
+
+def test_presence_from_neighbor_ignores_stale_entries() -> None:
     present, mac = device_tracking._presence_from_neighbor(
         device_tracking.NeighborInfo(ip_address="192.168.1.10", mac_address="aa:bb", state="STALE")
     )
 
-    assert present is True
+    assert present is False
     assert mac == "aa:bb"
 
 

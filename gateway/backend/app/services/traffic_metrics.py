@@ -157,7 +157,8 @@ async def _upsert_bucket(
     bucket_start: datetime,
     delta: dict[str, int],
 ) -> None:
-    row = await session.get(model, bucket_start.replace(tzinfo=None))
+    with session.no_autoflush:
+        row = await session.get(model, bucket_start.replace(tzinfo=None))
     if row is None:
         row = model(
             bucket_start=bucket_start,
@@ -287,6 +288,13 @@ async def ensure_recent_traffic_metrics(session: AsyncSession) -> TrafficUsageSn
     return _current_usage_from_state(state)
 
 
+async def get_current_traffic_usage(session: AsyncSession) -> TrafficUsageSnapshot | None:
+    state = await session.get(TrafficMetricState, 1)
+    if state is None:
+        return None
+    return _current_usage_from_state(state)
+
+
 async def _sum_aggregate_window(
     session: AsyncSession,
     model: type[TrafficMetricMinute] | type[TrafficMetricHour] | type[TrafficMetricDay],
@@ -309,7 +317,7 @@ async def _sum_aggregate_window(
 
 
 async def get_traffic_usage_summary(session: AsyncSession) -> dict:
-    current = await ensure_recent_traffic_metrics(session)
+    current = await get_current_traffic_usage(session)
     if current is None:
         return {
             "current": None,

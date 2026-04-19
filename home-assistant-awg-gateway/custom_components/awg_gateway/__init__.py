@@ -15,7 +15,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 
 from .api import AwgGatewayClient
 from .const import CONF_DEVICE_SCOPE, CONF_SCAN_INTERVAL, CONF_USE_HTTPS, CONF_VERIFY_SSL, DEFAULT_DEVICE_SCOPE, DEFAULT_SCAN_INTERVAL, DOMAIN, PLATFORMS
-from .coordinator import AwgGatewayDataUpdateCoordinator
+from .coordinator import AwgGatewayDevicesUpdateCoordinator, AwgGatewayStatusUpdateCoordinator
 
 
 @dataclass(slots=True)
@@ -24,7 +24,8 @@ class AwgGatewayRuntimeData:
 
     session: ClientSession
     client: AwgGatewayClient
-    coordinator: AwgGatewayDataUpdateCoordinator
+    status_coordinator: AwgGatewayStatusUpdateCoordinator
+    devices_coordinator: AwgGatewayDevicesUpdateCoordinator
     device_info: DeviceInfo
 
 
@@ -52,8 +53,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: AwgGatewayConfigEntry) -
         CONF_SCAN_INTERVAL: entry.options.get(CONF_SCAN_INTERVAL, entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)),
         CONF_DEVICE_SCOPE: entry.options.get(CONF_DEVICE_SCOPE, entry.data.get(CONF_DEVICE_SCOPE, DEFAULT_DEVICE_SCOPE)),
     }
-    coordinator = AwgGatewayDataUpdateCoordinator(hass, client, entry.entry_id, options)
-    await coordinator.async_config_entry_first_refresh()
+    status_coordinator = AwgGatewayStatusUpdateCoordinator(hass, client, entry.entry_id, options)
+    devices_coordinator = AwgGatewayDevicesUpdateCoordinator(hass, client, entry.entry_id, options)
+    await status_coordinator.async_config_entry_first_refresh()
+    await devices_coordinator.async_config_entry_first_refresh()
 
     device_info = DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},
@@ -66,7 +69,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: AwgGatewayConfigEntry) -
     runtime_data = AwgGatewayRuntimeData(
         session=session,
         client=client,
-        coordinator=coordinator,
+        status_coordinator=status_coordinator,
+        devices_coordinator=devices_coordinator,
         device_info=device_info,
     )
     entry.runtime_data = runtime_data

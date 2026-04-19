@@ -5,16 +5,17 @@ from __future__ import annotations
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import AwgGatewayConfigEntry
+from .coordinator import AwgGatewayStatusUpdateCoordinator
 from .const import DOMAIN
 
 
-class AwgGatewayCoordinatorEntity(CoordinatorEntity):
+class AwgGatewayCoordinatorEntity(CoordinatorEntity[AwgGatewayStatusUpdateCoordinator]):
     """Base entity bound to the AWG Gateway coordinator."""
 
     _attr_has_entity_name = True
 
     def __init__(self, entry: AwgGatewayConfigEntry) -> None:
-        super().__init__(entry.runtime_data.coordinator)
+        super().__init__(entry.runtime_data.status_coordinator)
         self._entry = entry
         self._attr_device_info = entry.runtime_data.device_info
 

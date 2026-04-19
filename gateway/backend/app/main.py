@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bootstrap import ensure_bootstrap_state
@@ -33,6 +34,46 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+SQLITE_LOCK_RETRY_DELAYS = (0.2, 0.5, 1.0)
+METRICS_LOOP_START_DELAY_SECONDS = 0
+TRAFFIC_LOOP_START_DELAY_SECONDS = 5
+EXTERNAL_IP_LOOP_START_DELAY_SECONDS = 11
+FAILOVER_LOOP_START_DELAY_SECONDS = 17
+DEVICE_TRACKING_LOOP_START_DELAY_SECONDS = 23
+
+
+def _is_sqlite_lock_error(exc: Exception) -> bool:
+    return isinstance(exc, OperationalError) and "database is locked" in str(exc).lower()
+
+
+async def _run_db_cycle_with_retry(label: str, action) -> None:
+    last_exc: Exception | None = None
+    for attempt, delay in enumerate((0.0, *SQLITE_LOCK_RETRY_DELAYS), start=1):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            async with AsyncSessionLocal() as session:
+                await action(session)
+            return
+        except Exception as exc:
+            last_exc = exc
+            if _is_sqlite_lock_error(exc) and attempt <= len(SQLITE_LOCK_RETRY_DELAYS):
+                logger.warning("[%s] sqlite lock on attempt %s, retrying: %s", label, attempt, exc)
+                continue
+            logger.error("[%s] cycle failed: %s", label, exc)
+            return
+    if last_exc is not None:
+        logger.error("[%s] cycle failed after retries: %s", label, last_exc)
+
+
+async def _initial_loop_delay(stop_event: asyncio.Event, delay_seconds: int) -> bool:
+    if delay_seconds <= 0:
+        return False
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=delay_seconds)
+        return True
+    except asyncio.TimeoutError:
+        return False
 
 
 async def _ensure_sqlite_columns() -> None:
@@ -472,12 +513,17 @@ async def _restore_runtime_state(session: AsyncSession) -> None:
 
 
 async def _metrics_loop(stop_event: asyncio.Event) -> None:
+    if await _initial_loop_delay(stop_event, METRICS_LOOP_START_DELAY_SECONDS):
+        return
     while not stop_event.is_set():
-        try:
-            async with AsyncSessionLocal() as session:
+        async def action(session: AsyncSession) -> None:
+            try:
                 await collect_system_metrics(session)
-        except Exception as exc:
-            logger.error("[gateway-metrics] sample failed: %s", exc)
+            except Exception:
+                await session.rollback()
+                raise
+
+        await _run_db_cycle_with_retry("gateway-metrics", action)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=60)
         except asyncio.TimeoutError:
@@ -485,12 +531,17 @@ async def _metrics_loop(stop_event: asyncio.Event) -> None:
 
 
 async def _traffic_metrics_loop(stop_event: asyncio.Event) -> None:
+    if await _initial_loop_delay(stop_event, TRAFFIC_LOOP_START_DELAY_SECONDS):
+        return
     while not stop_event.is_set():
-        try:
-            async with AsyncSessionLocal() as session:
+        async def action(session: AsyncSession) -> None:
+            try:
                 await collect_traffic_metrics(session)
-        except Exception as exc:
-            logger.error("[gateway-traffic-metrics] sample failed: %s", exc)
+            except Exception:
+                await session.rollback()
+                raise
+
+        await _run_db_cycle_with_retry("gateway-traffic-metrics", action)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=RAW_SAMPLE_INTERVAL_SECONDS)
         except asyncio.TimeoutError:
@@ -498,13 +549,18 @@ async def _traffic_metrics_loop(stop_event: asyncio.Event) -> None:
 
 
 async def _external_ip_loop(stop_event: asyncio.Event) -> None:
+    if await _initial_loop_delay(stop_event, EXTERNAL_IP_LOOP_START_DELAY_SECONDS):
+        return
     while not stop_event.is_set():
-        try:
-            async with AsyncSessionLocal() as session:
+        async def action(session: AsyncSession) -> None:
+            try:
                 await refresh_external_ip_info(session, force=True)
                 await session.commit()
-        except Exception as exc:
-            logger.error("[gateway-external-ip] refresh failed: %s", exc)
+            except Exception:
+                await session.rollback()
+                raise
+
+        await _run_db_cycle_with_retry("gateway-external-ip", action)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=EXTERNAL_IP_REFRESH_INTERVAL_SECONDS)
         except asyncio.TimeoutError:
@@ -512,9 +568,11 @@ async def _external_ip_loop(stop_event: asyncio.Event) -> None:
 
 
 async def _failover_loop(stop_event: asyncio.Event) -> None:
+    if await _initial_loop_delay(stop_event, FAILOVER_LOOP_START_DELAY_SECONDS):
+        return
     while not stop_event.is_set():
-        try:
-            async with AsyncSessionLocal() as session:
+        async def action(session: AsyncSession) -> None:
+            try:
                 settings_row = await session.get(GatewaySettings, 1)
                 if settings_row is not None:
                     live_status, live_error = resolve_live_tunnel_status(settings_row)
@@ -526,8 +584,11 @@ async def _failover_loop(stop_event: asyncio.Event) -> None:
                     await session.flush()
                     await evaluate_failover_health(session, settings_row)
                     await session.commit()
-        except Exception as exc:
-            logger.error("[gateway-failover] cycle failed: %s", exc)
+            except Exception:
+                await session.rollback()
+                raise
+
+        await _run_db_cycle_with_retry("gateway-failover", action)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=10)
         except asyncio.TimeoutError:
@@ -535,13 +596,18 @@ async def _failover_loop(stop_event: asyncio.Event) -> None:
 
 
 async def _device_tracking_loop(stop_event: asyncio.Event) -> None:
+    if await _initial_loop_delay(stop_event, DEVICE_TRACKING_LOOP_START_DELAY_SECONDS):
+        return
     while not stop_event.is_set():
-        try:
-            async with AsyncSessionLocal() as session:
+        async def action(session: AsyncSession) -> None:
+            try:
                 await collect_device_inventory(session)
                 await session.commit()
-        except Exception as exc:
-            logger.error("[gateway-device-tracking] cycle failed: %s", exc)
+            except Exception:
+                await session.rollback()
+                raise
+
+        await _run_db_cycle_with_retry("gateway-device-tracking", action)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=DEVICE_TRACKING_INTERVAL_SECONDS)
         except asyncio.TimeoutError:

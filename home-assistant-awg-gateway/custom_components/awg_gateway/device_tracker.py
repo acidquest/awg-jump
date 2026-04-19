@@ -9,11 +9,11 @@ from homeassistant.components.device_tracker.config_entry import ScannerEntity
 from homeassistant.const import STATE_HOME, STATE_NOT_HOME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import AwgGatewayConfigEntry
+from .coordinator import AwgGatewayDevicesUpdateCoordinator
 from .const import DOMAIN
 
 
@@ -24,13 +24,11 @@ async def async_setup_entry(
 ) -> None:
     """Set up AWG Gateway device trackers."""
     known: dict[str, AwgGatewayDeviceTracker] = {}
-    entity_registry = er.async_get(hass)
 
     @callback
     def _sync_entities() -> None:
         new_entities: list[AwgGatewayDeviceTracker] = []
-        devices = entry.runtime_data.coordinator.data.devices
-        active_keys = {device["identity_key"] for device in devices if device.get("identity_key")}
+        devices = entry.runtime_data.devices_coordinator.data.devices
 
         for device in devices:
             identity_key = device.get("identity_key")
@@ -40,46 +38,39 @@ async def async_setup_entry(
             known[identity_key] = entity
             new_entities.append(entity)
 
-        for identity_key in tuple(known):
-            if identity_key not in active_keys:
-                entity_id = entity_registry.async_get_entity_id(
-                    "device_tracker",
-                    DOMAIN,
-                    identity_key,
-                )
-                if entity_id is not None:
-                    entity_registry.async_remove(entity_id)
-                known.pop(identity_key, None)
-
         if new_entities:
             async_add_entities(new_entities)
 
-    entry.async_on_unload(entry.runtime_data.coordinator.async_add_listener(_sync_entities))
+    entry.async_on_unload(entry.runtime_data.devices_coordinator.async_add_listener(_sync_entities))
     _sync_entities()
 
 
-class AwgGatewayDeviceTracker(CoordinatorEntity, ScannerEntity):
+class AwgGatewayDeviceTracker(CoordinatorEntity[AwgGatewayDevicesUpdateCoordinator], ScannerEntity):
     """Represent a tracked LAN device reported by the gateway."""
 
     _attr_has_entity_name = False
 
     def __init__(self, entry: AwgGatewayConfigEntry, identity_key: str) -> None:
-        super().__init__(entry.runtime_data.coordinator)
+        super().__init__(entry.runtime_data.devices_coordinator)
         self._entry = entry
         self._identity_key = identity_key
+        self._last_device: dict[str, Any] | None = None
         self._attr_unique_id = identity_key
 
     @property
-    def _device(self) -> dict[str, Any] | None:
+    def _current_device(self) -> dict[str, Any] | None:
         for device in self.coordinator.data.devices:
             if device.get("identity_key") == self._identity_key:
+                self._last_device = device
                 return device
         return None
 
     @property
-    def available(self) -> bool:
-        """Return whether the entity is available."""
-        return super().available and self._device is not None
+    def _device(self) -> dict[str, Any] | None:
+        current_device = self._current_device
+        if current_device is not None:
+            return current_device
+        return self._last_device
 
     @property
     def name(self) -> str | None:
@@ -92,8 +83,10 @@ class AwgGatewayDeviceTracker(CoordinatorEntity, ScannerEntity):
     @property
     def is_connected(self) -> bool:
         """Return connection state."""
-        device = self._device
-        return bool(device and device.get("is_present"))
+        device = self._current_device
+        if device is None:
+            return False
+        return bool(device.get("is_present"))
 
     @property
     def state(self) -> str:

@@ -12,7 +12,7 @@ from app.security import get_api_settings, require_api_control
 from app.services.device_tracking import get_devices_payload
 from app.services.external_ip import serialize_external_ip_info
 from app.services.routing import apply_local_passthrough, apply_routing_plan, build_prefix_summary, build_routing_plan, sync_firewall_backend
-from app.services.runtime import probe_node_latency_details, reset_active_node_uptime, resolve_live_tunnel_status, start_tunnel, stop_tunnel
+from app.services.runtime import probe_node_latency_details, resolve_live_tunnel_status, start_tunnel, stop_tunnel
 from app.services.system_metrics import get_metrics_history
 from app.services.traffic_metrics import get_traffic_usage_summary
 
@@ -27,28 +27,25 @@ class EnabledPayload(BaseModel):
 async def _load_runtime_state(db: AsyncSession, settings_row: GatewaySettings) -> tuple[RoutingPolicy, EntryNode | None, dict, dict | None]:
     policy = await db.get(RoutingPolicy, 1)
     live_status, live_error = resolve_live_tunnel_status(settings_row)
-    settings_row.tunnel_status = live_status
-    settings_row.tunnel_last_error = live_error
-    if live_status != "running":
-        reset_active_node_uptime(settings_row)
-    db.add(settings_row)
-    await db.flush()
 
     active_node = await db.get(EntryNode, settings_row.active_entry_node_id) if settings_row.active_entry_node_id else None
     probe: dict | None = None
     if active_node is not None:
         probe = probe_node_latency_details(active_node, prefer_tunnel=True)
-        latency_ms = probe["latency_ms"]
-        active_node.latest_latency_ms = latency_ms if isinstance(latency_ms, float) else None
-        db.add(active_node)
-        await db.flush()
 
     prefix_summary = build_prefix_summary(policy, settings_row)
-    return policy, active_node, prefix_summary, probe
+    runtime_state = {
+        "live_status": live_status,
+        "live_error": live_error,
+        "latest_latency_ms": probe["latency_ms"] if probe and isinstance(probe["latency_ms"], float) else (
+            active_node.latest_latency_ms if active_node is not None else None
+        ),
+    }
+    return policy, active_node, prefix_summary, probe, runtime_state
 
 
 async def _build_status_payload(db: AsyncSession, settings_row: GatewaySettings) -> dict:
-    policy, active_node, prefix_summary, probe = await _load_runtime_state(db, settings_row)
+    policy, active_node, prefix_summary, probe, runtime_state = await _load_runtime_state(db, settings_row)
     latest_metric, _history = await get_metrics_history(db, hours=1)
     traffic_summary = await get_traffic_usage_summary(db)
     external_ip_info = serialize_external_ip_info(settings_row, policy)
@@ -56,11 +53,11 @@ async def _build_status_payload(db: AsyncSession, settings_row: GatewaySettings)
     return {
         "status": {
             "vpn_enabled": settings_row.gateway_enabled,
-            "tunnel_status": settings_row.tunnel_status,
+            "tunnel_status": runtime_state["live_status"],
         },
         "active_node": {
             "name": active_node.name,
-            "latency_ms": active_node.latest_latency_ms,
+            "latency_ms": runtime_state["latest_latency_ms"],
             "latency_target": probe["target"] if probe else None,
             "latency_via_interface": probe["via_interface"] if probe else None,
         } if active_node else None,
@@ -69,7 +66,7 @@ async def _build_status_payload(db: AsyncSession, settings_row: GatewaySettings)
             "vpn": external_ip_info["vpn"]["value"],
         },
         "uptime_seconds": max(int(time.time()) - settings_row.active_node_connected_at_epoch, 0)
-        if settings_row.active_node_connected_at_epoch and settings_row.tunnel_status == "running"
+        if settings_row.active_node_connected_at_epoch and runtime_state["live_status"] == "running"
         else 0,
         "active_stack": "nftables" if settings_row.experimental_nftables else "iptables",
         "active_prefixes": {

@@ -24,13 +24,13 @@ class AwgGatewaySwitchDescription(SwitchEntityDescription):
 SWITCHES: tuple[AwgGatewaySwitchDescription, ...] = (
     AwgGatewaySwitchDescription(
         key="tunnel",
-        translation_key="tunnel",
+        name="Tunnel",
         is_on_fn=lambda data: bool((data.get("status") or {}).get("vpn_enabled")),
         async_set_fn=lambda coordinator, enabled: coordinator.async_set_tunnel(enabled),
     ),
     AwgGatewaySwitchDescription(
         key="kill_switch",
-        translation_key="kill_switch",
+        name="Kill Switch",
         is_on_fn=lambda data: bool(data.get("kill_switch_enabled")),
         async_set_fn=lambda coordinator, enabled: coordinator.async_set_kill_switch(enabled),
     ),
@@ -43,7 +43,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up AWG Gateway switches."""
-    if not entry.runtime_data.coordinator.control_enabled:
+    if not entry.runtime_data.status_coordinator.control_enabled:
         return
     async_add_entities(AwgGatewaySwitch(entry, description) for description in SWITCHES)
 
@@ -57,6 +57,7 @@ class AwgGatewaySwitch(AwgGatewayCoordinatorEntity, SwitchEntity):
         super().__init__(entry)
         self.entity_description = description
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+        self._attr_name = description.name
 
     @property
     def is_on(self) -> bool:

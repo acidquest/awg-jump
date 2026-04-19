@@ -229,11 +229,6 @@ async def evaluate_failover_health(db: AsyncSession, settings_row: GatewaySettin
     if live_running:
         probe = probe_node_latency_details(active_node, prefer_tunnel=True)
         latency_ms = probe["latency_ms"]
-        active_node.latest_latency_ms = latency_ms if isinstance(latency_ms, float) else None
-        active_node.latest_latency_at = utcnow()
-        active_node.last_error = None if latency_ms is not None else "Tunnel probe failed"
-        db.add(active_node)
-        await db.flush()
         unhealthy_reason = None if latency_ms is not None else "Active tunnel probe failed"
     else:
         unhealthy_reason = settings_row.tunnel_last_error or "Active tunnel is not running"

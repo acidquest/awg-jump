@@ -1,0 +1,43 @@
+# Data и секреты
+data/
+.env
+*.db
+*.db-shm
+*.db-wal
+.codex
+CLAUDE.md
+# Python
+__pycache__/
+*/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+*/dist/
+build/
+.venv/
+venv/
+
+# Node / Frontend
+node_modules/
+*/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# OS
+.DS_Store
+*.swp
+*.swo
+
+# Docker
+*.tar
+
+# Логи
+*.log
+
+# Dev docs
+dev_docs/
+pytest.ini
+
+requirements_dev.txt
