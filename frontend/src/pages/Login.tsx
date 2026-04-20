@@ -71,6 +71,7 @@ export default function Login() {
 
       <div className="login-panel" style={{ width: 360 }}>
         <div style={{ marginBottom: 28, textAlign: 'center' }}>
+          <img className="login-brand-icon" src="/awg-jump-icon.png" alt="" aria-hidden="true" />
           <div
             style={{
               fontFamily: 'var(--font-mono)',

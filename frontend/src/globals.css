@@ -95,6 +95,7 @@ input, select, textarea {
   display: block;
   border-radius: 7px;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+  object-fit: cover;
 }
 
 .sidebar-brand {
@@ -1059,11 +1060,21 @@ tr.active-node td:first-child { border-left: 2px solid var(--accent); }
   z-index: 1;
 }
 
-  .login-panel .card {
-    backdrop-filter: blur(10px);
-    background: rgba(15, 24, 31, 0.82);
-    box-shadow: 0 30px 70px rgba(0, 0, 0, 0.32);
-  }
+.login-brand-icon {
+  width: 52px;
+  height: 52px;
+  display: block;
+  margin: 0 auto 12px;
+  border-radius: 12px;
+  object-fit: cover;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.28);
+}
+
+.login-panel .card {
+  backdrop-filter: blur(10px);
+  background: rgba(15, 24, 31, 0.82);
+  box-shadow: 0 30px 70px rgba(0, 0, 0, 0.32);
+}
 
 @media (max-width: 1100px) {
   .routing-diagram-main {

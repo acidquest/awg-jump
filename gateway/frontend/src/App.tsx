@@ -460,6 +460,7 @@ function LoginPage() {
 
       <div className="login-panel" style={{ width: 360 }}>
         <div style={{ marginBottom: 28, textAlign: 'center' }}>
+          <img className="login-brand-icon" src="/awg-gateway-icon.png" alt="" aria-hidden="true" />
           <div className="gateway-brand-wordmark">AWG Gateway</div>
           <div className="page-subtitle">{t('loginTitle')}</div>
         </div>
@@ -503,17 +504,6 @@ function LoginPage() {
   )
 }
 
-function GatewayMark() {
-  return (
-    <svg className="sidebar-mark" viewBox="0 0 64 64" aria-hidden="true">
-      <rect width="64" height="64" rx="14" fill="#0f172a" />
-      <path d="M16 33c0-9.4 7.6-17 17-17 4.8 0 9.1 1.9 12.2 5.1L39.6 27A9 9 0 1 0 42 33h8c0 9.4-7.6 17-17 17S16 42.4 16 33Z" fill="#f59e0b" />
-      <path d="M45 16h3v8h8v3h-8v8h-3v-8h-8v-3h8z" fill="#38bdf8" />
-      <circle cx="25" cy="33" r="3" fill="#fde68a" />
-    </svg>
-  )
-}
-
 function AppLayout() {
   const navigate = useNavigate()
   const { t } = useI18n()
@@ -543,7 +533,7 @@ function AppLayout() {
     <div className="layout">
       <aside className="sidebar">
         <div className="sidebar-logo" aria-label="AWG Gateway">
-          <GatewayMark />
+          <img className="sidebar-mark" src="/awg-gateway-icon.png" alt="" aria-hidden="true" />
           <div>
             <div className="sidebar-wordmark">AWG Gateway</div>
             <div className="page-subtitle">Policy Router</div>

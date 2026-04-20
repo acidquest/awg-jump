@@ -25,7 +25,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     <div className="layout">
       <aside className="sidebar">
         <div className="sidebar-logo" aria-label="AWG Jump">
-          <FaviconMark />
+          <img className="sidebar-mark" src="/awg-jump-icon.png" alt="" aria-hidden="true" />
           <div className="sidebar-brand">
             <div className="sidebar-brand-title">AWG Jump</div>
             <div className="sidebar-brand-subtitle">Control Plane</div>
@@ -53,34 +53,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       </aside>
       <main className="main-content">{children}</main>
     </div>
-  )
-}
-
-// ── Inline SVG icons ──────────────────────────────────────────────────────
-function FaviconMark() {
-  return (
-    <svg className="sidebar-mark" viewBox="0 0 64 64" aria-hidden="true">
-      <defs>
-        <linearGradient id="awgJumpBg" x1="8" y1="6" x2="58" y2="60" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#0f172a" />
-          <stop offset="1" stopColor="#0a1018" />
-        </linearGradient>
-        <linearGradient id="awgJumpBeam" x1="16" y1="14" x2="45" y2="49" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#34f5c5" />
-          <stop offset="1" stopColor="#00d4aa" />
-        </linearGradient>
-      </defs>
-      <rect width="64" height="64" rx="16" fill="url(#awgJumpBg)" />
-      <path d="M13 18c0-2.761 2.239-5 5-5h28c2.761 0 5 2.239 5 5v4h-4v-3a2 2 0 0 0-2-2H19a2 2 0 0 0-2 2v26a2 2 0 0 0 2 2h10v4H18c-2.761 0-5-2.239-5-5V18Z" fill="#1d2733" />
-      <circle cx="23" cy="24" r="4" fill="#38bdf8" />
-      <circle cx="23" cy="40" r="4" fill="#38bdf8" opacity="0.9" />
-      <circle cx="42" cy="32" r="5" fill="#34f5c5" />
-      <path d="M26.5 24h8.5l-5 5" fill="none" stroke="url(#awgJumpBeam)" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M26.5 40h8.5" fill="none" stroke="url(#awgJumpBeam)" strokeWidth="3.2" strokeLinecap="round" />
-      <path d="M35 24v16" fill="none" stroke="url(#awgJumpBeam)" strokeWidth="3.2" strokeLinecap="round" />
-      <path d="M35 32h12" fill="none" stroke="url(#awgJumpBeam)" strokeWidth="3.2" strokeLinecap="round" />
-      <path d="M42 27v10l6-5-6-5Z" fill="#34f5c5" />
-    </svg>
   )
 }
 
