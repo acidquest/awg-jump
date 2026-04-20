@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import pwd
 import re
+import sqlite3
 import subprocess
 from datetime import datetime, timezone
 
@@ -39,6 +41,9 @@ NFT_CHAIN_NAT_OUTPUT = "nat_output"
 NFT_CHAIN_NAT_POSTROUTING = "nat_postrouting"
 
 DNS_RUNTIME_USER = "nobody"
+DEVICE_ROUTE_NONE = "none"
+DEVICE_ROUTE_LOCAL = "local"
+DEVICE_ROUTE_VPN = "vpn"
 
 
 def firewall_backend(gateway_settings: GatewaySettings | None) -> str:
@@ -399,6 +404,66 @@ def _mark_targets(policy: RoutingPolicy) -> tuple[str, str]:
     return settings.fwmark_vpn, settings.fwmark_local
 
 
+def _forced_route_mark(route_target: str) -> str | None:
+    if route_target == DEVICE_ROUTE_LOCAL:
+        return settings.fwmark_local
+    if route_target == DEVICE_ROUTE_VPN:
+        return settings.fwmark_vpn
+    return None
+
+
+def _ip_in_selector(ip_address: str, selectors: list[str]) -> bool:
+    try:
+        ip_value = ipaddress.ip_address(ip_address)
+    except ValueError:
+        return False
+    for selector in selectors:
+        try:
+            if ip_value in ipaddress.ip_network(selector, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _load_device_route_overrides() -> list[tuple[str, str]]:
+    try:
+        with sqlite3.connect(settings.metrics_db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT current_ip, forced_route_target
+                FROM tracked_devices
+                WHERE current_ip IS NOT NULL
+                  AND current_ip != ''
+                  AND forced_route_target IN (?, ?)
+                ORDER BY updated_at DESC, id DESC
+                """,
+                (DEVICE_ROUTE_LOCAL, DEVICE_ROUTE_VPN),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+
+    overrides: list[tuple[str, str]] = []
+    seen_ips: set[str] = set()
+    for current_ip, forced_route_target in rows:
+        if not isinstance(current_ip, str) or current_ip in seen_ips:
+            continue
+        seen_ips.add(current_ip)
+        overrides.append((current_ip, forced_route_target))
+    return overrides
+
+
+def _device_route_overrides_for_selectors(gateway_settings: GatewaySettings) -> list[tuple[str, str]]:
+    selectors = non_localhost_selectors(gateway_settings)
+    if not selectors:
+        return []
+    return [
+        (ip_address, route_target)
+        for ip_address, route_target in _load_device_route_overrides()
+        if _ip_in_selector(ip_address, selectors)
+    ]
+
+
 def _iptables_command(table: str, chain: str, rule_args: list[str]) -> str:
     return " ".join(["iptables", "-t", table, "-A", chain, *rule_args])
 
@@ -517,6 +582,14 @@ def _build_marking_rules(
         rules.append(("mangle", MANGLE_PREROUTING_CHAIN, ["-d", prefix, "-j", "RETURN"]))
         rules.append(("mangle", MANGLE_OUTPUT_CHAIN, ["-d", prefix, "-j", "RETURN"]))
 
+    for source_ip, route_target in _device_route_overrides_for_selectors(gateway_settings):
+        forced_mark = _forced_route_mark(route_target)
+        if forced_mark is None:
+            continue
+        rules.append(("mangle", MANGLE_PREROUTING_CHAIN, ["-s", source_ip, "-j", "CONNMARK", "--set-mark", forced_mark]))
+        rules.append(("mangle", MANGLE_PREROUTING_CHAIN, ["-s", source_ip, "-j", "MARK", "--set-mark", forced_mark]))
+        rules.append(("mangle", MANGLE_PREROUTING_CHAIN, ["-s", source_ip, "-j", "RETURN"]))
+
     match_sets = _all_match_sets(policy, gateway_settings)
 
     if localhost_selector_enabled(gateway_settings):
@@ -614,6 +687,17 @@ def _build_marking_rules_nft(
     for prefix in local_prefixes:
         rules.append((NFT_CHAIN_MANGLE_PREROUTING, f"ip daddr {prefix} return"))
         rules.append((NFT_CHAIN_MANGLE_OUTPUT, f"ip daddr {prefix} return"))
+
+    for source_ip, route_target in _device_route_overrides_for_selectors(gateway_settings):
+        forced_mark = _forced_route_mark(route_target)
+        if forced_mark is None:
+            continue
+        rules.append(
+            (
+                NFT_CHAIN_MANGLE_PREROUTING,
+                f"ip saddr {source_ip} ct mark set {forced_mark} meta mark set {forced_mark} counter return",
+            )
+        )
 
     if localhost_selector_enabled(gateway_settings):
         for match_set in match_sets:

@@ -11,7 +11,9 @@ from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import GatewaySettings, TrackedDevice, TrackedDeviceFlowState, TrackedDeviceIp
+from app.database import AsyncSessionLocal, commit_with_lock, prepare_session
+from app.models import EntryNode, GatewaySettings, RoutingPolicy, TrackedDevice, TrackedDeviceFlowState, TrackedDeviceIp
+from app.services.routing import apply_local_passthrough, apply_routing_plan, build_routing_plan
 from app.services.traffic_sources import source_selectors
 
 
@@ -38,7 +40,7 @@ class NeighborInfo:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -153,6 +155,20 @@ def _presence_from_neighbor(neighbor: NeighborInfo | None) -> tuple[bool, str | 
     return False, neighbor.mac_address
 
 
+def _flow_has_fresh_traffic(previous_bytes: int | None, current_bytes: int) -> bool:
+    if previous_bytes is None:
+        return True
+    return current_bytes != previous_bytes
+
+
+def _flow_delta(previous_bytes: int | None, current_bytes: int) -> int:
+    if previous_bytes is None:
+        return max(current_bytes, 0)
+    if current_bytes >= previous_bytes:
+        return current_bytes - previous_bytes
+    return max(current_bytes, 0)
+
+
 def _ping(ip_address: str) -> bool:
     rc, _ = _run(["ping", "-c", "1", "-W", str(PING_TIMEOUT_SECONDS), ip_address])
     return rc == 0
@@ -249,6 +265,8 @@ async def _merge_devices(session: AsyncSession, target: TrackedDevice, source: T
         target.last_absent_at = source_last_absent_at
     target.total_bytes += source.total_bytes
     target.is_marked = target.is_marked or source.is_marked
+    if target.forced_route_target == "none" and source.forced_route_target != "none":
+        target.forced_route_target = source.forced_route_target
     if not target.manual_alias:
         target.manual_alias = source.manual_alias
     if not target.hostname:
@@ -306,6 +324,29 @@ async def _resolve_device(session: AsyncSession, *, ip_address: str, mac_address
     return device
 
 
+async def _reload_device_route_runtime() -> None:
+    async with AsyncSessionLocal() as session:
+        prepare_session(session)
+        settings_row = await session.get(GatewaySettings, 1)
+        policy = await session.get(RoutingPolicy, 1)
+        if settings_row is None or policy is None:
+            return
+        active_node = await session.get(EntryNode, settings_row.active_entry_node_id) if settings_row.active_entry_node_id else None
+        if not settings_row.gateway_enabled:
+            apply_local_passthrough(settings_row)
+            return
+        plan = build_routing_plan(settings_row, policy, active_node)
+        if not plan["safe_to_apply"]:
+            return
+        try:
+            apply_routing_plan(settings_row, policy, active_node)
+            policy.last_error = None
+        except RuntimeError as exc:
+            policy.last_error = str(exc)
+        session.add(policy)
+        await commit_with_lock(session)
+
+
 async def collect_device_inventory(session: AsyncSession, settings_row: GatewaySettings | None) -> None:
     if settings_row is None or not settings_row.device_tracking_enabled:
         return
@@ -317,15 +358,29 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
         [item for item in await _load_conntrack_observations() if _ip_in_selectors(item.source_ip, selectors)]
     )
     pending_flow_states: dict[str, TrackedDeviceFlowState] = {}
+    device_route_overrides_dirty = False
 
     for item in observations:
+        flow_state = pending_flow_states.get(item.flow_key)
+        if flow_state is None:
+            flow_state = await session.get(TrackedDeviceFlowState, item.flow_key)
+        previous_bytes = flow_state.last_bytes if flow_state is not None else None
+        if not _flow_has_fresh_traffic(previous_bytes, item.bytes_total):
+            continue
+
         neighbor = neighbors.get(item.source_ip)
+        existing_device = await _load_device_by_mac(session, _normalize_mac(neighbor.mac_address) if neighbor else None)
+        if existing_device is None:
+            existing_device = await _load_device_by_ip(session, item.source_ip)
+        previous_ip = existing_device.current_ip if existing_device is not None else None
         device = await _resolve_device(
             session,
             ip_address=item.source_ip,
             mac_address=neighbor.mac_address if neighbor else None,
             now=now,
         )
+        if device.forced_route_target != "none" and previous_ip != device.current_ip:
+            device_route_overrides_dirty = True
         if not device.hostname:
             device.hostname = _resolve_hostname(item.source_ip)
         device.last_traffic_at = now
@@ -336,10 +391,7 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
             device.last_route_target = item.route_target
         session.add(device)
 
-        flow_state = pending_flow_states.get(item.flow_key)
-        if flow_state is None:
-            flow_state = await session.get(TrackedDeviceFlowState, item.flow_key)
-        delta = item.bytes_total
+        delta = _flow_delta(previous_bytes, item.bytes_total)
         if flow_state is None:
             flow_state = TrackedDeviceFlowState(
                 flow_key=item.flow_key,
@@ -350,8 +402,6 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
                 last_seen_at=now,
             )
         else:
-            if item.bytes_total >= flow_state.last_bytes:
-                delta = item.bytes_total - flow_state.last_bytes
             flow_state.device_id = device.id
             flow_state.source_ip = item.source_ip
             flow_state.route_target = item.route_target
@@ -387,6 +437,10 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
         else:
             device.last_absent_at = now
         session.add(device)
+
+    if device_route_overrides_dirty:
+        await commit_with_lock(session, metrics=True)
+        await _reload_device_route_runtime()
 
 
 async def get_devices_payload(
@@ -447,6 +501,7 @@ async def get_devices_payload(
                 "manual_alias": device.manual_alias,
                 "display_name": device.manual_alias or device.hostname or device.current_ip or device.mac_address or device.identity_key,
                 "is_marked": device.is_marked,
+                "forced_route_target": device.forced_route_target,
                 "is_active": device.is_active,
                 "is_present": device.is_present,
                 "presence_state": "active" if device.is_active else "present" if device.is_present else "inactive",

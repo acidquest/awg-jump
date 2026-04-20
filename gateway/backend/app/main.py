@@ -121,6 +121,13 @@ async def _ensure_current_baseline_columns() -> None:
         settings_row.external_ip_vpn_service_url = settings_row.external_ip_vpn_service_url or vpn_service_url
         session.add(settings_row)
         await commit_with_lock(session)
+    async with metrics_engine.begin() as conn:
+        result = await conn.exec_driver_sql("PRAGMA table_info(tracked_devices)")
+        columns = {row[1] for row in result.fetchall()}
+        if "forced_route_target" not in columns:
+            await conn.exec_driver_sql(
+                "ALTER TABLE tracked_devices ADD COLUMN forced_route_target VARCHAR(16) NOT NULL DEFAULT 'none'"
+            )
 
 
 def _backup_is_due(settings_row: GatewaySettings, *, now: datetime) -> bool:

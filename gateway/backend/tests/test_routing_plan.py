@@ -1,6 +1,17 @@
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.routing import build_routing_plan, sync_prefix_ipset
+from app.services.runtime_state import reset_gateway_runtime_state, set_tunnel_runtime_state
+
+
+@pytest.fixture(autouse=True)
+def tunnel_runtime_running():
+    reset_gateway_runtime_state()
+    set_tunnel_runtime_state(status="running")
+    yield
+    reset_gateway_runtime_state()
 
 
 def make_settings(source_cidrs: list[str] | None = None, experimental_nftables: bool = False):
@@ -152,6 +163,34 @@ def test_plan_marks_localhost_output_for_both_destinations(monkeypatch) -> None:
     assert not any("iptables -t filter -A AWG_GW_OUTPUT" in command for command in plan["commands"])
 
 
+def test_plan_applies_forced_device_route_before_generic_prerouting_rules(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.routing._default_route", lambda: ("eth0", "192.0.2.1"))
+    monkeypatch.setattr("app.services.routing._interface_exists", lambda _: True)
+    monkeypatch.setattr("app.services.routing._connected_ipv4_prefixes", lambda _: ["192.168.10.0/24"])
+    monkeypatch.setattr("app.services.routing.load_cached_country", lambda _: ["203.0.113.0/24"])
+    monkeypatch.setattr("app.services.routing.ipset_manager.count", lambda _: 0)
+    monkeypatch.setattr(
+        "app.services.routing._load_device_route_overrides",
+        lambda: [("10.10.0.5", "local"), ("10.99.0.5", "vpn")],
+    )
+
+    plan = build_routing_plan(make_settings(source_cidrs=["10.10.0.0/24"]), make_policy(), make_active_node())
+
+    assert any(
+        command == "iptables -t mangle -A AWG_GW_PREROUTING -s 10.10.0.5 -j CONNMARK --set-mark 0x1"
+        for command in plan["commands"]
+    )
+    assert any(
+        command == "iptables -t mangle -A AWG_GW_PREROUTING -s 10.10.0.5 -j MARK --set-mark 0x1"
+        for command in plan["commands"]
+    )
+    assert any(
+        command == "iptables -t mangle -A AWG_GW_PREROUTING -s 10.10.0.5 -j RETURN"
+        for command in plan["commands"]
+    )
+    assert not any("10.99.0.5" in command for command in plan["commands"])
+
+
 def test_plan_handles_localhost_and_prerouting_selectors_together(monkeypatch) -> None:
     monkeypatch.setattr("app.services.routing._default_route", lambda: ("eth0", "192.0.2.1"))
     monkeypatch.setattr("app.services.routing._interface_exists", lambda _: True)
@@ -195,6 +234,22 @@ def test_plan_limits_direct_nft_forward_and_nat_to_local_mark(monkeypatch) -> No
     )
     assert any(
         command == 'nft add rule ip filter AWG_GW_FORWARD ip saddr 10.10.0.0/24 oifname "eth0" meta mark 0x1 counter accept'
+        for command in plan["commands"]
+    )
+
+
+def test_plan_applies_forced_device_route_in_nftables(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.routing._default_route", lambda: ("eth0", "192.0.2.1"))
+    monkeypatch.setattr("app.services.routing._interface_exists", lambda _: True)
+    monkeypatch.setattr("app.services.routing._connected_ipv4_prefixes", lambda _: [])
+    monkeypatch.setattr("app.services.routing.load_cached_country", lambda _: ["203.0.113.0/24"])
+    monkeypatch.setattr("app.services.routing.nftables_manager.count", lambda _: 0)
+    monkeypatch.setattr("app.services.routing._load_device_route_overrides", lambda: [("10.10.0.7", "vpn")])
+
+    plan = build_routing_plan(make_settings(source_cidrs=["10.10.0.0/24"], experimental_nftables=True), make_policy(), make_active_node())
+
+    assert any(
+        command == "nft add rule ip awg_gw mangle_prerouting ip saddr 10.10.0.7 ct mark set 0x2 meta mark set 0x2 counter return"
         for command in plan["commands"]
     )
 

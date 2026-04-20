@@ -42,6 +42,20 @@ def test_presence_from_neighbor_ignores_stale_entries() -> None:
     assert mac == "aa:bb"
 
 
+def test_flow_has_fresh_traffic_requires_byte_counter_change_for_existing_flow() -> None:
+    assert device_tracking._flow_has_fresh_traffic(1200, 1200) is False
+    assert device_tracking._flow_has_fresh_traffic(1200, 1400) is True
+    assert device_tracking._flow_has_fresh_traffic(1200, 200) is True
+    assert device_tracking._flow_has_fresh_traffic(None, 0) is True
+
+
+def test_flow_delta_handles_new_growing_and_reset_counters() -> None:
+    assert device_tracking._flow_delta(None, 1200) == 1200
+    assert device_tracking._flow_delta(1200, 1400) == 200
+    assert device_tracking._flow_delta(1200, 1200) == 0
+    assert device_tracking._flow_delta(1200, 200) == 200
+
+
 def test_ip_in_selectors_matches_only_selected_networks() -> None:
     assert device_tracking._ip_in_selectors("192.168.1.10", ["192.168.1.0/24"]) is True
     assert device_tracking._ip_in_selectors("10.0.0.5", ["192.168.1.0/24"]) is False

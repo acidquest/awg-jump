@@ -189,6 +189,7 @@ type DeviceRecord = {
   manual_alias: string
   display_name: string
   is_marked: boolean
+  forced_route_target: 'none' | 'local' | 'vpn'
   is_active: boolean
   is_present: boolean
   presence_state: 'active' | 'present' | 'inactive'
@@ -317,6 +318,12 @@ function toRoutingPolicyPayload(data: RoutingPolicyData): RoutingPolicyPayload {
     prefixes_route_local: data.prefixes_route_local,
     kill_switch_enabled: data.kill_switch_enabled,
   }
+}
+
+function nextForcedRouteTarget(value: DeviceRecord['forced_route_target']): DeviceRecord['forced_route_target'] {
+  if (value === 'none') return 'local'
+  if (value === 'local') return 'vpn'
+  return 'none'
 }
 
 function fmtNodeUptime(totalSeconds: number, t: (key: 'daysShort' | 'hoursShort' | 'minutesShort') => string) {
@@ -3044,6 +3051,11 @@ function DevicesPage() {
     await reload()
   }
 
+  async function cycleForcedRoute(device: DeviceRecord) {
+    await api.patch(`/devices/${device.id}`, { forced_route_target: nextForcedRouteTarget(device.forced_route_target) })
+    await reload()
+  }
+
   function openAliasEditor(device: DeviceRecord) {
     setEditingDevice(device)
     setEditingAlias(device.manual_alias)
@@ -3158,6 +3170,17 @@ function DevicesPage() {
                 onClick={() => { void toggleMarked(device) }}
               >
                 {t('apiAccessTitle')}
+              </button>
+              <button
+                type="button"
+                className={`device-api-toggle device-route-toggle${device.forced_route_target !== 'none' ? ' active' : ''}${device.forced_route_target === 'local' ? ' local' : ''}${device.forced_route_target === 'vpn' ? ' vpn' : ''}`}
+                onClick={() => { void cycleForcedRoute(device) }}
+              >
+                {device.forced_route_target === 'local'
+                  ? t('deviceForcedRouteLocal')
+                  : device.forced_route_target === 'vpn'
+                    ? t('deviceForcedRouteVpn')
+                    : t('deviceForcedRouteDisabled')}
               </button>
             </div>
           </div>,

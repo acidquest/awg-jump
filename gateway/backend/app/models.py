@@ -295,6 +295,7 @@ class TrackedDevice(Base):
     hostname: Mapped[str | None] = mapped_column(String(255), nullable=True)
     manual_alias: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     is_marked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    forced_route_target: Mapped[str] = mapped_column(String(16), default="none", nullable=False)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     last_traffic_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

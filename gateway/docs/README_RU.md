@@ -296,6 +296,13 @@ Frontend расположен в [`gateway/frontend`](../frontend), операт
 - API access key и control mode;
 - смена пароля администратора.
 
+### Devices
+
+- инвентаризация источников трафика с привязкой по IP/MAC;
+- ручная метка `API` для попадания устройства в `scope=marked`;
+- кнопка `Local/VPN` у устройства с циклом `неактивна -> local -> vpn -> неактивна`;
+- принудительный route override для конкретного устройства по текущему source IP поверх общей policy routing.
+
 ### Backup / Diagnostics
 
 - export backup;
@@ -310,6 +317,8 @@ Frontend расположен в [`gateway/frontend`](../frontend), операт
 Gateway policy применяется не ко всему хосту, а только к выбранным source CIDR. По умолчанию bootstrap добавляет `127.0.0.0/8`, то есть локальный трафик самого хоста/контейнера.
 
 Список хранится в `gateway_settings.allowed_client_cidrs` и нормализуется в CIDR-вид.
+
+Если на странице `Devices` у конкретного устройства выбран `Local` или `VPN`, для его текущего source IP добавляется приоритетный override: такой трафик всегда маркируется в локальную или tunnel routing table независимо от обычных prefix-based правил. Override действует и на `iptables`, и на `nftables` backend.
 
 ### Runtime mode
 

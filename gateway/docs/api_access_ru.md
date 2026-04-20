@@ -158,6 +158,8 @@ https://<gateway-host>/api/access
 
 - если `API` подсвечен, устройство считается `marked`
 - если `API` серый, устройство в выборку `scope=marked` не попадёт
+- рядом есть кнопка `Local/VPN` с циклом `неактивна -> local -> vpn -> неактивна`
+- если выбрано `local` или `vpn`, gateway всегда пытается маршрутизировать трафик устройства через соответствующий интерфейс по его текущему source IP
 
 Пример ответа:
 
@@ -185,6 +187,7 @@ https://<gateway-host>/api/access
       "manual_alias": "TV Box",
       "display_name": "TV Box",
       "is_marked": true,
+      "forced_route_target": "vpn",
       "is_active": true,
       "is_present": true,
       "presence_state": "active",
@@ -209,7 +212,9 @@ https://<gateway-host>/api/access
 - текущий IP и MAC
 - `hostname`, `manual_alias` и вычисленный `display_name`
 - флаг `is_marked`
+- `forced_route_target`: `none`, `local` или `vpn`
 - состояние активности и присутствия: `is_active`, `is_present`, `presence_state`
+- последнее наблюдаемое направление в conntrack: `last_route_target`
 - накопленные timestamps: `first_seen_at`, `last_seen_at`, `last_traffic_at`, `last_presence_check_at`, `last_present_at`, `last_absent_at`
 
 Нюансы:
@@ -219,6 +224,7 @@ https://<gateway-host>/api/access
 - `presence_state=present` означает, что свежего трафика нет, но устройство всё ещё считается находящимся в сети по `ping` и/или `ip neigh`
 - `presence_state=inactive` означает, что устройство не подтвердилось ни трафиком, ни проверкой присутствия
 - поле `last_route_target` пока может быть `unknown`; его не стоит считать обязательным для интеграций
+- `forced_route_target` является операторским override поверх общей routing policy; он применяется для текущего IP устройства и автоматически переиспользуется после следующего успешного обнаружения, если IP устройства изменился
 
 ## Нюансы по traffic counters
 

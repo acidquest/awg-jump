@@ -528,6 +528,18 @@ select.form-input option { background: var(--bg-3); }
   color: var(--text);
 }
 
+.device-route-toggle.local {
+  border-color: rgba(59, 130, 246, 0.42);
+  background: rgba(59, 130, 246, 0.12);
+  color: #60a5fa;
+}
+
+.device-route-toggle.vpn {
+  border-color: rgba(16, 185, 129, 0.42);
+  background: rgba(16, 185, 129, 0.12);
+  color: #34d399;
+}
+
 .modal-overlay {
   position: fixed;
   inset: 0;

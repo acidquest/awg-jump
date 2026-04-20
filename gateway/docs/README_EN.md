@@ -296,6 +296,13 @@ The frontend lives in [`gateway/frontend`](../frontend), and the operator UI is 
 - API access key and control mode;
 - administrator password change.
 
+### Devices
+
+- traffic-source inventory with IP/MAC correlation;
+- manual `API` tag to include a device into `scope=marked`;
+- `Local/VPN` device button cycling through `disabled -> local -> vpn -> disabled`;
+- per-device route override for the current source IP on top of the global policy routing rules.
+
 ### Backup / Diagnostics
 
 - backup export;
@@ -310,6 +317,8 @@ The frontend lives in [`gateway/frontend`](../frontend), and the operator UI is 
 Gateway policy is not applied to the entire host. It only applies to selected source CIDRs. By default, bootstrap adds `127.0.0.0/8`, which means localhost-originated traffic from the host/container.
 
 The list is stored in `gateway_settings.allowed_client_cidrs` and normalized into CIDR form.
+
+If a device is switched to `Local` or `VPN` on the `Devices` page, the gateway adds a higher-priority override for that device's current source IP. That traffic is always marked into the local or tunnel routing table regardless of the regular prefix-based policy. The override works with both `iptables` and `nftables` backends.
 
 ### Runtime mode
 
