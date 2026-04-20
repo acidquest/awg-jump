@@ -441,6 +441,9 @@ if os.path.isdir(_STATIC_DIR):
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str) -> FileResponse:
+        candidate = os.path.abspath(os.path.join(_STATIC_DIR, full_path))
+        if full_path and candidate.startswith(_STATIC_DIR + os.sep) and os.path.isfile(candidate):
+            return FileResponse(candidate)
         if full_path.startswith("api/"):
             return FileResponse(os.path.join(_STATIC_DIR, "index.html"))
         return FileResponse(os.path.join(_STATIC_DIR, "index.html"))
