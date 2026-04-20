@@ -128,6 +128,11 @@ async def _ensure_current_baseline_columns() -> None:
             await conn.exec_driver_sql(
                 "ALTER TABLE tracked_devices ADD COLUMN forced_route_target VARCHAR(16) NOT NULL DEFAULT 'none'"
             )
+        await conn.exec_driver_sql("UPDATE tracked_devices SET total_bytes = 0 WHERE total_bytes IS NULL")
+        await conn.exec_driver_sql("UPDATE tracked_devices SET is_marked = 0 WHERE is_marked IS NULL")
+        await conn.exec_driver_sql("UPDATE tracked_devices SET forced_route_target = 'none' WHERE forced_route_target IS NULL OR forced_route_target = ''")
+        await conn.exec_driver_sql("UPDATE tracked_devices SET manual_alias = '' WHERE manual_alias IS NULL")
+        await conn.exec_driver_sql("UPDATE tracked_devices SET last_route_target = 'unknown' WHERE last_route_target IS NULL OR last_route_target = ''")
 
 
 def _backup_is_due(settings_row: GatewaySettings, *, now: datetime) -> bool:

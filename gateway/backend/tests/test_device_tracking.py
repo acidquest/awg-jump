@@ -1,4 +1,5 @@
 from app.services import device_tracking
+from types import SimpleNamespace
 
 
 def test_parse_conntrack_output_extracts_source_bytes_and_route() -> None:
@@ -60,3 +61,21 @@ def test_ip_in_selectors_matches_only_selected_networks() -> None:
     assert device_tracking._ip_in_selectors("192.168.1.10", ["192.168.1.0/24"]) is True
     assert device_tracking._ip_in_selectors("10.0.0.5", ["192.168.1.0/24"]) is False
     assert device_tracking._ip_in_selectors("127.0.0.1", ["127.0.0.0/8"]) is False
+
+
+def test_coerce_device_defaults_restores_legacy_null_fields() -> None:
+    device = SimpleNamespace(
+        total_bytes=None,
+        is_marked=None,
+        forced_route_target=None,
+        manual_alias=None,
+        last_route_target=None,
+    )
+
+    device_tracking._coerce_device_defaults(device)
+
+    assert device.total_bytes == 0
+    assert device.is_marked is False
+    assert device.forced_route_target == "none"
+    assert device.manual_alias == ""
+    assert device.last_route_target == "unknown"

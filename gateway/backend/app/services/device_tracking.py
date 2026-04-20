@@ -169,6 +169,20 @@ def _flow_delta(previous_bytes: int | None, current_bytes: int) -> int:
     return max(current_bytes, 0)
 
 
+def _coerce_device_defaults(device: TrackedDevice) -> TrackedDevice:
+    if device.total_bytes is None:
+        device.total_bytes = 0
+    if device.is_marked is None:
+        device.is_marked = False
+    if not device.forced_route_target:
+        device.forced_route_target = "none"
+    if device.manual_alias is None:
+        device.manual_alias = ""
+    if device.last_route_target is None:
+        device.last_route_target = "unknown"
+    return device
+
+
 def _ping(ip_address: str) -> bool:
     rc, _ = _run(["ping", "-c", "1", "-W", str(PING_TIMEOUT_SECONDS), ip_address])
     return rc == 0
@@ -249,6 +263,8 @@ async def _upsert_ip_history(session: AsyncSession, device: TrackedDevice, ip_ad
 async def _merge_devices(session: AsyncSession, target: TrackedDevice, source: TrackedDevice) -> TrackedDevice:
     if target.id == source.id:
         return target
+    _coerce_device_defaults(target)
+    _coerce_device_defaults(source)
     target.first_seen_at = min(_as_utc(target.first_seen_at) or _utcnow(), _as_utc(source.first_seen_at) or _utcnow())
     target.last_seen_at = max(_as_utc(target.last_seen_at) or _utcnow(), _as_utc(source.last_seen_at) or _utcnow())
     source_last_traffic_at = _as_utc(source.last_traffic_at)
@@ -312,6 +328,7 @@ async def _resolve_device(session: AsyncSession, *, ip_address: str, mac_address
         )
         session.add(device)
     else:
+        _coerce_device_defaults(device)
         if normalized_mac and device.identity_source != "mac":
             device.identity_key = f"mac:{normalized_mac}"
             device.identity_source = "mac"
@@ -379,6 +396,7 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
             mac_address=neighbor.mac_address if neighbor else None,
             now=now,
         )
+        _coerce_device_defaults(device)
         if device.forced_route_target != "none" and previous_ip != device.current_ip:
             device_route_overrides_dirty = True
         if not device.hostname:
@@ -418,6 +436,7 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
     devices = (await session.scalars(select(TrackedDevice).order_by(TrackedDevice.last_seen_at.desc()))).all()
     timeout_cutoff = now - timedelta(seconds=settings_row.device_activity_timeout_seconds)
     for device in devices:
+        _coerce_device_defaults(device)
         last_traffic_at = _as_utc(device.last_traffic_at)
         is_active = last_traffic_at is not None and last_traffic_at >= timeout_cutoff
         is_present = is_active
@@ -466,6 +485,7 @@ async def get_devices_payload(
 
     filtered: list[TrackedDevice] = []
     for device in devices:
+        _coerce_device_defaults(device)
         if scope == "marked" and not device.is_marked:
             continue
         if status == "active" and not device.is_active:
