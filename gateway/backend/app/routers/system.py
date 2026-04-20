@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import time
 
 from fastapi import APIRouter, Depends
@@ -8,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database import get_db
+from app.database import get_db, get_metrics_db
 from app.models import AdminUser, DnsDomainRule, EntryNode, GatewaySettings, RoutingPolicy
 from app.security import get_current_user
 from app.services.external_ip import serialize_external_ip_info
@@ -20,7 +21,7 @@ from app.services.runtime import (
     probe_node_latency_details,
     resolve_live_tunnel_status,
 )
-from app.services.traffic_sources import migrate_legacy_source_settings
+from app.services.runtime_state import get_node_runtime_state, get_tunnel_runtime_state, should_refresh_node_latency, update_node_runtime_state
 from app.services.system_metrics import get_metrics_history
 from app.services.traffic_metrics import get_traffic_usage_summary
 
@@ -36,26 +37,44 @@ async def health() -> dict:
 @router.get("/status")
 async def status(
     db: AsyncSession = Depends(get_db),
+    metrics_db: AsyncSession = Depends(get_metrics_db),
     user: AdminUser = Depends(get_current_user),
 ) -> dict:
     kernel_available, kernel_message = get_kernel_support_status()
     gateway_settings = await db.get(GatewaySettings, 1)
-    if migrate_legacy_source_settings(gateway_settings):
-        db.add(gateway_settings)
-        await db.flush()
     routing_policy = await db.get(RoutingPolicy, 1)
     prefix_summary = build_prefix_summary(routing_policy, gateway_settings)
     live_status, live_error = resolve_live_tunnel_status(gateway_settings)
     active_node = await db.get(EntryNode, gateway_settings.active_entry_node_id) if gateway_settings.active_entry_node_id else None
     probe: dict | None = None
-    latest_latency_ms: float | None = active_node.latest_latency_ms if active_node is not None else None
+    node_state = get_node_runtime_state(active_node.id if active_node is not None else None)
+    latest_latency_ms: float | None = node_state.latency_ms if active_node is not None else None
     if active_node is not None:
-        probe = probe_node_latency_details(active_node, prefer_tunnel=True)
-        latency_ms = probe["latency_ms"]
-        latest_latency_ms = latency_ms if isinstance(latency_ms, float) else None
+        if should_refresh_node_latency(active_node.id, ttl_seconds=20):
+            probe = probe_node_latency_details(active_node, prefer_tunnel=True)
+            latency_ms = probe["latency_ms"]
+            latest_latency_ms = latency_ms if isinstance(latency_ms, float) else None
+            update_node_runtime_state(
+                active_node.id,
+                latency_ms=latest_latency_ms,
+                latency_at=datetime.now(timezone.utc),
+                latency_target=probe["target"] if isinstance(probe["target"], str) else None,
+                latency_via_interface=probe["via_interface"] if isinstance(probe["via_interface"], str) else None,
+                latency_method=probe["method"] if isinstance(probe["method"], str) else None,
+                last_error=None if latest_latency_ms is not None else "Latency probe failed",
+            )
+            node_state = get_node_runtime_state(active_node.id)
+        probe = {
+            "target": node_state.latency_target,
+            "via_interface": node_state.latency_via_interface,
+            "method": node_state.latency_method,
+            "latency_ms": node_state.latency_ms,
+        }
+        latest_latency_ms = node_state.latency_ms
+    tunnel_state = get_tunnel_runtime_state()
     entry_node_count = await db.scalar(select(func.count()).select_from(EntryNode))
     dns_rule_count = await db.scalar(select(func.count()).select_from(DnsDomainRule))
-    traffic_summary = await get_traffic_usage_summary(db)
+    traffic_summary = await get_traffic_usage_summary(metrics_db)
     return {
         "runtime_available": is_runtime_available(),
         "runtime_pid": current_pid(),
@@ -69,8 +88,8 @@ async def status(
             "latest_latency_target": probe["target"] if isinstance(probe["target"], str) else None,
             "latest_latency_via_interface": probe["via_interface"] if isinstance(probe["via_interface"], str) else None,
             "latest_latency_method": probe["method"] if isinstance(probe["method"], str) else None,
-            "uptime_seconds": max(int(time.time()) - gateway_settings.active_node_connected_at_epoch, 0)
-            if gateway_settings.active_node_connected_at_epoch and live_status == "running"
+            "uptime_seconds": max(int(time.time()) - tunnel_state.connected_at_epoch, 0)
+            if tunnel_state.connected_at_epoch and live_status == "running"
             else 0,
         } if active_node else None,
         "entry_node_count": entry_node_count,
@@ -102,11 +121,11 @@ async def status(
 @router.get("/metrics")
 async def metrics(
     period: str = Query("24h", pattern="^(1h|24h)$"),
-    db: AsyncSession = Depends(get_db),
+    metrics_db: AsyncSession = Depends(get_metrics_db),
     user: AdminUser = Depends(get_current_user),
 ) -> dict:
     hours = 24 if period == "24h" else 1
-    latest, history = await get_metrics_history(db, hours=hours)
+    latest, history = await get_metrics_history(metrics_db, hours=hours)
     latest_payload = None
     if latest:
         latest_payload = {

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -157,22 +158,23 @@ async def _upsert_bucket(
     bucket_start: datetime,
     delta: dict[str, int],
 ) -> None:
-    with session.no_autoflush:
-        row = await session.get(model, bucket_start.replace(tzinfo=None))
-    if row is None:
-        row = model(
-            bucket_start=bucket_start,
-            sample_count=0,
-            **_traffic_bucket_payload("bytes", delta),
-        )
-        session.add(row)
-    else:
-        row.local_rx_bytes += delta["local_rx_bytes"]
-        row.local_tx_bytes += delta["local_tx_bytes"]
-        row.vpn_rx_bytes += delta["vpn_rx_bytes"]
-        row.vpn_tx_bytes += delta["vpn_tx_bytes"]
-    row.sample_count += 1
-    session.add(row)
+    payload = {
+        "bucket_start": bucket_start.replace(tzinfo=None),
+        "sample_count": 1,
+        **_traffic_bucket_payload("bytes", delta),
+    }
+    stmt = insert(model).values(**payload)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[model.bucket_start],
+        set_={
+            "sample_count": model.sample_count + 1,
+            "local_rx_bytes": model.local_rx_bytes + delta["local_rx_bytes"],
+            "local_tx_bytes": model.local_tx_bytes + delta["local_tx_bytes"],
+            "vpn_rx_bytes": model.vpn_rx_bytes + delta["vpn_rx_bytes"],
+            "vpn_tx_bytes": model.vpn_tx_bytes + delta["vpn_tx_bytes"],
+        },
+    )
+    await session.execute(stmt)
 
 
 def _current_usage_from_state(state: TrafficMetricState) -> TrafficUsageSnapshot:
@@ -187,8 +189,10 @@ def _current_usage_from_state(state: TrafficMetricState) -> TrafficUsageSnapshot
     )
 
 
-async def collect_traffic_metrics(session: AsyncSession) -> TrafficUsageSnapshot:
-    gateway_settings = await session.get(GatewaySettings, 1)
+async def collect_traffic_metrics(
+    session: AsyncSession,
+    gateway_settings: GatewaySettings | None = None,
+) -> TrafficUsageSnapshot:
     now = datetime.now(timezone.utc)
     raw_snapshot = read_interface_counter_snapshot(gateway_settings)
     state = await session.get(TrafficMetricState, 1)
@@ -221,8 +225,6 @@ async def collect_traffic_metrics(session: AsyncSession) -> TrafficUsageSnapshot
             )
         )
         await _prune_traffic_metrics(session, now)
-        await session.commit()
-        await session.refresh(state)
         return _current_usage_from_state(state)
 
     delta = {
@@ -261,8 +263,6 @@ async def collect_traffic_metrics(session: AsyncSession) -> TrafficUsageSnapshot
     await _upsert_bucket(session, TrafficMetricHour, _bucket_start(now, granularity="hour"), delta)
     await _upsert_bucket(session, TrafficMetricDay, _bucket_start(now, granularity="day"), delta)
     await _prune_traffic_metrics(session, now)
-    await session.commit()
-    await session.refresh(state)
     return _current_usage_from_state(state)
 
 

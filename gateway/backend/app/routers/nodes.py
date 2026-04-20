@@ -33,6 +33,14 @@ from app.services.runtime import (
     resolve_tunnel_probe_target,
     stop_tunnel,
 )
+from app.services.runtime_state import (
+    clear_node_runtime_state,
+    get_failover_runtime_state,
+    get_node_runtime_state,
+    get_tunnel_runtime_state,
+    should_refresh_node_latency,
+    update_node_runtime_state,
+)
 
 
 router = APIRouter(prefix="/api/nodes", tags=["entry-nodes"])
@@ -109,6 +117,7 @@ def _to_payload(
     latency_via_interface: str | None = None,
     latency_method: str | None = None,
 ) -> dict:
+    node_state = get_node_runtime_state(node.id)
     return {
         "id": node.id,
         "name": node.name,
@@ -125,12 +134,12 @@ def _to_payload(
         "allowed_ips": node.allowed_ips,
         "persistent_keepalive": node.persistent_keepalive,
         "obfuscation": node.obfuscation,
-        "latest_latency_ms": node.latest_latency_ms if latency_ms is None else latency_ms,
-        "latest_latency_at": node.latest_latency_at.isoformat() if node.latest_latency_at else None,
+        "latest_latency_ms": node_state.latency_ms if latency_ms is None else latency_ms,
+        "latest_latency_at": node_state.latency_at.isoformat() if node_state.latency_at else None,
         "latest_latency_target": latency_target,
         "latest_latency_via_interface": latency_via_interface,
         "latest_latency_method": latency_method,
-        "last_error": node.last_error,
+        "last_error": node_state.last_error,
         "udp_status": udp_status,
         "udp_detail": udp_detail,
         "is_active": node.is_active,
@@ -141,15 +150,29 @@ def _to_payload(
 
 def _refresh_latency_for_active_tunnel(node: EntryNode) -> None:
     if not node.is_active:
-        node.latest_latency_ms = None
-        node.last_error = None
+        update_node_runtime_state(
+            node.id,
+            latency_ms=None,
+            latency_at=None,
+            latency_target=None,
+            latency_via_interface=None,
+            latency_method=None,
+            last_error=None,
+        )
         return
     probe = probe_node_latency_details(node, prefer_tunnel=True)
     latency_ms = probe["latency_ms"]
-    node.latest_latency_ms = latency_ms if isinstance(latency_ms, float) else None
-    node.latest_latency_at = datetime.now(timezone.utc)
+    measured_at = datetime.now(timezone.utc)
     probe_target = resolve_tunnel_probe_target(node)
-    node.last_error = None if latency_ms is not None else ("Latency probe target is not configured" if not probe_target else "Latency probe failed")
+    update_node_runtime_state(
+        node.id,
+        latency_ms=latency_ms if isinstance(latency_ms, float) else None,
+        latency_at=measured_at,
+        latency_target=probe["target"] if isinstance(probe["target"], str) else None,
+        latency_via_interface=probe["via_interface"] if isinstance(probe["via_interface"], str) else None,
+        latency_method=probe["method"] if isinstance(probe["method"], str) else None,
+        last_error=None if latency_ms is not None else ("Latency probe target is not configured" if not probe_target else "Latency probe failed"),
+    )
 
 
 @router.get("")
@@ -161,15 +184,16 @@ async def list_nodes(
     payloads: list[dict] = []
     for node in nodes:
         if node.is_active:
-            probe = probe_node_latency_details(node, prefer_tunnel=True)
-            _refresh_latency_for_active_tunnel(node)
-            db.add(node)
+            if should_refresh_node_latency(node.id, ttl_seconds=20):
+                _refresh_latency_for_active_tunnel(node)
+            node_state = get_node_runtime_state(node.id)
             payloads.append(
                 _to_payload(
                     node,
-                    latency_target=probe["target"] if isinstance(probe["target"], str) else None,
-                    latency_via_interface=probe["via_interface"] if isinstance(probe["via_interface"], str) else None,
-                    latency_method=probe["method"] if isinstance(probe["method"], str) else None,
+                    latency_ms=node_state.latency_ms,
+                    latency_target=node_state.latency_target,
+                    latency_via_interface=node_state.latency_via_interface,
+                    latency_method=node_state.latency_method,
                 )
             )
             continue
@@ -184,9 +208,8 @@ async def list_nodes(
                 latency_target=probe["target"] if isinstance(probe["target"], str) else None,
                 latency_via_interface=probe["via_interface"] if isinstance(probe["via_interface"], str) else None,
                 latency_method=probe["method"] if isinstance(probe["method"], str) else None,
+                )
             )
-        )
-    await db.flush()
     return payloads
 
 
@@ -381,15 +404,15 @@ async def delete_node(
     settings_row = await db.get(GatewaySettings, 1)
     if settings_row.active_entry_node_id == node.id:
         settings_row.active_entry_node_id = None
-        settings_row.tunnel_status = "stopped"
-        settings_row.tunnel_last_error = None
-        settings_row.active_node_connected_at_epoch = None
-        settings_row.failover_unhealthy_since = None
+        failover_state = get_failover_runtime_state()
+        failover_state.unhealthy_since = None
+        failover_state.last_error = None
         db.add(settings_row)
         if settings_row.gateway_enabled:
-            await stop_tunnel(db, settings_row)
+            await stop_tunnel(settings_row)
     await db.delete(node)
     await db.flush()
+    clear_node_runtime_state(node.id)
     remove_runtime_config(node.id)
     await remove_node_from_order(db, node.id)
     return {"status": "deleted"}
@@ -401,10 +424,11 @@ async def get_failover_settings(
     user: AdminUser = Depends(get_current_user),
 ) -> dict:
     settings_row = await db.get(GatewaySettings, 1)
+    failover_state = get_failover_runtime_state()
     return {
         "enabled": settings_row.failover_enabled,
-        "last_error": settings_row.failover_last_error,
-        "last_event_at": settings_row.failover_last_event_at.isoformat() if settings_row.failover_last_event_at else None,
+        "last_error": failover_state.last_error,
+        "last_event_at": failover_state.last_event_at.isoformat() if failover_state.last_event_at else None,
     }
 
 
@@ -416,15 +440,16 @@ async def update_failover_settings(
 ) -> dict:
     settings_row = await db.get(GatewaySettings, 1)
     settings_row.failover_enabled = payload.enabled
+    failover_state = get_failover_runtime_state()
     if not payload.enabled:
-        settings_row.failover_unhealthy_since = None
-        settings_row.failover_last_error = None
+        failover_state.unhealthy_since = None
+        failover_state.last_error = None
     db.add(settings_row)
     await db.flush()
     return {
         "enabled": settings_row.failover_enabled,
-        "last_error": settings_row.failover_last_error,
-        "last_event_at": settings_row.failover_last_event_at.isoformat() if settings_row.failover_last_event_at else None,
+        "last_error": failover_state.last_error,
+        "last_event_at": failover_state.last_event_at.isoformat() if failover_state.last_event_at else None,
     }
 
 
@@ -484,31 +509,35 @@ async def activate_node(
 
     settings_row = await db.get(GatewaySettings, 1)
     live_status, live_error = resolve_live_tunnel_status(settings_row)
-    settings_row.tunnel_status = live_status
-    settings_row.tunnel_last_error = live_error
+    tunnel_state = get_tunnel_runtime_state()
+    tunnel_state.status = live_status
+    tunnel_state.last_error = live_error
     await assign_active_node(db, settings_row, node, record_event=True)
     if not settings_row.gateway_enabled:
         policy = await db.get(RoutingPolicy, 1)
-        await refresh_external_ip_info(db, settings_row, policy, force=True)
+        await refresh_external_ip_info(settings_row, policy, force=True)
         return _to_payload(node)
     if live_status == "running":
         result, probe = await start_tunnel_with_retries(db, node, settings_row)
         if result["status"] == "running":
             latency_ms = probe["latency_ms"]
-            node.latest_latency_ms = latency_ms if isinstance(latency_ms, float) else None
-            node.latest_latency_at = datetime.now(timezone.utc)
-            node.last_error = None if latency_ms is not None else "Tunnel probe failed after startup"
+            update_node_runtime_state(
+                node.id,
+                latency_ms=latency_ms if isinstance(latency_ms, float) else None,
+                latency_at=datetime.now(timezone.utc),
+                latency_target=probe["target"] if isinstance(probe["target"], str) else None,
+                latency_via_interface=probe["via_interface"] if isinstance(probe["via_interface"], str) else None,
+                latency_method=probe["method"] if isinstance(probe["method"], str) else None,
+                last_error=None if latency_ms is not None else "Tunnel probe failed after startup",
+            )
             policy = await db.get(RoutingPolicy, 1)
             try:
                 apply_routing_plan(settings_row, policy, node)
-                settings_row.tunnel_last_error = None
+                get_tunnel_runtime_state().last_error = None
             except RuntimeError as exc:
-                settings_row.tunnel_last_error = str(exc)
-            db.add(node)
-            db.add(settings_row)
-            await db.flush()
+                get_tunnel_runtime_state().last_error = str(exc)
     policy = await db.get(RoutingPolicy, 1)
-    await refresh_external_ip_info(db, settings_row, policy, force=True)
+    await refresh_external_ip_info(settings_row, policy, force=True)
     return _to_payload(node)
 
 
@@ -522,12 +551,11 @@ async def probe_node(
     if node is None:
         raise HTTPException(status_code=404, detail="Entry node not found")
     _refresh_latency_for_active_tunnel(node)
-    db.add(node)
-    await db.flush()
+    node_state = get_node_runtime_state(node.id)
     return {
         "node_id": node.id,
-        "latency_ms": node.latest_latency_ms,
-        "measured_at": node.latest_latency_at.isoformat() if node.latest_latency_at else None,
+        "latency_ms": node_state.latency_ms,
+        "measured_at": node_state.latency_at.isoformat() if node_state.latency_at else None,
     }
 
 
@@ -545,21 +573,24 @@ async def start_active_tunnel(
     result, probe = await start_tunnel_with_retries(db, node, settings_row)
     if result["status"] == "running":
         latency_ms = probe["latency_ms"]
-        node.latest_latency_ms = latency_ms if isinstance(latency_ms, float) else None
-        node.latest_latency_at = datetime.now(timezone.utc)
-        node.last_error = None if latency_ms is not None else "Tunnel probe failed after startup"
+        update_node_runtime_state(
+            node.id,
+            latency_ms=latency_ms if isinstance(latency_ms, float) else None,
+            latency_at=datetime.now(timezone.utc),
+            latency_target=probe["target"] if isinstance(probe["target"], str) else None,
+            latency_via_interface=probe["via_interface"] if isinstance(probe["via_interface"], str) else None,
+            latency_method=probe["method"] if isinstance(probe["method"], str) else None,
+            last_error=None if latency_ms is not None else "Tunnel probe failed after startup",
+        )
         policy = await db.get(RoutingPolicy, 1)
         try:
             apply_routing_plan(settings_row, policy, node)
         except RuntimeError as exc:
-            settings_row.tunnel_last_error = str(exc)
+            get_tunnel_runtime_state().last_error = str(exc)
             result["routing_error"] = str(exc)
-        db.add(node)
-        db.add(settings_row)
-        await db.flush()
-        result["latency_ms"] = node.latest_latency_ms
+        result["latency_ms"] = get_node_runtime_state(node.id).latency_ms
     policy = await db.get(RoutingPolicy, 1)
-    result["external_ip_info"] = await refresh_external_ip_info(db, settings_row, policy, force=True)
+    result["external_ip_info"] = await refresh_external_ip_info(settings_row, policy, force=True)
     return result
 
 
@@ -569,9 +600,9 @@ async def stop_active_tunnel(
     user: AdminUser = Depends(get_current_user),
 ) -> dict:
     settings_row = await db.get(GatewaySettings, 1)
-    result = await stop_tunnel(db, settings_row)
+    result = await stop_tunnel(settings_row)
     if not settings_row.gateway_enabled:
         apply_local_passthrough(settings_row)
     policy = await db.get(RoutingPolicy, 1)
-    result["external_ip_info"] = await refresh_external_ip_info(db, settings_row, policy, force=True)
+    result["external_ip_info"] = await refresh_external_ip_info(settings_row, policy, force=True)
     return result

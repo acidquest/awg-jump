@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
+from app.database import commit_with_lock, flush_with_lock, get_db
 from app.models import AdminUser, DnsDomainRule, DnsManualAddress, DnsUpstream, GatewaySettings, RoutingPolicy
 from app.security import get_current_user
 from app.services.dns import build_dnsmasq_preview
@@ -357,7 +357,7 @@ async def create_zone(
         bootstrap_address=_normalize_bootstrap_address(payload.bootstrap_address) if payload.protocol in {"dot", "doh"} else "",
     )
     db.add(item)
-    await db.flush()
+    await commit_with_lock(db)
 
     normalized_domains = _normalize_domains(payload.domains)
     existing_domains = (
@@ -393,7 +393,7 @@ async def update_zone(
     item.endpoint_url = payload.endpoint_url.strip() if payload.protocol == "doh" else ""
     item.bootstrap_address = _normalize_bootstrap_address(payload.bootstrap_address) if payload.protocol in {"dot", "doh"} else ""
     db.add(item)
-    await db.flush()
+    await commit_with_lock(db)
     await restart_dnsmasq(db)
     return {"status": "updated"}
 
@@ -412,7 +412,7 @@ async def delete_zone(
     for rule in rules:
         await db.delete(rule)
     await db.delete(item)
-    await db.flush()
+    await commit_with_lock(db)
     await restart_dnsmasq(db)
     return {"status": "deleted", "domains_removed": len(rules)}
 
@@ -431,7 +431,7 @@ async def create_domain(
         raise HTTPException(status_code=409, detail="Domain already exists")
     item = DnsDomainRule(domain=domain, zone=payload.zone, enabled=payload.enabled)
     db.add(item)
-    await db.flush()
+    await commit_with_lock(db)
     await restart_dnsmasq(db)
     return {"id": item.id}
 
@@ -449,7 +449,7 @@ async def create_manual_address(
         raise HTTPException(status_code=409, detail="Manual replace address already exists")
     item = DnsManualAddress(domain=domain, address=_normalize_ip_address(payload.address), enabled=payload.enabled)
     db.add(item)
-    await db.flush()
+    await commit_with_lock(db)
     await restart_dnsmasq(db)
     return {"id": item.id}
 
@@ -476,9 +476,10 @@ async def create_domains_bulk(
     for domain in normalized:
         item = DnsDomainRule(domain=domain, zone=payload.zone, enabled=payload.enabled)
         db.add(item)
-        await db.flush()
+        await flush_with_lock(db)
         created_ids.append(item.id)
 
+    await commit_with_lock(db)
     await restart_dnsmasq(db)
     return {"status": "added", "created": len(created_ids), "ids": created_ids}
 
@@ -494,7 +495,7 @@ async def toggle_domain(
         raise HTTPException(status_code=404, detail="DNS rule not found")
     item.enabled = not item.enabled
     db.add(item)
-    await db.flush()
+    await commit_with_lock(db)
     await restart_dnsmasq(db)
     return {"status": "updated", "enabled": item.enabled}
 
@@ -510,7 +511,7 @@ async def toggle_manual_address(
         raise HTTPException(status_code=404, detail="Manual replace address not found")
     item.enabled = not item.enabled
     db.add(item)
-    await db.flush()
+    await commit_with_lock(db)
     await restart_dnsmasq(db)
     return {"status": "updated", "enabled": item.enabled}
 
@@ -525,7 +526,7 @@ async def delete_domain(
     if item is None:
         raise HTTPException(status_code=404, detail="DNS rule not found")
     await db.delete(item)
-    await db.flush()
+    await commit_with_lock(db)
     await restart_dnsmasq(db)
     return {"status": "deleted"}
 
@@ -555,7 +556,7 @@ async def update_manual_address(
     if payload.enabled is not None:
         item.enabled = payload.enabled
     db.add(item)
-    await db.flush()
+    await commit_with_lock(db)
     await restart_dnsmasq(db)
     return {"status": "updated"}
 
@@ -570,6 +571,6 @@ async def delete_manual_address(
     if item is None:
         raise HTTPException(status_code=404, detail="Manual replace address not found")
     await db.delete(item)
-    await db.flush()
-    await restart_dnsmasq(db)
+    await commit_with_lock(db)
+    await restart_dnsmasq()
     return {"status": "deleted"}

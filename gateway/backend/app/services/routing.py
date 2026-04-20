@@ -11,6 +11,7 @@ from app.models import EntryNode, GatewaySettings, RoutingPolicy, TunnelStatus
 from app.services.external_ip import effective_fqdn_prefixes
 from app.services import ipset_manager, nftables_manager
 from app.services.geoip import load_cached_country
+from app.services.runtime_state import get_tunnel_runtime_state
 from app.services.traffic_sources import localhost_selector_enabled, non_localhost_selectors, source_selectors
 
 
@@ -845,14 +846,15 @@ def build_routing_plan(
     default_iface, default_gateway = _default_route()
     backend = firewall_backend(gateway_settings)
     set_label = firewall_set_label(gateway_settings)
+    tunnel_state = get_tunnel_runtime_state()
 
     if active_node is None:
         warnings.append("No active entry node selected")
     if not default_iface or not default_gateway:
         warnings.append("Default host route is missing")
-    if gateway_settings.tunnel_status != TunnelStatus.running.value:
+    if tunnel_state.status != TunnelStatus.running.value:
         warnings.append("Tunnel is not running")
-    if gateway_settings.tunnel_status == TunnelStatus.running.value and not _interface_exists(settings.tunnel_interface):
+    if tunnel_state.status == TunnelStatus.running.value and not _interface_exists(settings.tunnel_interface):
         warnings.append(f"Tunnel interface {settings.tunnel_interface} is missing")
     if policy.countries_enabled and not any(load_cached_country(country) for country in policy.geoip_countries):
         warnings.append("GeoIP cache is empty")
@@ -860,7 +862,7 @@ def build_routing_plan(
     safe_to_apply = (
         active_node is not None
         and default_iface is not None
-        and gateway_settings.tunnel_status == TunnelStatus.running.value
+        and tunnel_state.status == TunnelStatus.running.value
         and _interface_exists(settings.tunnel_interface)
     )
 
@@ -976,7 +978,7 @@ def apply_routing_plan(
         raise RuntimeError("No active entry node selected")
     if not plan["safe_to_apply"]:
         raise RuntimeError("Routing plan is not safe to apply")
-    if gateway_settings.tunnel_status != TunnelStatus.running.value:
+    if get_tunnel_runtime_state().status != TunnelStatus.running.value:
         raise RuntimeError("Tunnel is not running")
     if not _interface_exists(settings.tunnel_interface):
         raise RuntimeError(f"Tunnel interface {settings.tunnel_interface} is missing")

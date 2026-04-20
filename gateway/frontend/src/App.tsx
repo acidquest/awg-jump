@@ -157,6 +157,9 @@ type GatewaySettingsData = {
   experimental_nftables: boolean
   device_tracking_enabled: boolean
   device_activity_timeout_seconds: number
+  backup_enabled: boolean
+  backup_schedule_time: string
+  backup_retention_count: number
   failover_enabled: boolean
   kernel_available: boolean
   kernel_message: string | null
@@ -165,6 +168,7 @@ type GatewaySettingsData = {
   tunnel_last_error?: string | null
   external_ip_info: ExternalIpInfo
   api_settings: ApiSettings
+  reset_confirmation_text?: string
 }
 
 type ApiSettings = {
@@ -2639,11 +2643,13 @@ function GatewayDeleteZoneModal({
 function GatewayDeleteConfirmModal({
   title,
   message,
+  confirmLabel,
   onClose,
   onConfirm,
 }: {
   title: string
   message: string
+  confirmLabel?: string
   onClose: () => void
   onConfirm: () => Promise<void>
 }) {
@@ -2677,7 +2683,71 @@ function GatewayDeleteConfirmModal({
               }
             }}
           >
-            {saving ? <span className="spinner" /> : t('delete')}
+            {saving ? <span className="spinner" /> : (confirmLabel || t('delete'))}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function GatewayFactoryResetModal({
+  confirmationText,
+  value,
+  onChange,
+  onClose,
+  onConfirm,
+}: {
+  confirmationText: string
+  value: string
+  onChange: (value: string) => void
+  onClose: () => void
+  onConfirm: () => Promise<void>
+}) {
+  const { t } = useI18n()
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const canConfirm = value.trim() === confirmationText
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">{t('factoryResetTitle')}</div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={saving}>{t('close')}</button>
+        </div>
+        <div className="text-muted text-sm" style={{ marginBottom: 14 }}>{t('factoryResetDescription')}</div>
+        <div className="text-muted text-sm" style={{ marginBottom: 14 }}>{t('factoryResetPrompt', { text: confirmationText })}</div>
+        {error ? <div className="error-box">{error}</div> : null}
+        <div className="form-group">
+          <label className="form-label">{t('confirmation')}</label>
+          <input
+            className="form-input mono"
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            placeholder={confirmationText}
+            autoFocus
+          />
+        </div>
+        <div className="modal-actions">
+          <button className="btn btn-secondary" type="button" onClick={onClose} disabled={saving}>{t('cancel')}</button>
+          <button
+            className="btn btn-danger"
+            type="button"
+            disabled={saving || !canConfirm}
+            onClick={async () => {
+              setSaving(true)
+              setError('')
+              try {
+                await onConfirm()
+              } catch (err: any) {
+                setError(err?.response?.data?.detail || err.message || 'Request failed')
+                setSaving(false)
+              }
+            }}
+          >
+            {saving ? <span className="spinner" /> : t('factoryResetAction')}
           </button>
         </div>
       </div>
@@ -2815,26 +2885,51 @@ function BackupPage() {
   const { t } = useI18n()
   const { data, reload } = useLoader<any[]>('/backup/list', [])
   const [message, setMessage] = useState('')
+  const [restoringBackup, setRestoringBackup] = useState<any | null>(null)
+  const [deletingBackup, setDeletingBackup] = useState<any | null>(null)
 
-  async function downloadBackup() {
-    const response = await api.get('/backup/export', { responseType: 'blob' })
-    const url = URL.createObjectURL(response.data)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = 'awg-gateway-backup.zip'
-    link.click()
-    URL.revokeObjectURL(url)
-    setMessage(t('backupDownloaded'))
+  function backupKindLabel(kind: string) {
+    if (kind === 'manual') return t('backupKindManual')
+    if (kind === 'scheduled') return t('backupKindScheduled')
+    if (kind === 'restore') return t('backupKindRestore')
+    if (kind === 'pre_reset') return t('backupKindPreReset')
+    return kind
+  }
+
+  async function createBackup() {
+    const response = await api.post('/backup/create')
+    setMessage(t('backupCreated').replace('{filename}', response.data.filename))
     await reload()
   }
 
-  async function restoreBackup(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
-    if (!file) return
-    const form = new FormData()
-    form.append('file', file)
-    await api.post('/backup/restore', form)
+  async function downloadBackup(item: any) {
+    const response = await api.get('/backup/download', {
+      params: { filename: item.filename },
+      responseType: 'blob',
+    })
+    const blob = response.data instanceof Blob
+      ? response.data
+      : new Blob([response.data], { type: 'application/zip' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = item.filename
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    setMessage(t('backupDownloaded'))
+  }
+
+  async function restoreBackup(item: any) {
+    await api.post('/backup/restore-file', null, { params: { filename: item.filename } })
     setMessage(t('backupRestored'))
+    await reload()
+  }
+
+  async function deleteBackup(item: any) {
+    await api.delete('/backup/delete-file', { params: { filename: item.filename } })
+    setMessage(t('backupDeleted').replace('{filename}', item.filename))
     await reload()
   }
 
@@ -2848,11 +2943,7 @@ function BackupPage() {
       </div>
       {message ? <div className="info-box">{message}</div> : null}
       <div className="flex gap-2" style={{ marginBottom: 20 }}>
-        <button className="btn btn-primary" onClick={() => void downloadBackup()}>{t('exportBackup')}</button>
-        <label className="btn btn-secondary">
-          {t('restoreBackup')}
-          <input type="file" hidden onChange={restoreBackup} />
-        </label>
+        <button className="btn btn-primary" onClick={() => void createBackup()}>{t('manualBackup')}</button>
       </div>
       <div className="table-wrap">
         <table>
@@ -2860,24 +2951,61 @@ function BackupPage() {
             <tr>
               <th>{t('filename')}</th>
               <th>{t('type')}</th>
+              <th>{t('status')}</th>
               <th>{t('size')}</th>
               <th>{t('createdAt')}</th>
+              <th>{t('actions')}</th>
             </tr>
           </thead>
           <tbody>
             {data.length === 0 ? (
-              <tr><td colSpan={4} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>No backup records yet</td></tr>
+              <tr><td colSpan={6} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>No backup records yet</td></tr>
             ) : data.map((item) => (
               <tr key={item.id}>
                 <td>{item.filename}</td>
-                <td>{item.kind}</td>
+                <td>{backupKindLabel(item.kind)}</td>
+                <td>
+                  <span className={`badge ${item.exists ? 'badge-online' : 'badge-offline'}`}>
+                    {item.exists ? t('backupFilePresent') : t('backupFileMissing')}
+                  </span>
+                </td>
                 <td>{item.size_bytes} bytes</td>
                 <td>{new Date(item.created_at).toLocaleString()}</td>
+                <td>
+                  <div className="flex gap-2">
+                    <button className="btn btn-secondary btn-sm" disabled={!item.exists} onClick={() => void downloadBackup(item)}>{t('download')}</button>
+                    <button className="btn btn-danger btn-sm" disabled={!item.exists} onClick={() => setRestoringBackup(item)}>{t('restore')}</button>
+                    <button className="btn btn-danger btn-sm" onClick={() => setDeletingBackup(item)}>{t('delete')}</button>
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {restoringBackup ? (
+        <GatewayDeleteConfirmModal
+          title={t('restoreBackup')}
+          message={t('restoreBackupConfirm').replace('{filename}', restoringBackup.filename)}
+          confirmLabel={t('restore')}
+          onClose={() => setRestoringBackup(null)}
+          onConfirm={async () => {
+            await restoreBackup(restoringBackup)
+            setRestoringBackup(null)
+          }}
+        />
+      ) : null}
+      {deletingBackup ? (
+        <GatewayDeleteConfirmModal
+          title={t('deleteBackupTitle')}
+          message={t('deleteBackupConfirm').replace('{filename}', deletingBackup.filename)}
+          onClose={() => setDeletingBackup(null)}
+          onConfirm={async () => {
+            await deleteBackup(deletingBackup)
+            setDeletingBackup(null)
+          }}
+        />
+      ) : null}
     </>
   )
 }
@@ -3032,7 +3160,6 @@ function DevicesPage() {
                 {t('apiAccessTitle')}
               </button>
             </div>
-            <div className="text-muted text-sm">{device.hostname || device.identity_key}</div>
           </div>,
           <div key={`state-${device.id}`}>
             <span className={`badge ${device.presence_state === 'active' ? 'badge-online' : device.presence_state === 'present' ? 'badge-warning' : 'badge-offline'}`}>
@@ -3085,6 +3212,7 @@ function DevicesPage() {
 
 function SettingsPage() {
   const { locale, setLocale, t } = useI18n()
+  const navigate = useNavigate()
   const { data, reload, setData } = useLoader<GatewaySettingsData>('/settings', {
     ui_language: 'en',
     runtime_mode: 'auto',
@@ -3094,6 +3222,9 @@ function SettingsPage() {
     experimental_nftables: false,
     device_tracking_enabled: true,
     device_activity_timeout_seconds: 300,
+    backup_enabled: true,
+    backup_schedule_time: '03:00',
+    backup_retention_count: 14,
     failover_enabled: false,
     kernel_available: false,
     kernel_message: null,
@@ -3110,6 +3241,7 @@ function SettingsPage() {
       api_allowed_client_cidrs: [],
       device_api_default_scope: 'all',
     },
+    reset_confirmation_text: 'RESET',
   })
   const [sourceInput, setSourceInput] = useState('')
   const [apiAllowedIpInput, setApiAllowedIpInput] = useState('')
@@ -3118,6 +3250,8 @@ function SettingsPage() {
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [message, setMessage] = useState('')
+  const [factoryResetOpen, setFactoryResetOpen] = useState(false)
+  const [factoryResetConfirm, setFactoryResetConfirm] = useState('')
 
   useEffect(() => {
     setLocalExternalIpServiceUrl(data.external_ip_info.local.service_url || '')
@@ -3133,6 +3267,9 @@ function SettingsPage() {
       experimental_nftables: data.experimental_nftables,
       device_tracking_enabled: data.device_tracking_enabled,
       device_activity_timeout_seconds: data.device_activity_timeout_seconds,
+      backup_enabled: data.backup_enabled,
+      backup_schedule_time: data.backup_schedule_time,
+      backup_retention_count: data.backup_retention_count,
       external_ip_local_service_url: localExternalIpServiceUrl,
       external_ip_vpn_service_url: vpnExternalIpServiceUrl,
       ...overrides,
@@ -3299,6 +3436,20 @@ function SettingsPage() {
     }
   }
 
+  async function resetToDefaults() {
+    const expected = data.reset_confirmation_text || 'RESET'
+    try {
+      const response = await api.post('/settings/reset', { confirm_text: factoryResetConfirm })
+      localStorage.removeItem('gateway-token')
+      setFactoryResetOpen(false)
+      setFactoryResetConfirm('')
+      setMessage(t('factoryResetCompleted', { filename: response.data.backup_filename || 'pre-reset backup' }))
+      navigate('/login', { replace: true })
+    } catch (err: any) {
+      setMessage(err?.response?.data?.detail || err.message || 'Request failed')
+    }
+  }
+
   return (
     <>
       <div className="page-header">
@@ -3450,6 +3601,40 @@ function SettingsPage() {
               />
               <div className="text-muted text-sm" style={{ marginTop: 8 }}>{t('deviceActivityTimeoutDescription')}</div>
             </div>
+            <div className="form-group">
+              <label className="form-label">{t('backupAutomation')}</label>
+              <label className="toggle" title={t('backupAutomation')}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(data.backup_enabled)}
+                  onChange={(event) => setData({ ...data, backup_enabled: event.target.checked })}
+                />
+                <span className="toggle-slider" />
+              </label>
+              <div className="text-muted text-sm" style={{ marginTop: 8 }}>{t('backupAutomationDescription')}</div>
+            </div>
+            <div className="form-row form-row-2">
+              <div className="form-group">
+                <label className="form-label">{t('backupTime')}</label>
+                <input
+                  className="form-input mono"
+                  type="time"
+                  value={data.backup_schedule_time}
+                  onChange={(event) => setData({ ...data, backup_schedule_time: event.target.value || '03:00' })}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">{t('backupRetention')}</label>
+                <input
+                  className="form-input mono"
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={data.backup_retention_count}
+                  onChange={(event) => setData({ ...data, backup_retention_count: Number(event.target.value || 14) })}
+                />
+              </div>
+            </div>
             <button className="btn btn-primary" type="submit">{t('save')}</button>
           </form>
         </div>
@@ -3559,8 +3744,32 @@ function SettingsPage() {
             </select>
             <div className="text-muted text-sm" style={{ marginTop: 8 }}>{t('deviceApiDefaultScopeDescription')}</div>
           </div>
+
+          <div style={{ height: 1, background: 'var(--border)', margin: '22px 0' }} />
+
+          <div className="card-title" style={{ marginBottom: 14 }}>{t('factoryResetTitle')}</div>
+          <div className="text-muted text-sm" style={{ marginBottom: 14 }}>{t('factoryResetDescription')}</div>
+          <button
+            className="btn btn-danger"
+            type="button"
+            onClick={() => setFactoryResetOpen(true)}
+          >
+            {t('factoryResetAction')}
+          </button>
         </div>
       </div>
+      {factoryResetOpen ? (
+        <GatewayFactoryResetModal
+          confirmationText={data.reset_confirmation_text || 'RESET'}
+          value={factoryResetConfirm}
+          onChange={setFactoryResetConfirm}
+          onClose={() => {
+            setFactoryResetOpen(false)
+            setFactoryResetConfirm('')
+          }}
+          onConfirm={async () => { await resetToDefaults() }}
+        />
+      ) : null}
     </>
   )
 }

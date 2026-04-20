@@ -9,6 +9,13 @@ from app.models import AuditEvent, EntryNode, GatewaySettings, RoutingPolicy, Tu
 from app.services.external_ip import refresh_external_ip_info
 from app.services.routing import apply_routing_plan
 from app.services.runtime import probe_node_latency_details, resolve_tunnel_probe_target, start_tunnel
+from app.services.runtime_state import (
+    get_failover_runtime_state,
+    get_node_runtime_state,
+    get_tunnel_runtime_state,
+    set_failover_runtime_state,
+    update_node_runtime_state,
+)
 
 
 FAILOVER_DISCONNECT_GRACE = timedelta(minutes=3)
@@ -95,14 +102,33 @@ async def assign_active_node(
     node.is_active = True
     node.position = 0
     if reset_latency:
-        node.latest_latency_ms = None
-        node.latest_latency_at = None
-    node.last_error = None if resolve_tunnel_probe_target(node) else "Latency probe target is not configured"
+        update_node_runtime_state(
+            node.id,
+            latency_ms=None,
+            latency_at=None,
+            latency_target=None,
+            latency_via_interface=None,
+            latency_method=None,
+            last_error=None,
+        )
+    else:
+        get_node_runtime_state(node.id)
+    update_node_runtime_state(
+        node.id,
+        latency_ms=get_node_runtime_state(node.id).latency_ms,
+        latency_at=get_node_runtime_state(node.id).latency_at,
+        latency_target=get_node_runtime_state(node.id).latency_target,
+        latency_via_interface=get_node_runtime_state(node.id).latency_via_interface,
+        latency_method=get_node_runtime_state(node.id).latency_method,
+        last_error=None if resolve_tunnel_probe_target(node) else "Latency probe target is not configured",
+    )
     settings_row.active_entry_node_id = node.id
-    settings_row.failover_unhealthy_since = None
-    settings_row.failover_last_error = None
-    settings_row.failover_last_event_at = utcnow()
-    settings_row.active_node_connected_at_epoch = None
+    set_failover_runtime_state(
+        unhealthy_since=None,
+        last_error=None,
+        last_event_at=utcnow(),
+    )
+    get_tunnel_runtime_state().connected_at_epoch = None
 
     db.add(node)
     db.add(settings_row)
@@ -118,12 +144,11 @@ async def assign_active_node(
 
 
 async def mark_failover_healthy(db: AsyncSession, settings_row: GatewaySettings) -> None:
-    if settings_row.failover_unhealthy_since is None and settings_row.failover_last_error is None:
+    failover_state = get_failover_runtime_state()
+    if failover_state.unhealthy_since is None and failover_state.last_error is None:
         return
-    settings_row.failover_unhealthy_since = None
-    settings_row.failover_last_error = None
-    db.add(settings_row)
-    await db.flush()
+    failover_state.unhealthy_since = None
+    failover_state.last_error = None
 
 
 async def start_tunnel_with_retries(
@@ -147,22 +172,32 @@ async def start_tunnel_with_retries(
             continue
         probe = probe_node_latency_details(node, prefer_tunnel=True)
         latency_ms = probe["latency_ms"]
-        node.latest_latency_ms = latency_ms if isinstance(latency_ms, float) else None
-        node.latest_latency_at = utcnow()
+        update_node_runtime_state(
+            node.id,
+            latency_ms=latency_ms if isinstance(latency_ms, float) else None,
+            latency_at=utcnow(),
+            latency_target=probe["target"] if isinstance(probe["target"], str) else None,
+            latency_via_interface=probe["via_interface"] if isinstance(probe["via_interface"], str) else None,
+            latency_method=probe["method"] if isinstance(probe["method"], str) else None,
+            last_error=None,
+        )
         if latency_ms is not None:
-            node.last_error = None
-            db.add(node)
-            await db.flush()
             return result, probe
-        node.last_error = "Tunnel probe failed after startup"
-        settings_row.tunnel_status = TunnelStatus.error.value
-        settings_row.tunnel_last_error = (
+        update_node_runtime_state(
+            node.id,
+            latency_ms=None,
+            latency_at=utcnow(),
+            latency_target=probe["target"] if isinstance(probe["target"], str) else None,
+            latency_via_interface=probe["via_interface"] if isinstance(probe["via_interface"], str) else None,
+            latency_method=probe["method"] if isinstance(probe["method"], str) else None,
+            last_error="Tunnel probe failed after startup",
+        )
+        tunnel_state = get_tunnel_runtime_state()
+        tunnel_state.status = TunnelStatus.error.value
+        tunnel_state.last_error = (
             f"Tunnel connected but probe failed for {node.name} "
             f"(attempt {attempt}/{retries})"
         )
-        db.add(node)
-        db.add(settings_row)
-        await db.flush()
     return result, probe
 
 
@@ -198,20 +233,18 @@ async def failover_to_next_available(
         if policy is not None:
             try:
                 apply_routing_plan(settings_row, policy, candidate)
-                settings_row.tunnel_last_error = None
+                get_tunnel_runtime_state().last_error = None
             except RuntimeError as exc:
-                settings_row.tunnel_last_error = str(exc)
-        settings_row.failover_last_event_at = utcnow()
-        settings_row.failover_last_error = None
-        db.add(settings_row)
-        await db.flush()
-        await refresh_external_ip_info(db, settings_row, policy, force=True)
+                get_tunnel_runtime_state().last_error = str(exc)
+        failover_state = get_failover_runtime_state()
+        failover_state.last_event_at = utcnow()
+        failover_state.last_error = None
+        await refresh_external_ip_info(settings_row, policy, force=True)
         return candidate
 
-    settings_row.failover_last_event_at = utcnow()
-    settings_row.failover_last_error = reason
-    db.add(settings_row)
-    await db.flush()
+    failover_state = get_failover_runtime_state()
+    failover_state.last_event_at = utcnow()
+    failover_state.last_error = reason
     return None
 
 
@@ -225,30 +258,27 @@ async def evaluate_failover_health(db: AsyncSession, settings_row: GatewaySettin
         await mark_failover_healthy(db, settings_row)
         return
 
-    live_running = settings_row.tunnel_status == TunnelStatus.running.value
+    live_running = get_tunnel_runtime_state().status == TunnelStatus.running.value
     if live_running:
         probe = probe_node_latency_details(active_node, prefer_tunnel=True)
         latency_ms = probe["latency_ms"]
         unhealthy_reason = None if latency_ms is not None else "Active tunnel probe failed"
     else:
-        unhealthy_reason = settings_row.tunnel_last_error or "Active tunnel is not running"
+        unhealthy_reason = get_tunnel_runtime_state().last_error or "Active tunnel is not running"
 
     if unhealthy_reason is None:
         await mark_failover_healthy(db, settings_row)
         return
 
     now = utcnow()
-    if settings_row.failover_unhealthy_since is None:
-        settings_row.failover_unhealthy_since = now
-        settings_row.failover_last_error = unhealthy_reason
-        db.add(settings_row)
-        await db.flush()
+    failover_state = get_failover_runtime_state()
+    if failover_state.unhealthy_since is None:
+        failover_state.unhealthy_since = now
+        failover_state.last_error = unhealthy_reason
         return
 
-    settings_row.failover_last_error = unhealthy_reason
-    if now - settings_row.failover_unhealthy_since < FAILOVER_DISCONNECT_GRACE:
-        db.add(settings_row)
-        await db.flush()
+    failover_state.last_error = unhealthy_reason
+    if now - failover_state.unhealthy_since < FAILOVER_DISCONNECT_GRACE:
         return
 
     await failover_to_next_available(

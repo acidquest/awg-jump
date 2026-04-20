@@ -12,10 +12,9 @@ from datetime import datetime, timezone
 import ipaddress
 from pathlib import Path
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.config import settings
 from app.models import EntryNode, GatewaySettings, RuntimeMode, TunnelStatus
+from app.services.runtime_state import get_tunnel_runtime_state, set_tunnel_runtime_state
 
 
 _PROCESS: subprocess.Popen | None = None
@@ -26,11 +25,15 @@ _PING_TIME_RE = re.compile(r"time[=<]([0-9]+(?:\.[0-9]+)?)")
 
 
 def reset_active_node_uptime(gateway_settings: GatewaySettings) -> None:
-    gateway_settings.active_node_connected_at_epoch = None
+    _ = gateway_settings
+    state = get_tunnel_runtime_state()
+    state.connected_at_epoch = None
 
 
 def mark_active_node_connected(gateway_settings: GatewaySettings) -> None:
-    gateway_settings.active_node_connected_at_epoch = int(time.time())
+    _ = gateway_settings
+    state = get_tunnel_runtime_state()
+    state.connected_at_epoch = int(time.time())
 
 
 def _stream_process_logs(proc: subprocess.Popen, node_name: str) -> None:
@@ -170,22 +173,25 @@ def interface_exists(interface_name: str | None = None) -> bool:
 
 
 def resolve_live_tunnel_status(gateway_settings: GatewaySettings | None) -> tuple[str, str | None]:
+    state = get_tunnel_runtime_state()
     if gateway_settings is None:
-        return TunnelStatus.stopped.value, None
+        return state.status, state.last_error
 
     iface_up = interface_exists(settings.tunnel_interface)
     pid = current_pid()
     requested_mode = gateway_settings.runtime_mode or RuntimeMode.auto.value
 
     if iface_up:
-        return TunnelStatus.running.value, None
-    if requested_mode == RuntimeMode.userspace.value and gateway_settings.tunnel_status == TunnelStatus.running.value and pid is None:
+        state.status = TunnelStatus.running.value
+        state.last_error = None
+        return state.status, state.last_error
+    if requested_mode == RuntimeMode.userspace.value and state.status == TunnelStatus.running.value and pid is None:
         return TunnelStatus.stopped.value, "Userspace runtime process is not running"
-    if gateway_settings.tunnel_status == TunnelStatus.running.value:
+    if state.status == TunnelStatus.running.value:
         return TunnelStatus.stopped.value, f"Tunnel interface {settings.tunnel_interface} is missing"
-    if gateway_settings.tunnel_status == TunnelStatus.starting.value and not iface_up:
-        return TunnelStatus.error.value, gateway_settings.tunnel_last_error or "Tunnel startup did not create the interface"
-    return gateway_settings.tunnel_status, gateway_settings.tunnel_last_error
+    if state.status == TunnelStatus.starting.value and not iface_up:
+        return TunnelStatus.error.value, state.last_error or "Tunnel startup did not create the interface"
+    return state.status, state.last_error
 
 
 def _render_config(node: EntryNode) -> str:
@@ -227,27 +233,36 @@ def remove_runtime_config(node_id: int) -> None:
         return
 
 
-async def start_tunnel(db: AsyncSession, node: EntryNode, gateway_settings: GatewaySettings) -> dict:
+async def start_tunnel(*args) -> dict:
+    if len(args) == 2:
+        node, gateway_settings = args
+    elif len(args) == 3:
+        _db, node, gateway_settings = args
+    else:
+        raise TypeError("start_tunnel expects (node, gateway_settings) or (db, node, gateway_settings)")
     global _PROCESS
 
     config_path = write_runtime_config(node)
     logger.info("[awg-runtime] requested tunnel start for node=%s endpoint=%s config=%s", node.name, node.endpoint, config_path)
     reset_active_node_uptime(gateway_settings)
     if not is_runtime_available():
-        gateway_settings.tunnel_status = TunnelStatus.error.value
-        gateway_settings.tunnel_last_error = "amneziawg-go or awg binary is not available in the container"
+        set_tunnel_runtime_state(
+            status=TunnelStatus.error.value,
+            last_error="amneziawg-go or awg binary is not available in the container",
+            connected_at_epoch=None,
+            last_applied_at=datetime.now(timezone.utc),
+        )
         logger.error("[awg-runtime] runtime binaries missing: amneziawg-go=%s awg=%s", shutil.which(settings.amneziawg_go_binary), shutil.which(settings.awg_binary))
-        gateway_settings.tunnel_last_applied_at = datetime.now(timezone.utc)
-        db.add(gateway_settings)
-        await db.flush()
-        return {"status": gateway_settings.tunnel_status, "error": gateway_settings.tunnel_last_error}
+        state = get_tunnel_runtime_state()
+        return {"status": state.status, "error": state.last_error}
 
     stop_tunnel_process()
-    gateway_settings.tunnel_status = TunnelStatus.starting.value
-    gateway_settings.tunnel_last_error = None
-    gateway_settings.tunnel_last_applied_at = datetime.now(timezone.utc)
-    db.add(gateway_settings)
-    await db.flush()
+    set_tunnel_runtime_state(
+        status=TunnelStatus.starting.value,
+        last_error=None,
+        connected_at_epoch=None,
+        last_applied_at=datetime.now(timezone.utc),
+    )
 
     env = os.environ.copy()
     env["WG_QUICK_USERSPACE_IMPLEMENTATION"] = settings.amneziawg_go_binary
@@ -299,27 +314,40 @@ async def start_tunnel(db: AsyncSession, node: EntryNode, gateway_settings: Gate
             ["ip", "link", "set", "up", "dev", settings.tunnel_interface],
             context="ip-link-up",
         )
-        gateway_settings.tunnel_status = TunnelStatus.running.value
         mark_active_node_connected(gateway_settings)
+        set_tunnel_runtime_state(
+            status=TunnelStatus.running.value,
+            last_error=None,
+            connected_at_epoch=get_tunnel_runtime_state().connected_at_epoch,
+            last_applied_at=datetime.now(timezone.utc),
+        )
         logger.info("[awg-runtime] tunnel is running for node=%s pid=%s", node.name, current_pid())
     except subprocess.CalledProcessError as exc:
-        gateway_settings.tunnel_status = TunnelStatus.error.value
-        gateway_settings.tunnel_last_error = (exc.stderr or exc.stdout or str(exc)).strip()
-        logger.exception("[awg-runtime] tunnel start failed for node=%s: %s", node.name, gateway_settings.tunnel_last_error)
+        error_text = (exc.stderr or exc.stdout or str(exc)).strip()
+        set_tunnel_runtime_state(
+            status=TunnelStatus.error.value,
+            last_error=error_text,
+            connected_at_epoch=None,
+            last_applied_at=datetime.now(timezone.utc),
+        )
+        logger.exception("[awg-runtime] tunnel start failed for node=%s: %s", node.name, error_text)
         stop_tunnel_process()
     except RuntimeError as exc:
-        gateway_settings.tunnel_status = TunnelStatus.error.value
-        gateway_settings.tunnel_last_error = str(exc)
-        logger.exception("[awg-runtime] tunnel start failed for node=%s: %s", node.name, gateway_settings.tunnel_last_error)
+        error_text = str(exc)
+        set_tunnel_runtime_state(
+            status=TunnelStatus.error.value,
+            last_error=error_text,
+            connected_at_epoch=None,
+            last_applied_at=datetime.now(timezone.utc),
+        )
+        logger.exception("[awg-runtime] tunnel start failed for node=%s: %s", node.name, error_text)
         stop_tunnel_process()
-    gateway_settings.tunnel_last_applied_at = datetime.now(timezone.utc)
-    db.add(gateway_settings)
-    await db.flush()
+    state = get_tunnel_runtime_state()
     return {
-        "status": gateway_settings.tunnel_status,
+        "status": state.status,
         "pid": current_pid(),
         "config_path": config_path,
-        "error": gateway_settings.tunnel_last_error,
+        "error": state.last_error,
     }
 
 
@@ -341,15 +369,22 @@ def stop_tunnel_process() -> None:
     _ensure_interface_absent(settings.tunnel_interface)
 
 
-async def stop_tunnel(db: AsyncSession, gateway_settings: GatewaySettings) -> dict:
+async def stop_tunnel(*args) -> dict:
+    if len(args) == 1:
+        (gateway_settings,) = args
+    elif len(args) == 2:
+        _db, gateway_settings = args
+    else:
+        raise TypeError("stop_tunnel expects (gateway_settings) or (db, gateway_settings)")
     stop_tunnel_process()
-    gateway_settings.tunnel_status = TunnelStatus.stopped.value
-    gateway_settings.tunnel_last_error = None
     reset_active_node_uptime(gateway_settings)
-    gateway_settings.tunnel_last_applied_at = datetime.now(timezone.utc)
-    db.add(gateway_settings)
-    await db.flush()
-    return {"status": gateway_settings.tunnel_status}
+    set_tunnel_runtime_state(
+        status=TunnelStatus.stopped.value,
+        last_error=None,
+        connected_at_epoch=None,
+        last_applied_at=datetime.now(timezone.utc),
+    )
+    return {"status": get_tunnel_runtime_state().status}
 
 
 def probe_latency(node: EntryNode, *, target: str | None = None, interface_name: str | None = None) -> float | None:

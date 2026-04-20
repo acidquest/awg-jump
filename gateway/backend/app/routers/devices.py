@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
+from app.database import get_metrics_db
 from app.models import AdminUser, TrackedDevice
 from app.security import get_current_user
 from app.services.device_tracking import get_devices_payload
@@ -23,7 +23,7 @@ async def list_devices(
     scope: str = Query("all", pattern="^(all|marked)$"),
     status: str = Query("all", pattern="^(all|active|present|inactive)$"),
     search: str = Query("", max_length=255),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_metrics_db),
     user: AdminUser = Depends(get_current_user),
 ) -> dict:
     return await get_devices_payload(
@@ -39,7 +39,7 @@ async def list_devices(
 async def update_device(
     device_id: int,
     payload: DeviceUpdatePayload,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_metrics_db),
     user: AdminUser = Depends(get_current_user),
 ) -> dict:
     device = await db.get(TrackedDevice, device_id)

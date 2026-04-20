@@ -6,6 +6,7 @@ import pytest
 
 from app.models import AuditEvent, EntryNode, GatewaySettings, RoutingPolicy, TunnelStatus
 from app.services import failover
+from app.services.runtime_state import get_node_runtime_state, set_failover_runtime_state, set_tunnel_runtime_state
 
 
 def _make_node(node_id: int, name: str, position: int, *, is_active: bool = False) -> EntryNode:
@@ -123,8 +124,8 @@ async def test_start_tunnel_with_retries_succeeds_on_third_probe(monkeypatch) ->
 
     async def fake_start_tunnel(_db, _node_obj, gateway_settings):
         calls["start"] += 1
-        gateway_settings.tunnel_status = TunnelStatus.running.value
-        gateway_settings.tunnel_last_error = None
+        _ = gateway_settings
+        set_tunnel_runtime_state(status=TunnelStatus.running.value, last_error=None)
         return {"status": TunnelStatus.running.value}
 
     def fake_probe(_node: EntryNode, *, prefer_tunnel: bool = False):
@@ -141,7 +142,7 @@ async def test_start_tunnel_with_retries_succeeds_on_third_probe(monkeypatch) ->
     assert result["status"] == TunnelStatus.running.value
     assert probe["latency_ms"] == 11.5
     assert calls == {"start": 3, "probe": 3}
-    assert node.latest_latency_ms == 11.5
+    assert get_node_runtime_state(node.id).latency_ms == 11.5
 
 
 @pytest.mark.asyncio
@@ -153,8 +154,12 @@ async def test_evaluate_failover_health_switches_after_grace_period(monkeypatch)
         gateway_enabled=True,
         failover_enabled=True,
         active_entry_node_id=node_a.id,
-        tunnel_status=TunnelStatus.running.value,
-        failover_unhealthy_since=failover.utcnow() - failover.FAILOVER_DISCONNECT_GRACE - timedelta(seconds=1),
+    )
+    set_tunnel_runtime_state(status=TunnelStatus.running.value, last_error=None)
+    set_failover_runtime_state(
+        unhealthy_since=failover.utcnow() - failover.FAILOVER_DISCONNECT_GRACE - timedelta(seconds=1),
+        last_event_at=None,
+        last_error=None,
     )
     db = FakeSession(nodes=[node_a, node_b], settings=settings_row)
 

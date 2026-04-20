@@ -2,8 +2,9 @@ import subprocess
 
 import pytest
 
-from app.models import EntryNode, GatewaySettings, RuntimeMode, TunnelStatus
+from app.models import EntryNode, GatewaySettings, RuntimeMode
 from app.services.runtime import _setconf_with_retry, probe_node_latency_details, probe_udp_endpoint, resolve_tunnel_probe_target, settings, start_tunnel, stop_tunnel
+from app.services.runtime_state import get_tunnel_runtime_state, set_tunnel_runtime_state
 
 
 def _make_node(**overrides) -> EntryNode:
@@ -123,7 +124,7 @@ async def test_start_tunnel_sets_configured_mtu(monkeypatch) -> None:
 
     monkeypatch.setattr("app.services.runtime._run_logged", fake_run_logged)
 
-    gateway_settings = GatewaySettings(runtime_mode=RuntimeMode.auto.value, tunnel_status=TunnelStatus.stopped.value)
+    gateway_settings = GatewaySettings(runtime_mode=RuntimeMode.auto.value)
 
     await start_tunnel(FakeDb(), _make_node(), gateway_settings)
 
@@ -148,15 +149,12 @@ async def test_start_tunnel_sets_active_node_uptime_epoch(monkeypatch) -> None:
     monkeypatch.setattr("app.services.runtime._run_logged", lambda _args, *, context: None)
     monkeypatch.setattr("app.services.runtime.time.time", lambda: 1_700_000_123)
 
-    gateway_settings = GatewaySettings(
-        runtime_mode=RuntimeMode.auto.value,
-        tunnel_status=TunnelStatus.stopped.value,
-        active_node_connected_at_epoch=12,
-    )
+    gateway_settings = GatewaySettings(runtime_mode=RuntimeMode.auto.value)
+    set_tunnel_runtime_state(connected_at_epoch=12)
 
     await start_tunnel(FakeDb(), _make_node(), gateway_settings)
 
-    assert gateway_settings.active_node_connected_at_epoch == 1_700_000_123
+    assert get_tunnel_runtime_state().connected_at_epoch == 1_700_000_123
 
 
 @pytest.mark.asyncio
@@ -170,14 +168,12 @@ async def test_stop_tunnel_resets_active_node_uptime_epoch(monkeypatch) -> None:
 
     monkeypatch.setattr("app.services.runtime.stop_tunnel_process", lambda: None)
 
-    gateway_settings = GatewaySettings(
-        tunnel_status=TunnelStatus.running.value,
-        active_node_connected_at_epoch=1_700_000_123,
-    )
+    gateway_settings = GatewaySettings()
+    set_tunnel_runtime_state(connected_at_epoch=1_700_000_123)
 
     await stop_tunnel(FakeDb(), gateway_settings)
 
-    assert gateway_settings.active_node_connected_at_epoch is None
+    assert get_tunnel_runtime_state().connected_at_epoch is None
 
 
 def test_setconf_with_retry_recovers_from_transient_userspace_error(monkeypatch) -> None:

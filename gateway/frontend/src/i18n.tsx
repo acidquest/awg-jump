@@ -9,7 +9,7 @@ type LocaleCode = keyof typeof dictionaries
 type I18nContextValue = {
   locale: LocaleCode
   setLocale: (locale: LocaleCode) => void
-  t: (key: keyof typeof en) => string
+  t: (key: keyof typeof en, vars?: Record<string, string>) => string
 }
 
 const I18nContext = createContext<I18nContextValue | null>(null)
@@ -27,7 +27,14 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
         localStorage.setItem('gateway-locale', nextLocale)
         setLocaleState(nextLocale)
       },
-      t: (key) => dictionaries[locale][key] ?? dictionaries.en[key],
+      t: (key, vars) => {
+        const template = dictionaries[locale][key] ?? dictionaries.en[key]
+        if (!vars) return template
+        return Object.entries(vars).reduce(
+          (result, [name, value]) => result.split(`{${name}}`).join(value),
+          template,
+        )
+      },
     }),
     [locale],
   )

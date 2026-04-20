@@ -43,6 +43,9 @@ async def ensure_bootstrap_state(db: AsyncSession) -> None:
                 device_tracking_enabled=True,
                 device_activity_timeout_seconds=300,
                 device_api_default_scope="all",
+                backup_enabled=True,
+                backup_schedule_time="03:00",
+                backup_retention_count=14,
                 external_ip_local_service_url=local_service_url,
                 external_ip_vpn_service_url=vpn_service_url,
             )
@@ -78,4 +81,4 @@ async def ensure_bootstrap_state(db: AsyncSession) -> None:
             )
         )
 
-    await db.commit()
+    return None

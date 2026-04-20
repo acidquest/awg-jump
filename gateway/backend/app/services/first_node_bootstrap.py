@@ -12,7 +12,7 @@ from pathlib import Path
 
 import asyncssh
 
-from app.database import AsyncSessionLocal
+from app.database import AsyncSessionLocal, commit_with_lock, prepare_session
 from app.models import FirstNodeBootstrapLog, FirstNodeBootstrapStatus
 
 
@@ -200,23 +200,25 @@ fi
 
 async def _append_log(log_id: int, line: str) -> None:
     async with AsyncSessionLocal() as session:
+        prepare_session(session)
         log = await session.get(FirstNodeBootstrapLog, log_id)
         if log is None:
             return
         log.log_output = (log.log_output or "") + line
         session.add(log)
-        await session.commit()
+        await commit_with_lock(session)
 
 
 async def _finish_log(log_id: int, status: FirstNodeBootstrapStatus) -> None:
     async with AsyncSessionLocal() as session:
+        prepare_session(session)
         log = await session.get(FirstNodeBootstrapLog, log_id)
         if log is None:
             return
         log.status = status.value
         log.finished_at = datetime.now(timezone.utc)
         session.add(log)
-        await session.commit()
+        await commit_with_lock(session)
 
 
 async def bootstrap_first_node(

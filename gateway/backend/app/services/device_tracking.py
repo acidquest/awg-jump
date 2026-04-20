@@ -182,6 +182,19 @@ async def _load_conntrack_observations() -> list[FlowObservation]:
     return _parse_conntrack_output(out, local_mark=settings.fwmark_local, vpn_mark=settings.fwmark_vpn)
 
 
+def _dedupe_flow_observations(observations: list[FlowObservation]) -> list[FlowObservation]:
+    by_flow_key: dict[str, FlowObservation] = {}
+    for item in observations:
+        existing = by_flow_key.get(item.flow_key)
+        if existing is None:
+            by_flow_key[item.flow_key] = item
+            continue
+        existing.bytes_total = max(existing.bytes_total, item.bytes_total)
+        if existing.route_target == "unknown" and item.route_target != "unknown":
+            existing.route_target = item.route_target
+    return list(by_flow_key.values())
+
+
 async def _load_device_by_ip(session: AsyncSession, ip_address: str) -> TrackedDevice | None:
     return await session.scalar(
         select(TrackedDevice).where(
@@ -208,7 +221,7 @@ async def _upsert_ip_history(session: AsyncSession, device: TrackedDevice, ip_ad
     if not found:
         session.add(
             TrackedDeviceIp(
-                device_id=device.id,
+                device=device,
                 ip_address=ip_address,
                 is_current=True,
                 first_seen_at=now,
@@ -280,7 +293,6 @@ async def _resolve_device(session: AsyncSession, *, ip_address: str, mac_address
             last_seen_at=now,
         )
         session.add(device)
-        await session.flush()
     else:
         if normalized_mac and device.identity_source != "mac":
             device.identity_key = f"mac:{normalized_mac}"
@@ -294,15 +306,17 @@ async def _resolve_device(session: AsyncSession, *, ip_address: str, mac_address
     return device
 
 
-async def collect_device_inventory(session: AsyncSession) -> None:
-    settings_row = await session.get(GatewaySettings, 1)
+async def collect_device_inventory(session: AsyncSession, settings_row: GatewaySettings | None) -> None:
     if settings_row is None or not settings_row.device_tracking_enabled:
         return
 
     now = _utcnow()
     selectors = source_selectors(settings_row)
     neighbors = await _load_neighbors()
-    observations = [item for item in await _load_conntrack_observations() if _ip_in_selectors(item.source_ip, selectors)]
+    observations = _dedupe_flow_observations(
+        [item for item in await _load_conntrack_observations() if _ip_in_selectors(item.source_ip, selectors)]
+    )
+    pending_flow_states: dict[str, TrackedDeviceFlowState] = {}
 
     for item in observations:
         neighbor = neighbors.get(item.source_ip)
@@ -321,14 +335,15 @@ async def collect_device_inventory(session: AsyncSession) -> None:
         if item.route_target != "unknown":
             device.last_route_target = item.route_target
         session.add(device)
-        await session.flush()
 
-        flow_state = await session.get(TrackedDeviceFlowState, item.flow_key)
+        flow_state = pending_flow_states.get(item.flow_key)
+        if flow_state is None:
+            flow_state = await session.get(TrackedDeviceFlowState, item.flow_key)
         delta = item.bytes_total
         if flow_state is None:
             flow_state = TrackedDeviceFlowState(
                 flow_key=item.flow_key,
-                device_id=device.id,
+                device=device,
                 source_ip=item.source_ip,
                 route_target=item.route_target,
                 last_bytes=item.bytes_total,
@@ -342,6 +357,7 @@ async def collect_device_inventory(session: AsyncSession) -> None:
             flow_state.route_target = item.route_target
             flow_state.last_bytes = item.bytes_total
             flow_state.last_seen_at = now
+        pending_flow_states[item.flow_key] = flow_state
         device.total_bytes += max(delta, 0)
         session.add(flow_state)
         session.add(device)

@@ -21,6 +21,7 @@ class Settings(BaseSettings):
 
     data_dir: str = "/data"
     db_path: str = "/data/gateway.db"
+    metrics_db_path: str = "/data/gateway-metrics.db"
     backup_dir: str = "/data/backups"
     geoip_cache_dir: str = "/data/geoip"
     wg_config_dir: str = "/data/wg"

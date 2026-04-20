@@ -6,10 +6,9 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.models import GatewaySettings, RoutingPolicy
 from app.services.runtime import resolve_live_tunnel_status
+from app.services.runtime_state import gateway_runtime_state
 
 
 logger = logging.getLogger(__name__)
@@ -64,31 +63,24 @@ def serialize_external_ip_info(
     policy: RoutingPolicy | None = None,
 ) -> dict:
     forced_domains = external_ip_route_hosts(gateway_settings, policy)
+    state = gateway_runtime_state()
     return {
         "refresh_interval_seconds": EXTERNAL_IP_REFRESH_INTERVAL_SECONDS,
         "forced_domains": forced_domains,
         "local": {
             "service_url": getattr(gateway_settings, "external_ip_local_service_url", ""),
             "service_host": extract_service_host(getattr(gateway_settings, "external_ip_local_service_url", "")),
-            "value": getattr(gateway_settings, "external_ip_local_value", None),
-            "error": getattr(gateway_settings, "external_ip_local_error", None),
-            "checked_at": (
-                gateway_settings.external_ip_local_checked_at.isoformat()
-                if gateway_settings and gateway_settings.external_ip_local_checked_at
-                else None
-            ),
+            "value": state.external_ip_local.value,
+            "error": state.external_ip_local.error,
+            "checked_at": state.external_ip_local.checked_at.isoformat() if state.external_ip_local.checked_at else None,
             "route_target": "local",
         },
         "vpn": {
             "service_url": getattr(gateway_settings, "external_ip_vpn_service_url", ""),
             "service_host": extract_service_host(getattr(gateway_settings, "external_ip_vpn_service_url", "")),
-            "value": getattr(gateway_settings, "external_ip_vpn_value", None),
-            "error": getattr(gateway_settings, "external_ip_vpn_error", None),
-            "checked_at": (
-                gateway_settings.external_ip_vpn_checked_at.isoformat()
-                if gateway_settings and gateway_settings.external_ip_vpn_checked_at
-                else None
-            ),
+            "value": state.external_ip_vpn.value,
+            "error": state.external_ip_vpn.error,
+            "checked_at": state.external_ip_vpn.checked_at.isoformat() if state.external_ip_vpn.checked_at else None,
             "route_target": "vpn",
         },
     }
@@ -97,11 +89,12 @@ def serialize_external_ip_info(
 def refresh_due(gateway_settings: GatewaySettings | None, *, force: bool = False) -> bool:
     if force or gateway_settings is None:
         return True
+    state = gateway_runtime_state()
     timestamps = [
         ts
         for ts in [
-            gateway_settings.external_ip_local_checked_at,
-            gateway_settings.external_ip_vpn_checked_at,
+            state.external_ip_local.checked_at,
+            state.external_ip_vpn.checked_at,
         ]
         if ts is not None
     ]
@@ -160,34 +153,42 @@ def _store_probe_result(
     value: str | None = None,
     error: str | None = None,
 ) -> None:
+    _ = gateway_settings
     checked_at = datetime.now(timezone.utc)
+    state = gateway_runtime_state()
     if target == "local":
-        gateway_settings.external_ip_local_value = value
-        gateway_settings.external_ip_local_error = error
-        gateway_settings.external_ip_local_checked_at = checked_at
+        state.external_ip_local.value = value
+        state.external_ip_local.error = error
+        state.external_ip_local.checked_at = checked_at
         return
-    gateway_settings.external_ip_vpn_value = value
-    gateway_settings.external_ip_vpn_error = error
-    gateway_settings.external_ip_vpn_checked_at = checked_at
+    state.external_ip_vpn.value = value
+    state.external_ip_vpn.error = error
+    state.external_ip_vpn.checked_at = checked_at
 
 
 async def refresh_external_ip_info(
-    db: AsyncSession,
+    db_or_settings,
     gateway_settings: GatewaySettings | None = None,
     policy: RoutingPolicy | None = None,
     *,
     force: bool = False,
 ) -> dict:
-    settings_row = gateway_settings or await db.get(GatewaySettings, 1)
+    if isinstance(db_or_settings, GatewaySettings) or db_or_settings is None:
+        settings_row = db_or_settings
+        routing_policy = gateway_settings if isinstance(gateway_settings, RoutingPolicy) else policy
+    else:
+        db = db_or_settings
+        settings_row = gateway_settings or await db.get(GatewaySettings, 1)
+        routing_policy = policy or await db.get(RoutingPolicy, 1)
+
+    if gateway_settings is None:
+        gateway_settings = settings_row
     if settings_row is None:
-        return serialize_external_ip_info(None, policy)
-    routing_policy = policy or await db.get(RoutingPolicy, 1)
+        return serialize_external_ip_info(None, routing_policy)
     if not refresh_due(settings_row, force=force):
         return serialize_external_ip_info(settings_row, routing_policy)
 
-    live_status, live_error = resolve_live_tunnel_status(settings_row)
-    settings_row.tunnel_status = live_status
-    settings_row.tunnel_last_error = live_error
+    live_status, _live_error = resolve_live_tunnel_status(settings_row)
 
     local_url = normalize_service_url(settings_row.external_ip_local_service_url)
     vpn_url = normalize_service_url(settings_row.external_ip_vpn_service_url)
@@ -209,6 +210,4 @@ async def refresh_external_ip_info(
     else:
         _store_probe_result(settings_row, target="vpn", value=None, error="Tunnel is not running")
 
-    db.add(settings_row)
-    await db.flush()
     return serialize_external_ip_info(settings_row, routing_policy)

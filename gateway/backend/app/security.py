@@ -60,6 +60,10 @@ def remove_session(token: str) -> None:
     _sessions.pop(token, None)
 
 
+def clear_sessions() -> None:
+    _sessions.clear()
+
+
 def _get_session(token: str) -> dict[str, str | datetime] | None:
     session = _sessions.get(token)
     if session is None:

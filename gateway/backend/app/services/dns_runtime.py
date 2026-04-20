@@ -11,6 +11,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import AsyncSessionLocal
 from app.config import settings
 from app.models import DnsDomainRule, DnsManualAddress, DnsUpstream, GatewaySettings, RoutingPolicy
 from app.services.dns import build_dnsmasq_config
@@ -76,7 +77,7 @@ async def render_runtime_config(db: AsyncSession) -> str:
     )
 
 
-async def restart_dnsmasq(db: AsyncSession) -> dict:
+async def _restart_dnsmasq_with_session(db: AsyncSession) -> dict:
     global _DNS_PROCESS, _DNS_LAST_ERROR
     stop_dnsmasq()
     upstreams = (await db.execute(select(DnsUpstream).order_by(DnsUpstream.zone))).scalars().all()
@@ -116,6 +117,13 @@ async def restart_dnsmasq(db: AsyncSession) -> dict:
     _DNS_LAST_ERROR = None
     logger.info("[gateway-dns] dnsmasq started pid=%s config=%s", proc.pid, config_path())
     return status()
+
+
+async def restart_dnsmasq(db: AsyncSession | None = None) -> dict:
+    if db is not None:
+        return await _restart_dnsmasq_with_session(db)
+    async with AsyncSessionLocal() as session:
+        return await _restart_dnsmasq_with_session(session)
 
 
 def _read_pidfile() -> int | None:

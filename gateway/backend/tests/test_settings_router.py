@@ -149,3 +149,44 @@ async def test_update_api_settings_normalizes_allowed_client_cidrs() -> None:
 
     assert result["api_settings"]["api_allowed_client_cidrs"] == ["203.0.113.10/32", "192.168.0.0/24"]
     assert result["api_settings"]["device_api_default_scope"] == "marked"
+
+
+@pytest.mark.asyncio
+async def test_reset_settings_returns_http_error_for_invalid_confirmation(monkeypatch) -> None:
+    async def fake_factory_reset(_confirm_text: str) -> dict:
+        raise ValueError("Confirmation text must be exactly RESET")
+
+    monkeypatch.setattr(settings_router, "factory_reset", fake_factory_reset)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await settings_router.reset_settings(
+            settings_router.FactoryResetRequest(confirm_text="WRONG"),
+            user=None,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Confirmation text must be exactly RESET"
+
+
+@pytest.mark.asyncio
+async def test_reset_settings_returns_service_result(monkeypatch) -> None:
+    async def fake_factory_reset(confirm_text: str) -> dict:
+        assert confirm_text == "RESET"
+        return {
+            "status": "reset",
+            "backup_filename": "awg-gateway-pre-reset.zip",
+            "requires_relogin": True,
+        }
+
+    monkeypatch.setattr(settings_router, "factory_reset", fake_factory_reset)
+
+    result = await settings_router.reset_settings(
+        settings_router.FactoryResetRequest(confirm_text="RESET"),
+        user=None,
+    )
+
+    assert result == {
+        "status": "reset",
+        "backup_filename": "awg-gateway-pre-reset.zip",
+        "requires_relogin": True,
+    }

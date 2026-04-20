@@ -4,14 +4,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
+from app.database import commit_with_lock, get_db
 from app.models import AdminUser, EntryNode, GatewaySettings, RoutingPolicy, RuntimeMode, TrafficSourceMode
 from app.security import generate_api_access_key, get_current_user
 from app.services.dns_runtime import restart_dnsmasq
+from app.services.backup import normalize_backup_schedule_time
 from app.services.external_ip import refresh_external_ip_info, serialize_external_ip_info, validate_service_pair
+from app.services.factory_reset import RESET_CONFIRMATION_TEXT, factory_reset
 from app.services.runtime import get_kernel_support_status, start_tunnel, stop_tunnel
+from app.services.runtime_state import get_tunnel_runtime_state
 from app.services.routing import apply_local_passthrough, apply_routing_plan, build_routing_plan, sync_firewall_backend
-from app.services.traffic_sources import migrate_legacy_source_settings, normalize_allowed_source_cidrs
+from app.services.traffic_sources import normalize_allowed_source_cidrs
 
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -25,6 +28,9 @@ class GatewaySettingsUpdate(BaseModel):
     experimental_nftables: bool = False
     device_tracking_enabled: bool = True
     device_activity_timeout_seconds: int = 300
+    backup_enabled: bool = True
+    backup_schedule_time: str = "03:00"
+    backup_retention_count: int = 14
     external_ip_local_service_url: str
     external_ip_vpn_service_url: str
 
@@ -38,6 +44,10 @@ class ApiSettingsUpdate(BaseModel):
     api_control_enabled: bool
     api_allowed_client_cidrs: list[str] = []
     device_api_default_scope: str = "all"
+
+
+class FactoryResetRequest(BaseModel):
+    confirm_text: str
 
 
 def serialize_api_settings(settings_row: GatewaySettings) -> dict:
@@ -56,11 +66,9 @@ async def get_settings(
     user: AdminUser = Depends(get_current_user),
 ) -> dict:
     settings_row = await db.get(GatewaySettings, 1)
-    if migrate_legacy_source_settings(settings_row):
-        db.add(settings_row)
-        await db.flush()
     policy = await db.get(RoutingPolicy, 1)
     kernel_available, kernel_message = get_kernel_support_status()
+    tunnel_state = get_tunnel_runtime_state()
     return {
         "ui_language": settings_row.ui_language,
         "runtime_mode": settings_row.runtime_mode,
@@ -70,14 +78,18 @@ async def get_settings(
         "experimental_nftables": settings_row.experimental_nftables,
         "device_tracking_enabled": settings_row.device_tracking_enabled,
         "device_activity_timeout_seconds": settings_row.device_activity_timeout_seconds,
+        "backup_enabled": settings_row.backup_enabled,
+        "backup_schedule_time": settings_row.backup_schedule_time,
+        "backup_retention_count": settings_row.backup_retention_count,
         "failover_enabled": settings_row.failover_enabled,
         "kernel_available": kernel_available,
         "kernel_message": kernel_message,
         "active_entry_node_id": settings_row.active_entry_node_id,
-        "tunnel_status": settings_row.tunnel_status,
-        "tunnel_last_error": settings_row.tunnel_last_error,
+        "tunnel_status": tunnel_state.status,
+        "tunnel_last_error": tunnel_state.last_error,
         "external_ip_info": serialize_external_ip_info(settings_row, policy),
         "api_settings": serialize_api_settings(settings_row),
+        "reset_confirmation_text": RESET_CONFIRMATION_TEXT,
     }
 
 
@@ -91,12 +103,15 @@ async def update_settings(
         raise HTTPException(status_code=400, detail="Unsupported runtime_mode")
     if payload.device_activity_timeout_seconds < 30:
         raise HTTPException(status_code=400, detail="device_activity_timeout_seconds must be >= 30")
+    if payload.backup_retention_count < 1 or payload.backup_retention_count > 365:
+        raise HTTPException(status_code=400, detail="backup_retention_count must be in range 1..365")
     try:
         local_service_url, vpn_service_url = validate_service_pair(
             payload.external_ip_local_service_url,
             payload.external_ip_vpn_service_url,
         )
         normalized_source_cidrs = normalize_allowed_source_cidrs(payload.allowed_client_cidrs)
+        normalized_backup_schedule_time = normalize_backup_schedule_time(payload.backup_schedule_time)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     settings_row = await db.get(GatewaySettings, 1)
@@ -109,10 +124,13 @@ async def update_settings(
     settings_row.experimental_nftables = payload.experimental_nftables
     settings_row.device_tracking_enabled = payload.device_tracking_enabled
     settings_row.device_activity_timeout_seconds = payload.device_activity_timeout_seconds
+    settings_row.backup_enabled = payload.backup_enabled
+    settings_row.backup_schedule_time = normalized_backup_schedule_time
+    settings_row.backup_retention_count = payload.backup_retention_count
     settings_row.external_ip_local_service_url = local_service_url
     settings_row.external_ip_vpn_service_url = vpn_service_url
     db.add(settings_row)
-    await db.flush()
+    await commit_with_lock(db)
     policy = await db.get(RoutingPolicy, 1)
     if policy:
         sync_firewall_backend(settings_row, policy)
@@ -126,11 +144,10 @@ async def update_settings(
         try:
             apply_routing_plan(settings_row, policy, active_node)
         except RuntimeError as exc:
-            settings_row.tunnel_last_error = str(exc)
-            db.add(settings_row)
-            await db.flush()
+            tunnel_state = get_tunnel_runtime_state()
+            tunnel_state.last_error = str(exc)
             return {"status": "error", "error": str(exc), "plan": plan}
-    external_ip_info = await refresh_external_ip_info(db, settings_row, policy, force=True)
+    external_ip_info = await refresh_external_ip_info(settings_row, policy, force=True)
     return {"status": "updated", "plan": plan, "external_ip_info": external_ip_info}
 
 
@@ -186,7 +203,7 @@ async def update_gateway_enabled(
     policy = await db.get(RoutingPolicy, 1)
     settings_row.gateway_enabled = payload.gateway_enabled
     db.add(settings_row)
-    await db.flush()
+    await commit_with_lock(db)
 
     active_node = await db.get(EntryNode, settings_row.active_entry_node_id) if settings_row.active_entry_node_id else None
 
@@ -194,15 +211,26 @@ async def update_gateway_enabled(
         if policy:
             sync_firewall_backend(settings_row, policy)
         if active_node is not None:
-            await start_tunnel(db, active_node, settings_row)
+            await start_tunnel(active_node, settings_row)
             if policy:
                 plan = build_routing_plan(settings_row, policy, active_node)
                 if plan["safe_to_apply"]:
                     apply_routing_plan(settings_row, policy, active_node)
     else:
-        await stop_tunnel(db, settings_row)
+        await stop_tunnel(settings_row)
         apply_local_passthrough(settings_row)
 
-    await db.commit()
-    external_ip_info = await refresh_external_ip_info(db, settings_row, policy, force=True)
+    external_ip_info = await refresh_external_ip_info(settings_row, policy, force=True)
     return {"status": "updated", "gateway_enabled": settings_row.gateway_enabled, "external_ip_info": external_ip_info}
+
+
+@router.post("/reset")
+async def reset_settings(
+    payload: FactoryResetRequest,
+    user: AdminUser = Depends(get_current_user),
+) -> dict:
+    _ = user
+    try:
+        return await factory_reset(payload.confirm_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
