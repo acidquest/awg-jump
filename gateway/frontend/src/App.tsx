@@ -2928,7 +2928,7 @@ function BackupPage() {
   }
 
   async function deleteBackup(item: any) {
-    await api.delete('/backup/delete-file', { params: { filename: item.filename } })
+    await api.post('/backup/delete-file', null, { params: { filename: item.filename } })
     setMessage(t('backupDeleted').replace('{filename}', item.filename))
     await reload()
   }

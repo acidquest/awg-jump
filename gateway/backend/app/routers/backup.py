@@ -198,7 +198,7 @@ async def delete_backup_record_route_explicit(
     return await delete_backup_record_route(backup_id, db, user)
 
 
-@router.delete("/delete-file")
+@router.post("/delete-file")
 async def delete_backup_by_filename_route(
     filename: str = Query(..., min_length=1),
     db: AsyncSession = Depends(get_db),
