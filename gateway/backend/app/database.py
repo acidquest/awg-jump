@@ -98,7 +98,7 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
         prepare_session(session)
         try:
             yield session
-            if _should_commit_request(request) and (session.dirty or session.new or session.deleted):
+            if _should_commit_request(request):
                 await commit_with_lock(session)
         except Exception:
             await session.rollback()
@@ -111,7 +111,7 @@ async def get_metrics_db(request: Request) -> AsyncGenerator[AsyncSession, None]
         prepare_session(session, metrics=True)
         try:
             yield session
-            if _should_commit_request(request) and (session.dirty or session.new or session.deleted):
+            if _should_commit_request(request):
                 await commit_with_lock(session, metrics=True)
         except Exception:
             await session.rollback()

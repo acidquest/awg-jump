@@ -12,9 +12,8 @@ Example:
   ./scripts/publish_dockerhub.sh myorg 2026-04-08 --latest --gateway
   ./scripts/publish_dockerhub.sh myorg 2026-04-08 --latest --only-gateway
 
-By default this script builds and pushes two images:
+By default this script builds and pushes:
   docker.io/<namespace>/awg-jump:<tag>
-  docker.io/<namespace>/awg-jump-nginx:<tag>
 
 If --with-node is passed, it also pushes:
   docker.io/<namespace>/awg-node:<tag>
@@ -85,18 +84,15 @@ if ! docker buildx version >/dev/null 2>&1; then
 fi
 
 IMAGE_JUMP="docker.io/${NAMESPACE}/awg-jump:${TAG}"
-IMAGE_NGINX="docker.io/${NAMESPACE}/awg-jump-nginx:${TAG}"
 IMAGE_NODE="docker.io/${NAMESPACE}/awg-node:${TAG}"
 IMAGE_GATEWAY="docker.io/${NAMESPACE}/awg-gateway:${TAG}"
 
 JUMP_TAGS=(-t "$IMAGE_JUMP")
-NGINX_TAGS=(-t "$IMAGE_NGINX")
 NODE_TAGS=(-t "$IMAGE_NODE")
 GATEWAY_TAGS=(-t "$IMAGE_GATEWAY")
 
 if [[ "$PUSH_LATEST" == true ]]; then
     JUMP_TAGS+=(-t "docker.io/${NAMESPACE}/awg-jump:latest")
-    NGINX_TAGS+=(-t "docker.io/${NAMESPACE}/awg-jump-nginx:latest")
     if [[ "$PUSH_NODE" == true ]]; then
         NODE_TAGS+=(-t "docker.io/${NAMESPACE}/awg-node:latest")
     fi
@@ -112,14 +108,6 @@ if [[ "$ONLY_GATEWAY" != true ]]; then
         "${JUMP_TAGS[@]}" \
         --push \
         "$REPO_ROOT"
-
-    echo "Publishing nginx image: $IMAGE_NGINX"
-    docker buildx build \
-        --platform linux/amd64 \
-        "${NGINX_TAGS[@]}" \
-        --push \
-        -f "$REPO_ROOT/nginx/Dockerfile" \
-        "$REPO_ROOT/nginx"
 
     if [[ "$PUSH_NODE" == true ]]; then
         echo "Publishing node image: $IMAGE_NODE"
@@ -144,7 +132,7 @@ fi
 echo
 echo "Published images:"
 if [[ "$ONLY_GATEWAY" != true ]]; then
-    printf '  %s\n' "$IMAGE_JUMP" "$IMAGE_NGINX"
+    printf '  %s\n' "$IMAGE_JUMP"
     if [[ "$PUSH_NODE" == true ]]; then
         printf '  %s\n' "$IMAGE_NODE"
     fi

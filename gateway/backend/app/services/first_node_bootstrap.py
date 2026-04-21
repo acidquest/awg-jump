@@ -115,11 +115,9 @@ def _build_bundle(*, host: str, docker_namespace: str, image_tag: str) -> bytes:
 
     env_content = env_ru_content
     image_jump = f"docker.io/{docker_namespace}/awg-jump:{image_tag}"
-    image_nginx = f"docker.io/{docker_namespace}/awg-jump-nginx:{image_tag}"
     env_content = _replace_env_value(env_content, "TLS_COMMON_NAME", host)
     env_content = _replace_env_value(env_content, "SERVER_HOST", host)
     env_content = _replace_env_value(env_content, "AWG_JUMP_IMAGE", image_jump)
-    env_content = _replace_env_value(env_content, "AWG_NGINX_IMAGE", image_nginx)
 
     remote_bootstrap = """#!/usr/bin/env bash
 set -euo pipefail

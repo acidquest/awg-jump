@@ -60,7 +60,7 @@ export default function Dashboard() {
   const qc = useQueryClient()
   const [metricsPeriod, setMetricsPeriod] = useState<'1h' | '24h'>('1h')
 
-  const { data, isLoading } = useQuery<SystemStatus>({
+  const { data, isLoading, isError, error } = useQuery<SystemStatus>({
     queryKey: ['system-status'],
     queryFn: () => getSystemStatus().then((r) => r.data),
     refetchInterval: 30_000,
@@ -88,8 +88,23 @@ export default function Dashboard() {
   })
 
   if (isLoading) return <div style={{ padding: 40, textAlign: 'center' }}><span className="spinner" /></div>
+  if (isError || !data) {
+    const message =
+      (error as { response?: { data?: { detail?: string } }; message?: string })?.response?.data?.detail
+      ?? (error as Error | undefined)?.message
+      ?? 'Failed to load dashboard data'
+    return (
+      <div className="card" style={{ marginTop: 20 }}>
+        <div className="card-title" style={{ marginBottom: 12 }}>Dashboard unavailable</div>
+        <div className="error-box" style={{ marginBottom: 12 }}>{message}</div>
+        <button className="btn btn-secondary" onClick={() => qc.invalidateQueries({ queryKey: ['system-status'] })}>
+          Retry
+        </button>
+      </div>
+    )
+  }
 
-  const s = data!
+  const s = data
 
   const awg0 = s.interfaces.find((i) => i.name === 'awg0')
   const awg1 = s.interfaces.find((i) => i.name === 'awg1')

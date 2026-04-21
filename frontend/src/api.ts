@@ -81,6 +81,13 @@ export const activateNode = (id: number) => api.post(`/nodes/${id}/activate`)
 export const resetNode = (id: number) => api.post(`/nodes/${id}/reset`)
 export const checkNode = (id: number) => api.post(`/nodes/${id}/check`)
 export const getNodeStats = (id: number) => api.get(`/nodes/${id}/stats`)
+export const getNodePeers = (id: number) => api.get(`/nodes/${id}/peers`)
+export const createNodePeer = (id: number, data: Record<string, unknown>) => api.post(`/nodes/${id}/peers`, data)
+export const updateNodePeer = (id: number, peerId: number, data: Record<string, unknown>) =>
+  api.put(`/nodes/${id}/peers/${peerId}`, data)
+export const deleteNodePeer = (id: number, peerId: number) => api.delete(`/nodes/${id}/peers/${peerId}`)
+export const getNodePeerConfig = (id: number, peerId: number) =>
+  api.get(`/nodes/${id}/peers/${peerId}/config`, { responseType: 'text' })
 
 // ── GeoIP ─────────────────────────────────────────────────────────────────
 export const getGeoipStatus = () => api.get('/geoip/status')
@@ -127,4 +134,16 @@ export const uploadBackup = (file: File) => {
   const form = new FormData()
   form.append('file', file)
   return api.post('/backup/import', form)
+}
+
+// ── Settings ─────────────────────────────────────────────────────────────
+export const getSettings = () => api.get('/settings')
+export const updateSettings = (data: Record<string, unknown>) => api.put('/settings', data)
+export const updateAdminPassword = (data: { current_password: string; new_password: string }) =>
+  api.post('/settings/password', data)
+export const uploadTlsMaterial = (certFile: File, keyFile: File) => {
+  const form = new FormData()
+  form.append('cert_file', certFile)
+  form.append('key_file', keyFile)
+  return api.post('/settings/tls', form)
 }

@@ -2,9 +2,10 @@ import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getNodes, createNode, deployNode, redeployNode,
-  activateNode, resetNode, checkNode, deleteNode, getNodeStats
+  activateNode, resetNode, checkNode, deleteNode, getNodeStats,
+  createNodePeer, deleteNodePeer, getNodePeerConfig, updateNodePeer
 } from '../api'
-import { Node, NodeStats, DeployLog } from '../types'
+import { Node, NodePeer, NodeStats, DeployLog } from '../types'
 import StatusBadge from '../components/StatusBadge'
 import Modal from '../components/Modal'
 import { openSSE } from '../sse'
@@ -38,9 +39,11 @@ export default function Nodes() {
   const qc = useQueryClient()
 
   const [showDeploy, setShowDeploy] = useState(false)
+  const [showAddNode, setShowAddNode] = useState(false)
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
   const [redeployNode_, setRedeployNode] = useState<Node | null>(null)
   const [logModal, setLogModal] = useState<DeployLog | null>(null)
+  const [peerModalNode, setPeerModalNode] = useState<Node | null>(null)
 
   const { data: nodes = [], isLoading } = useQuery<Node[]>({
     queryKey: ['nodes'],
@@ -87,9 +90,14 @@ export default function Nodes() {
           <div className="page-title">Upstream Nodes</div>
           <div className="page-subtitle">Remote AWG exit nodes</div>
         </div>
-        <button className="btn btn-primary" onClick={() => setShowDeploy(true)}>
-          + Deploy node
-        </button>
+        <div className="flex gap-2">
+          <button className="btn btn-secondary" onClick={() => setShowAddNode(true)}>
+            + Add node
+          </button>
+          <button className="btn btn-primary" onClick={() => setShowDeploy(true)}>
+            + Deploy node
+          </button>
+        </div>
       </div>
 
       {/* Nodes table */}
@@ -100,6 +108,7 @@ export default function Nodes() {
               <tr>
                 <th>Active</th>
                 <th>Name</th>
+                <th>Mode</th>
                 <th>Host</th>
                 <th>Status</th>
                 <th>Latency</th>
@@ -141,6 +150,7 @@ export default function Nodes() {
                       <span className="badge badge-online" style={{ marginLeft: 8 }}>active</span>
                     )}
                   </td>
+                  <td><span className="text-mono text-muted">{n.provisioning_mode}</span></td>
                   <td className="text-mono">{n.host}</td>
                   <td><StatusBadge status={n.status} /></td>
                   <td className="text-mono">
@@ -172,8 +182,15 @@ export default function Nodes() {
                       <button
                         className="btn btn-secondary btn-sm"
                         onClick={() => setRedeployNode(n)}
+                        disabled={!n.can_redeploy}
                         title="Redeploy"
                       >Redeploy</button>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => setPeerModalNode(n)}
+                        disabled={!n.can_manage_peers}
+                        title="Shared peers"
+                      >Peers</button>
                       <button
                         className="btn btn-danger btn-sm"
                         onClick={() => { if (confirm(`Delete node ${n.name}?`)) deleteMut.mutate(n.id) }}
@@ -212,37 +229,67 @@ export default function Nodes() {
             </div>
           </div>
 
-          {/* Deploy logs */}
-          <div className="card-title" style={{ marginBottom: 10 }}>Deploy history</div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Started</th>
-                  <th>Finished</th>
-                  <th>Status</th>
-                  <th>Log</th>
-                </tr>
-              </thead>
-              <tbody>
-                {stats.deploy_logs.length === 0 ? (
-                  <tr><td colSpan={4} className="text-muted" style={{ textAlign: 'center', padding: 16 }}>No deploys</td></tr>
-                ) : stats.deploy_logs.map((log) => (
-                  <tr key={log.id}>
-                    <td className="text-muted" style={{ fontSize: 12 }}>{fmtDate(log.started_at)}</td>
-                    <td className="text-muted" style={{ fontSize: 12 }}>{fmtDate(log.finished_at)}</td>
-                    <td><StatusBadge status={log.status} /></td>
-                    <td>
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => setLogModal(log)}
-                      >View log</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {stats.provisioning_mode === 'managed' ? (
+            <>
+              <div className="card-title" style={{ marginBottom: 10 }}>Shared peers</div>
+              <div className="table-wrap" style={{ marginBottom: 18 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Tunnel IP</th>
+                      <th>Allowed IPs</th>
+                      <th>Keepalive</th>
+                      <th>Enabled</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stats.shared_peers.length === 0 ? (
+                      <tr><td colSpan={6} className="text-muted" style={{ textAlign: 'center', padding: 16 }}>No shared peers configured</td></tr>
+                    ) : stats.shared_peers.map((peer) => (
+                      <SharedPeerRow key={peer.id} node={selectedNode} peer={peer} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="card-title" style={{ marginBottom: 10 }}>Deploy history</div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Started</th>
+                      <th>Finished</th>
+                      <th>Status</th>
+                      <th>Log</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stats.deploy_logs.length === 0 ? (
+                      <tr><td colSpan={4} className="text-muted" style={{ textAlign: 'center', padding: 16 }}>No deploys</td></tr>
+                    ) : stats.deploy_logs.map((log) => (
+                      <tr key={log.id}>
+                        <td className="text-muted" style={{ fontSize: 12 }}>{fmtDate(log.started_at)}</td>
+                        <td className="text-muted" style={{ fontSize: 12 }}>{fmtDate(log.finished_at)}</td>
+                        <td><StatusBadge status={log.status} /></td>
+                        <td>
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => setLogModal(log)}
+                          >View log</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : (
+            <div className="info-box" style={{ fontSize: 12 }}>
+              Manual nodes were imported from `.conf`. Redeploy, deploy history and shared peer management are unavailable.
+            </div>
+          )}
         </div>
       )}
 
@@ -257,6 +304,16 @@ export default function Nodes() {
         />
       )}
 
+      {showAddNode && (
+        <AddNodeModal
+          onClose={() => setShowAddNode(false)}
+          onDone={() => {
+            setShowAddNode(false)
+            qc.invalidateQueries({ queryKey: ['nodes'] })
+          }}
+        />
+      )}
+
       {redeployNode_ && (
         <RedeployModal
           node={redeployNode_}
@@ -264,6 +321,17 @@ export default function Nodes() {
           onDone={() => {
             setRedeployNode(null)
             qc.invalidateQueries({ queryKey: ['nodes'] })
+          }}
+        />
+      )}
+
+      {peerModalNode && (
+        <NodePeerModal
+          node={peerModalNode}
+          onClose={() => setPeerModalNode(null)}
+          onDone={() => {
+            setPeerModalNode(null)
+            qc.invalidateQueries({ queryKey: ['node-stats', peerModalNode.id] })
           }}
         />
       )}
@@ -467,6 +535,164 @@ function DeployModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
           )}
         </>
       )}
+    </Modal>
+  )
+}
+
+function SharedPeerRow({ node, peer }: { node: Node; peer: NodePeer }) {
+  const qc = useQueryClient()
+  const deleteMut = useMutation({
+    mutationFn: () => deleteNodePeer(node.id, peer.id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['node-stats', node.id] }),
+  })
+  const updateMut = useMutation({
+    mutationFn: (payload: Record<string, unknown>) => updateNodePeer(node.id, peer.id, payload),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['node-stats', node.id] }),
+  })
+
+  const downloadConfig = async () => {
+    const res = await getNodePeerConfig(node.id, peer.id)
+    const blob = new Blob([res.data as string], { type: 'text/plain' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `${peer.name || `node-peer-${peer.id}`}.conf`
+    a.click()
+  }
+
+  const editPeer = () => {
+    const name = prompt('Peer name', peer.name) ?? peer.name
+    const tunnelAddress = prompt('Tunnel address', peer.tunnel_address) ?? peer.tunnel_address
+    const allowedIps = prompt('Allowed IPs', peer.allowed_ips) ?? peer.allowed_ips
+    if (!name || !tunnelAddress || !allowedIps) return
+    updateMut.mutate({
+      name,
+      tunnel_address: tunnelAddress,
+      allowed_ips: allowedIps,
+      persistent_keepalive: peer.persistent_keepalive,
+      enabled: peer.enabled,
+    })
+  }
+
+  return (
+    <tr>
+      <td>{peer.name}</td>
+      <td className="text-mono">{peer.tunnel_address}</td>
+      <td className="text-mono">{peer.allowed_ips}</td>
+      <td className="text-mono">{peer.persistent_keepalive ?? '—'}</td>
+      <td>{peer.enabled ? 'yes' : 'no'}</td>
+      <td>
+        <div className="flex gap-2">
+          <button className="btn btn-ghost btn-sm" onClick={editPeer}>Edit</button>
+          <button className="btn btn-ghost btn-sm" onClick={downloadConfig}>DL</button>
+          <button
+            className="btn btn-danger btn-sm"
+            onClick={() => { if (confirm(`Delete peer ${peer.name}?`)) deleteMut.mutate() }}
+          >Del</button>
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+function AddNodeModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const [form, setForm] = useState({ name: '', conf_text: '' })
+  const [error, setError] = useState('')
+  const mut = useMutation({
+    mutationFn: () => createNode({
+      name: form.name,
+      provisioning_mode: 'manual',
+      conf_text: form.conf_text,
+    }),
+    onSuccess: onDone,
+    onError: (e: unknown) => setError((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to add node'),
+  })
+
+  return (
+    <Modal open title="Add node from .conf" onClose={onClose} size="lg">
+      {error && <div className="error-box">{error}</div>}
+      <div className="form-group">
+        <label className="form-label">Name</label>
+        <input className="form-input" value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} />
+      </div>
+      <div className="form-group">
+        <label className="form-label">Peer .conf</label>
+        <input
+          className="form-input"
+          type="file"
+          accept=".conf,.txt"
+          onChange={async (e) => {
+            const file = e.target.files?.[0]
+            if (!file) return
+            const text = await file.text()
+            setForm((p) => ({ ...p, conf_text: text }))
+          }}
+          style={{ marginBottom: 10 }}
+        />
+        <textarea
+          className="form-input mono"
+          style={{ minHeight: 260, resize: 'vertical' }}
+          value={form.conf_text}
+          onChange={(e) => setForm((p) => ({ ...p, conf_text: e.target.value }))}
+          placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = ...&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = host:port&#10;AllowedIPs = 0.0.0.0/0"
+        />
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={() => mut.mutate()} disabled={mut.isPending || !form.name || !form.conf_text}>
+          {mut.isPending ? <span className="spinner" /> : 'Add node'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+function NodePeerModal({ node, onClose, onDone }: { node: Node; onClose: () => void; onDone: () => void }) {
+  const [form, setForm] = useState({
+    name: '',
+    tunnel_address: '',
+    allowed_ips: '0.0.0.0/0',
+    persistent_keepalive: '25',
+  })
+  const [error, setError] = useState('')
+  const mut = useMutation({
+    mutationFn: () => createNodePeer(node.id, {
+      name: form.name,
+      tunnel_address: form.tunnel_address,
+      allowed_ips: form.allowed_ips,
+      persistent_keepalive: form.persistent_keepalive ? Number(form.persistent_keepalive) : undefined,
+    }),
+    onSuccess: onDone,
+    onError: (e: unknown) => setError((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to create shared peer'),
+  })
+
+  return (
+    <Modal open title={`Add shared peer — ${node.name}`} onClose={onClose}>
+      {error && <div className="error-box">{error}</div>}
+      <div className="form-group">
+        <label className="form-label">Name</label>
+        <input className="form-input" value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} />
+      </div>
+      <div className="form-group">
+        <label className="form-label">Tunnel address</label>
+        <input className="form-input mono" value={form.tunnel_address} onChange={(e) => setForm((p) => ({ ...p, tunnel_address: e.target.value }))} placeholder="10.20.0.10/32" />
+      </div>
+      <div className="form-group">
+        <label className="form-label">Allowed IPs</label>
+        <input className="form-input mono" value={form.allowed_ips} onChange={(e) => setForm((p) => ({ ...p, allowed_ips: e.target.value }))} />
+      </div>
+      <div className="form-group">
+        <label className="form-label">Persistent keepalive</label>
+        <input className="form-input mono" value={form.persistent_keepalive} onChange={(e) => setForm((p) => ({ ...p, persistent_keepalive: e.target.value }))} />
+      </div>
+      <div className="info-box" style={{ fontSize: 12 }}>
+        The peer keypair is generated automatically. Apply changes to the remote node with Redeploy.
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={() => mut.mutate()} disabled={!form.name || !form.tunnel_address || mut.isPending}>
+          {mut.isPending ? <span className="spinner" /> : 'Add peer'}
+        </button>
+      </div>
     </Modal>
   )
 }

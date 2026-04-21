@@ -10,7 +10,6 @@ This workflow is for production setups where the server must not build images lo
 ## Which images are published
 
 - `awg-jump`: backend + frontend + runtime
-- `awg-jump-nginx`: nginx config and self-signed TLS generation
 
 ## 1. Publish images to Docker Hub
 
@@ -35,7 +34,6 @@ Example:
 The script pushes:
 
 - `docker.io/myteam/awg-jump:2026-04-08`
-- `docker.io/myteam/awg-jump-nginx:2026-04-08`
 - plus `latest` tags if `--latest` is passed
 
 If you also want to publish the upstream node image, add `--with-node`:
@@ -53,7 +51,7 @@ The bootstrap script installs Docker on the remote machine, asks for the deploy 
 - `.env.ru.example`
 - `.env.en.example`
 
-This bootstrap is intended for the main node running `awg-jump` and `awg-jump-nginx`.
+This bootstrap is intended for the main node running `awg-jump`.
 It does not deploy upstream nodes.
 
 Run on Linux/macOS:
@@ -98,7 +96,6 @@ Connect to the server and edit at least:
 - `ADMIN_PASSWORD`
 - `SECRET_KEY`
 - `AWG_JUMP_IMAGE`
-- `AWG_NGINX_IMAGE`
 - optionally `TLS_COMMON_NAME`
 - optionally `SERVER_HOST`
 

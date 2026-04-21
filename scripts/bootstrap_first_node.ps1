@@ -91,7 +91,6 @@ $DockerNamespace = Prompt-WithDefault "Docker Hub namespace" "your-dockerhub-nam
 $ImageTag = Prompt-WithDefault "Docker image tag" "latest"
 
 $ImageJump = "docker.io/${DockerNamespace}/awg-jump:${ImageTag}"
-$ImageNginx = "docker.io/${DockerNamespace}/awg-jump-nginx:${ImageTag}"
 
 $RemoteRootPrefix = ""
 if ($SshUser -ne "root") {
@@ -110,7 +109,6 @@ try {
     Set-EnvValue (Join-Path $TmpDir ".env") "TLS_COMMON_NAME" $HostName
     Set-EnvValue (Join-Path $TmpDir ".env") "SERVER_HOST" $HostName
     Set-EnvValue (Join-Path $TmpDir ".env") "AWG_JUMP_IMAGE" $ImageJump
-    Set-EnvValue (Join-Path $TmpDir ".env") "AWG_NGINX_IMAGE" $ImageNginx
 
     $remoteBootstrap = @'
 #!/usr/bin/env bash
@@ -215,7 +213,7 @@ fi
     Write-Host ""
     Write-Host "Next steps on the node:"
     Write-Host "  1. Edit $RemoteDir/.env and set at least ADMIN_PASSWORD and SECRET_KEY."
-    Write-Host "  2. Verify AWG_JUMP_IMAGE and AWG_NGINX_IMAGE in $RemoteDir/.env."
+    Write-Host "  2. Verify AWG_JUMP_IMAGE in $RemoteDir/.env."
     Write-Host "  3. Start the stack:"
     Write-Host "     cd $RemoteDir"
     Write-Host "     docker compose -f docker-compose.yml pull"

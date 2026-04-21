@@ -27,7 +27,7 @@
 - intercept DNS for selected traffic sources and populate prefix sets from FQDNs;
 - expose an operator UI and a separate key-based API for telemetry and limited remote control.
 
-`gateway` does not modify the remote entry node, does not require a tunnel API from `awg-jump`, and does not implement a separate control plane over the tunnel.
+`gateway` does not modify the remote entry node and does not implement a full bidirectional control plane over the tunnel. It can still send its client status (`1001`) back to `awg-jump` after a successful connection and then every 10 minutes when the imported entry node `.conf` was exported by a recent `awg-jump` and the status endpoint is reachable inside the tunnel.
 
 Related documents:
 
@@ -81,6 +81,7 @@ The container runs in `network_mode: host`, so it applies routing and NAT direct
 - first upstream node bootstrap over SSH;
 - English and Russian UI;
 - dedicated `X-API-Key` API for telemetry and limited control.
+- automatic `awg-gateway -> awg-jump` client status report over the tunnel when supported by the imported config.
 
 ### Intentionally out of scope
 
@@ -389,6 +390,7 @@ Typical flow:
    - allowed IPs;
    - obfuscation parameters.
 4. The node is stored in the local database and can be assigned as the active node.
+5. If the `.conf` was exported from a recent `awg-jump`, it also carries metadata comments with the tunnel status API URL. After a successful connection, `gateway` will try to submit its client code `1001` there and then repeat the report every 10 minutes.
 
 ### Active node
 

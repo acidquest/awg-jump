@@ -13,7 +13,7 @@
 9. [Split DNS](#split-dns)
 10. [Upstream Nodes and Failover](#upstream-nodes-and-failover)
 11. [Backup and Restore](#backup-and-restore)
-12. [TLS and Nginx](#tls-and-nginx)
+12. [TLS and Web Access](#tls-and-web-access)
 13. [Project Structure](#project-structure)
 14. [Development and Debugging](#development-and-debugging)
 
@@ -52,19 +52,14 @@ Primary gateway documents:
 ## Architecture
 
 ```
-Browser (HTTPS:443)
+Browser (WEB_PORT, default HTTPS:8080)
     │
     ▼
-┌─────────────┐
-│    nginx    │  TLS termination, self-signed cert (10 years)
-│  :443/:80   │
-└──────┬──────┘
-       │ HTTP proxy
-       ▼
 ┌─────────────────────────────────────────────┐
-│              awg-jump :8080                 │
+│              awg-jump :WEB_PORT             │
 │                                             │
 │  FastAPI + SQLite + APScheduler             │
+│  uvicorn (http or https)                    │
 │  amneziawg-go (awg0 + awg1)                │
 │  dnsmasq (split DNS)                        │
 │  ipset geoip_local + iptables policy routing│
@@ -99,7 +94,7 @@ Container (dnsmasq DNS queries) → iptables mangle OUTPUT:
 
 - Docker Engine 24+
 - docker compose v2
-- Open ports: `443/tcp` (HTTPS), `80/tcp` (HTTP→HTTPS redirect), `51820/udp` (AWG)
+- Open ports: `WEB_PORT/tcp` (default `8080/tcp`) and `51820/udp` (AWG)
 
 ### Installation
 
@@ -121,7 +116,7 @@ nano .env
 docker compose up -d --build
 
 # 5. Open web interface
-https://<SERVER_HOST>:443
+https://<SERVER_HOST>:<WEB_PORT>
 ```
 
 The browser will warn about a self-signed certificate — this is expected. Add an exception or install the certificate manually.
@@ -143,13 +138,15 @@ On first launch, the container automatically:
 
 ## Environment Variables
 
-### Nginx / TLS
+### Web / TLS
 
 | Variable | Default | Description |
 |---------|---------|-------------|
-| `NGINX_HTTPS_PORT` | `443` | External HTTPS port |
-| `NGINX_HTTP_PORT` | `80` | HTTP port (redirect to HTTPS) |
+| `WEB_MODE` | `https` | Web server mode: `http` or `https` |
+| `WEB_PORT` | `8080` | UI/API TCP port |
 | `TLS_COMMON_NAME` | `localhost` | CN and SAN for self-signed cert (IP or hostname) |
+| `TLS_CERT_PATH` | `/data/certs/server.crt` | Certificate path |
+| `TLS_KEY_PATH` | `/data/certs/server.key` | Private key path |
 
 ### Administrator
 
@@ -211,7 +208,7 @@ On first launch, the container automatically:
 
 ## Web Interface
 
-Accessible at `https://<SERVER_HOST>:<NGINX_HTTPS_PORT>`. All pages require authentication.
+Accessible at `https://<SERVER_HOST>:<WEB_PORT>` or `http://<SERVER_HOST>:<WEB_PORT>` depending on `WEB_MODE`. All pages require authentication.
 
 ### Dashboard
 
@@ -235,6 +232,27 @@ Manage awg0 clients:
 - Download client config as `.conf` file and QR code for mobile apps.
 - Enable/disable peers without restarting the interface (hot reload via `wg syncconf`).
 - Live statistics: last handshake, RX/TX bytes.
+- Client type markers (`awg-gateway`, Android, iOS) fed by the tunnel status API.
+
+#### Tunnel status API
+
+Unauthenticated endpoint:
+
+`POST /api/peers/status`
+
+Payload:
+
+```json
+{"client_code": 1001}
+```
+
+Supported client codes:
+
+- `1001` — `awg-gateway`
+- `1002` — `awg-jump-client-android`
+- `1003` — `awg-jump-client-ios`
+
+The caller IP is taken from the request and matched against `awg0` peer `tunnel_address`. Only known tunnel clients are accepted.
 
 ### Nodes
 
@@ -242,9 +260,23 @@ Manage upstream nodes:
 
 - Add a VPS with SSH credentials (not stored).
 - Deploy `awg-node` over SSH: install Docker, build image, start container.
+- `Add node` for manual upstream nodes imported from a standard AWG peer `.conf`.
 - Streaming deploy log output (SSE).
 - Switch active node, view metrics (latency, RX/TX).
 - Automatic failover when the active node degrades.
+- Managed nodes expose shared peers, peer `.conf` export, and apply those peer changes on `Redeploy`.
+- Manual nodes do not have `Redeploy`, `Deploy history`, or peer management.
+
+### Settings
+
+The new **Settings** page allows:
+
+- changing the admin password;
+- uploading a custom TLS certificate/key;
+- switching `http`/`https`;
+- changing `WEB_PORT`.
+
+Values are persisted into `.env`. Transport, port, and certificate changes require a container restart.
 
 ### Routing
 
@@ -274,7 +306,7 @@ View the current policy routing state:
 
 ### Backup
 
-- Download ZIP archive containing `config.db` (all data) + `env_snapshot.json` + `wg_configs/` + `geoip_cache/`.
+- Download ZIP archive containing `config.db` (all data) + `env_snapshot.json` + `wg_configs/` + `geoip_cache/` + `certs/`.
 - Upload archive to restore (drag & drop or file browser).
 - After restore — restart container: `docker compose restart awg-jump`.
 
@@ -498,6 +530,7 @@ Each node is stored in the `upstream_nodes` table:
 - `host` — VPS IP or hostname
 - `awg_port` — AWG UDP port on the node (default `51821`)
 - `awg_address` — node IP in the VPN subnet (e.g. `10.20.0.3/32`)
+- `provisioning_mode` — `managed | manual`
 - `status` — `pending | deploying | online | degraded | offline | error`
 - `is_active` — only one node is active at a time
 - `priority` — failover order
@@ -512,6 +545,12 @@ The node is deployed from the web interface via SSH:
 4. The node container is started.
 
 SSH credentials (login/password) are **never stored** anywhere.
+
+### Manual Nodes and Shared Peers
+
+- `manual` nodes are imported from a standard AWG peer `.conf`.
+- They can be activated and participate in failover like regular upstream nodes.
+- Managed nodes can define extra shared peers, export them as `.conf`, and apply them to the remote `awg-node` on the next `Redeploy`.
 
 ### Failover
 
@@ -533,9 +572,9 @@ APScheduler checks every `NODE_HEALTH_CHECK_INTERVAL` seconds:
 | `env_snapshot.json` | Reference snapshot of public parameters (no passwords) |
 | `wg_configs/` | Generated WireGuard config files |
 | `geoip_cache/` | Cached GeoIP CIDR lists for fast ipset recovery after restart |
+| `certs/` | TLS certificate and key from `/data/certs` |
 
 **Not included:**
-- TLS certificates (auto-generated on startup)
 - `.env` file (environment passwords and keys)
 
 ### Export
@@ -561,13 +600,13 @@ Every export is automatically saved to `/data/backups/` inside the container. Th
 
 ---
 
-## TLS and Nginx
+## TLS and Web Access
 
-Nginx acts as the TLS terminator. The `awg-jump` backend runs over HTTP inside the Docker network and is **not exposed externally**.
+`awg-jump` serves UI/API directly via `uvicorn`. By default it listens on `https://0.0.0.0:${WEB_PORT}` using a self-signed certificate.
 
 ### Self-Signed Certificate
 
-Generated by `nginx/generate-cert.sh` on first start:
+Generated by `nginx/generate-cert.sh` on first start of the main container:
 
 ```bash
 openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 \
@@ -582,7 +621,7 @@ Valid for 10 years. Stored in `./data/certs/` (volume). Not regenerated if the f
 
 ```bash
 rm ./data/certs/server.crt ./data/certs/server.key
-docker compose restart nginx
+docker compose restart awg-jump
 ```
 
 ---
@@ -593,13 +632,12 @@ docker compose restart nginx
 awg-jump/
 ├── .env.ru.example         # Configuration template (RU)
 ├── .env.en.example         # Configuration template (EN)
-├── docker-compose.yml      # Three services: awg-jump, nginx, awg-node (optional)
+├── docker-compose.yml      # awg-jump + awg-node (optional)
 ├── Dockerfile              # Multi-stage: awg-builder + awg-tools + python + frontend + final
 ├── supervisord.conf        # Manages uvicorn inside the container
 │
 ├── nginx/
-│   ├── nginx.conf          # Reverse proxy + TLS
-│   └── generate-cert.sh    # Auto-generate self-signed cert
+│   └── generate-cert.sh    # Reused self-signed cert generator
 │
 ├── node/                   # Upstream node image
 │   ├── Dockerfile          # 2-stage: awg-builder + debian-slim

@@ -2,7 +2,7 @@ import ipaddress
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -17,6 +17,7 @@ from backend.routers.auth import get_current_user
 import backend.services.awg as awg_svc
 
 router = APIRouter(prefix="/api/peers", tags=["peers"])
+_STATUS_REPORT_MIN_INTERVAL_SECONDS = 300
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────
@@ -34,6 +35,10 @@ class PeerOut(BaseModel):
     last_handshake: Optional[datetime]
     rx_bytes: Optional[int]
     tx_bytes: Optional[int]
+    client_code: Optional[int]
+    client_kind: Optional[str]
+    client_reported_ip: Optional[str]
+    client_reported_at: Optional[datetime]
     created_at: Optional[datetime]
 
     model_config = {"from_attributes": True}
@@ -60,6 +65,17 @@ class PeerUpdate(BaseModel):
     preshared_key: Optional[str] = None
 
 
+class PeerStatusReport(BaseModel):
+    client_code: int
+
+
+_CLIENT_KIND_BY_CODE = {
+    1001: "awg-gateway",
+    1002: "awg-jump-client-android",
+    1003: "awg-jump-client-ios",
+}
+
+
 def _peer_to_out(peer: Peer) -> PeerOut:
     return PeerOut(
         id=peer.id,
@@ -74,6 +90,10 @@ def _peer_to_out(peer: Peer) -> PeerOut:
         last_handshake=peer.last_handshake,
         rx_bytes=peer.rx_bytes,
         tx_bytes=peer.tx_bytes,
+        client_code=peer.client_code,
+        client_kind=peer.client_kind,
+        client_reported_ip=peer.client_reported_ip,
+        client_reported_at=peer.client_reported_at,
         created_at=peer.created_at,
     )
 
@@ -192,6 +212,66 @@ async def list_peers(
     peers = list(result.scalars().all())
     peers = await _apply_live_stats(peers, session)
     return [_peer_to_out(p) for p in peers]
+
+
+@router.post("/status")
+async def report_peer_status(
+    body: PeerStatusReport,
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    client_kind = _CLIENT_KIND_BY_CODE.get(body.client_code)
+    if client_kind is None:
+        raise HTTPException(status_code=400, detail="Unsupported client_code")
+
+    client_ip = request.client.host if request.client else None
+    if not client_ip:
+        raise HTTPException(status_code=400, detail="Could not determine client IP")
+
+    result = await session.execute(
+        select(Peer, Interface)
+        .join(Interface, Interface.id == Peer.interface_id)
+        .where(Interface.name == "awg0", Peer.tunnel_address.isnot(None))
+    )
+    peer = None
+    for peer_obj, iface in result.all():
+        tunnel_ip = (peer_obj.tunnel_address or "").split("/", 1)[0]
+        if tunnel_ip == client_ip:
+            peer = peer_obj
+            break
+        try:
+            network = ipaddress.ip_network(iface.address, strict=False)
+            if ipaddress.ip_address(client_ip) in network and tunnel_ip == client_ip:
+                peer = peer_obj
+                break
+        except ValueError:
+            continue
+
+    if peer is None:
+        raise HTTPException(status_code=403, detail="Client IP does not match any awg0 peer")
+
+    now = datetime.now(timezone.utc)
+    last_report = peer.client_reported_at
+    recently_reported = (
+        last_report is not None
+        and (now - last_report).total_seconds() < _STATUS_REPORT_MIN_INTERVAL_SECONDS
+    )
+    same_report = (
+        peer.client_code == body.client_code
+        and peer.client_kind == client_kind
+        and peer.client_reported_ip == client_ip
+    )
+
+    if not (same_report and recently_reported):
+        peer.client_code = body.client_code
+        peer.client_kind = client_kind
+        peer.client_reported_ip = client_ip
+        peer.client_reported_at = now
+        peer.updated_at = now
+        session.add(peer)
+        await session.flush()
+
+    return {"status": "ok", "client_kind": client_kind, "peer_id": peer.id}
 
 
 @router.post("", response_model=PeerOut, status_code=201)

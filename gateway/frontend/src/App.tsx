@@ -29,6 +29,7 @@ type NodeItem = {
   allowed_ips: string[]
   persistent_keepalive: number | null
   obfuscation: Record<string, string | number>
+  status_api_url?: string | null
 }
 
 type FailoverSettings = {
@@ -343,23 +344,39 @@ function useLoader<T>(url: string, fallback: T) {
   const [data, setData] = useState<T>(fallback)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const requestIdRef = useRef(0)
+  const mountedRef = useRef(true)
 
   const reload = async (options?: { background?: boolean }) => {
+    const requestId = requestIdRef.current + 1
+    requestIdRef.current = requestId
     if (!options?.background) {
       setLoading(true)
     }
     try {
       const response = await api.get(url)
+      if (!mountedRef.current || requestId !== requestIdRef.current) return response.data
       setData(response.data)
       setError('')
+      return response.data
     } catch (err: any) {
+      if (!mountedRef.current || requestId !== requestIdRef.current) return fallback
       setError(err?.response?.data?.detail || err.message || 'Request failed')
+      return fallback
     } finally {
-      setLoading(false)
+      if (mountedRef.current && requestId === requestIdRef.current) {
+        setLoading(false)
+      }
     }
   }
 
-  useEffect(() => { void reload() }, [url])
+  useEffect(() => {
+    mountedRef.current = true
+    void reload()
+    return () => {
+      mountedRef.current = false
+    }
+  }, [url])
   return { data, loading, error, reload, setData }
 }
 
@@ -1641,6 +1658,7 @@ function NodeEditorModal({
     name: node.name,
     endpoint: node.endpoint,
     probe_ip: node.probe_ip ?? '',
+    status_api_url: node.status_api_url ?? '',
     public_key: node.public_key,
     private_key: node.private_key,
     preshared_key: node.preshared_key ?? '',
@@ -1675,6 +1693,7 @@ function NodeEditorModal({
         name: visual.name,
         endpoint: visual.endpoint,
         probe_ip: visual.probe_ip || null,
+        status_api_url: visual.status_api_url || null,
         public_key: visual.public_key,
         private_key: visual.private_key,
         preshared_key: visual.preshared_key || null,
@@ -1718,6 +1737,10 @@ function NodeEditorModal({
             <div className="form-group">
               <label className="form-label">{t('probeIp')}</label>
               <input className="form-input mono" value={visual.probe_ip} onChange={setField('probe_ip')} placeholder="10.77.7.1" />
+            </div>
+            <div className="form-group">
+              <label className="form-label">AWG Jump status URL</label>
+              <input className="form-input mono" value={visual.status_api_url} onChange={setField('status_api_url')} placeholder="https://10.10.0.1:8080/api/peers/status" />
             </div>
             <div className="form-row form-row-2">
               <div className="form-group">

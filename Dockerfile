@@ -81,6 +81,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     stubby \
     iputils-ping \
     net-tools \
+    openssl \
     openssh-client \
     procps \
     supervisor \
@@ -96,6 +97,7 @@ COPY --from=frontend-builder /frontend/dist /app/static
 
 COPY backend/ /app/backend/
 COPY node/ /app/node/
+COPY nginx/ /app/nginx/
 COPY scripts/ /app/scripts/
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 

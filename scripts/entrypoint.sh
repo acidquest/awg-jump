@@ -38,8 +38,15 @@ mkdir -p "${DATA_DIR:-/data}"
 mkdir -p "${GEOIP_CACHE_DIR:-/data/geoip}"
 mkdir -p "${BACKUP_DIR:-/data/backups}"
 mkdir -p "${WG_CONFIG_DIR:-/data/wg_configs}"
+mkdir -p "${CERTS_DIR:-/data/certs}"
 mkdir -p /var/log/supervisor
 mkdir -p /var/run/amneziawg
+
+# ── 3b. Сгенерировать TLS сертификат если отсутствует ───────────────────
+if [ ! -f "${TLS_CERT_PATH:-/data/certs/server.crt}" ] || [ ! -f "${TLS_KEY_PATH:-/data/certs/server.key}" ]; then
+    echo "[entrypoint] Generating self-signed TLS certificate..."
+    CERT_DIR="${CERTS_DIR:-/data/certs}" /app/nginx/generate-cert.sh
+fi
 
 # ── 4. Применить миграции БД ─────────────────────────────────────────────
 echo "[entrypoint] Running database migrations..."
@@ -75,6 +82,29 @@ if os.path.exists(db_path):
 PYEOF
 python3 -m alembic -c backend/alembic.ini upgrade head
 echo "[entrypoint] Migrations complete."
+
+# ── 4b. Досоздать отсутствующие таблицы SQLAlchemy metadata ─────────────
+# Alembic покрывает основной путь миграций, но в тестовых/переходных SQLite
+# базах может отсутствовать часть таблиц из более новых подсистем. До
+# init_defaults гарантируем, что metadata полностью материализована.
+echo "[entrypoint] Ensuring SQLAlchemy tables exist..."
+python3 - << 'PYEOF'
+import asyncio
+import sys
+sys.path.insert(0, '/app')
+
+import backend.models  # noqa: F401 - регистрирует все таблицы в metadata
+from backend.database import Base, engine
+
+
+async def ensure_tables():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
+asyncio.run(ensure_tables())
+print("[entrypoint] SQLAlchemy metadata sync complete.")
+PYEOF
 
 # ── 4. Инициализация дефолтных записей в БД (если пустая) ───────────────
 echo "[entrypoint] Initializing default database records..."

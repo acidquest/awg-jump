@@ -38,6 +38,10 @@ export interface Peer {
   last_handshake: string | null
   rx_bytes: number | null
   tx_bytes: number | null
+  client_code: number | null
+  client_kind: string | null
+  client_reported_ip: string | null
+  client_reported_at: string | null
   created_at: string | null
 }
 
@@ -49,6 +53,7 @@ export interface Node {
   host: string
   ssh_port: number
   awg_port: number
+  provisioning_mode: 'managed' | 'manual'
   awg_address: string | null
   public_key: string | null
   status: NodeStatus
@@ -60,6 +65,8 @@ export interface Node {
   tx_bytes: number | null
   latency_ms: number | null
   created_at: string | null
+  can_redeploy: boolean
+  can_manage_peers: boolean
 }
 
 export interface DeployLog {
@@ -73,6 +80,20 @@ export interface DeployLog {
 
 export interface NodeDetail extends Node {
   last_deploy_log: DeployLog | null
+  raw_conf: string | null
+}
+
+export interface NodePeer {
+  id: number
+  node_id: number
+  name: string
+  public_key: string
+  preshared_key: string | null
+  tunnel_address: string
+  allowed_ips: string
+  persistent_keepalive: number | null
+  enabled: boolean
+  created_at: string | null
 }
 
 export interface NodeStats {
@@ -84,7 +105,24 @@ export interface NodeStats {
   tx_bytes: number | null
   last_seen: string | null
   last_deploy: string | null
+  provisioning_mode: 'managed' | 'manual'
+  shared_peers: NodePeer[]
   deploy_logs: DeployLog[]
+}
+
+export interface SystemSettings {
+  admin_username: string
+  web_mode: 'http' | 'https'
+  web_port: number
+  tls_common_name: string
+  tls_cert_path: string
+  tls_key_path: string
+  cert: {
+    path: string
+    sha256: string
+    size_bytes: number
+  } | null
+  restart_required: boolean
 }
 
 export interface GeoipSource {

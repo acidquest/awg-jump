@@ -94,6 +94,7 @@ export default function Peers() {
             <tr>
               <th>Name</th>
               <th>Tunnel IP</th>
+              <th>Client</th>
               <th>Status</th>
               <th>Last handshake</th>
               <th>RX / TX</th>
@@ -103,17 +104,25 @@ export default function Peers() {
           </thead>
           <tbody>
             {isLoading ? (
-              <tr><td colSpan={7} style={{ textAlign: 'center', padding: 24 }}><span className="spinner" /></td></tr>
+              <tr><td colSpan={8} style={{ textAlign: 'center', padding: 24 }}><span className="spinner" /></td></tr>
             ) : peers.length === 0 ? (
-              <tr><td colSpan={7} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>No peers</td></tr>
+              <tr><td colSpan={8} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>No peers</td></tr>
             ) : peers.map((p) => {
               const iface = ifaces.find((i) => i.id === p.interface_id)
+              const rowBg =
+                p.client_kind === 'awg-gateway' ? 'rgba(245, 158, 11, 0.14)'
+                  : p.client_kind === 'awg-jump-client-android' ? 'rgba(34, 211, 238, 0.14)'
+                    : p.client_kind === 'awg-jump-client-ios' ? 'rgba(99, 102, 241, 0.12)'
+                      : undefined
               return (
-                <tr key={p.id}>
+                <tr key={p.id} style={rowBg ? { background: rowBg } : undefined}>
                   <td>
                     <span style={{ fontWeight: 500 }}>{p.name || `peer-${p.id}`}</span>
                   </td>
                   <td className="text-mono">{p.tunnel_address ?? '—'}</td>
+                  <td>
+                    <span className="text-mono text-muted" style={{ fontSize: 12 }}>{p.client_kind ?? '—'}</span>
+                  </td>
                   <td>
                     <label className="toggle" title={p.enabled ? 'Click to disable' : 'Click to enable'}>
                       <input

@@ -6,6 +6,7 @@ PIDs хранятся в памяти (module-level singleton).
 """
 import asyncio
 import io
+import ipaddress
 import logging
 import os
 import random
@@ -23,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models.interface import Interface, InterfaceMode
 from backend.models.peer import Peer
 from backend.models.upstream_node import NodeStatus, UpstreamNode
+from backend.config import settings
 
 
 # ── Singleton — PID таблица запущенных демонов (userspace режим) ─────────
@@ -246,6 +248,14 @@ def generate_client_config(peer: Peer, server: Interface, server_endpoint: str) 
     obf = _obf_client_lines(server)
     if obf:
         lines.append(obf)
+    try:
+        server_tunnel_ip = str(ipaddress.ip_interface(server.address).ip)
+    except ValueError:
+        server_tunnel_ip = server.address.split("/", 1)[0]
+    lines.append(
+        f"# awg-jump-status-url = "
+        f"{settings.web_mode.lower()}://{server_tunnel_ip}:{settings.web_port}/api/peers/status"
+    )
 
     lines.append("")
     lines.append("[Peer]")

@@ -14,8 +14,7 @@ update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || tr
 : "${AWG_LISTEN_PORT:=51821}"
 : "${AWG_PRIVATE_KEY:?AWG_PRIVATE_KEY is required}"
 : "${AWG_ADDRESS:?AWG_ADDRESS is required}"
-: "${AWG_PEER_PUBLIC_KEY:?AWG_PEER_PUBLIC_KEY is required}"
-: "${AWG_PEER_ALLOWED_IPS:=10.20.0.2/32}"
+AWG_CONFIG_PATH="${AWG_CONFIG_PATH:-/etc/awg-node/awg0.conf}"
 
 # Определить режим: kernel module или userspace amneziawg-go
 # Проверяем строго amneziawg — стандартный wireguard не поддерживает обфускацию
@@ -61,6 +60,9 @@ fi
 # Сформировать конфиг (права 600 — файл содержит приватный ключ)
 CONFIG_FILE=$(mktemp)
 chmod 600 "$CONFIG_FILE"
+if [ -f "$AWG_CONFIG_PATH" ]; then
+    cp "$AWG_CONFIG_PATH" "$CONFIG_FILE"
+else
 cat > "$CONFIG_FILE" << EOF
 [Interface]
 ListenPort = ${AWG_LISTEN_PORT}
@@ -107,6 +109,7 @@ fi
 if [ -n "${AWG_PEER_PERSISTENT_KEEPALIVE}" ]; then
     echo "PersistentKeepalive = ${AWG_PEER_PERSISTENT_KEEPALIVE}" >> "$CONFIG_FILE"
 fi
+fi
 
 # Применить конфиг (awg поддерживает обфускацию-параметры: S1/S2/H1/H2 и т.д.)
 echo "[awg-node] Applying AmneziaWG config..."
@@ -118,10 +121,22 @@ ip addr add "${AWG_ADDRESS}" dev awg0
 ip link set awg0 up
 ip link set dev awg0 mtu 1300
 
-# Явный route до tunnel IP jump-сервера.
-# awg setconf не управляет маршрутизацией как wg-quick, поэтому без этого
-# пакеты к 10.20.0.2 уходят в default route через eth0.
-ip route replace "${AWG_PEER_ALLOWED_IPS}" dev awg0
+# Route до каждого peer tunnel IP из конфига.
+awk '
+  BEGIN { in_peer = 0 }
+  /^\[Peer\]/ { in_peer = 1; next }
+  /^\[/ { in_peer = 0 }
+  in_peer && /^AllowedIPs[[:space:]]*=/ {
+    sub(/^[^=]*=[[:space:]]*/, "", $0)
+    split($0, parts, ",")
+    for (i in parts) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", parts[i])
+      if (parts[i] != "") print parts[i]
+    }
+  }
+' "$CONFIG_FILE" | while read -r allowed; do
+  ip route replace "$allowed" dev awg0
+done
 
 echo "[awg-node] Interface awg0 is up: ${AWG_ADDRESS}"
 awg show awg0

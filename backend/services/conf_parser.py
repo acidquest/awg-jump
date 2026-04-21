@@ -4,14 +4,8 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 
-REQUIRED_INTERFACE_KEYS = {"privatekey", "address"}
-REQUIRED_PEER_KEYS = {"publickey", "endpoint", "allowedips"}
-OBFUSCATION_KEYS = {"jc", "jmin", "jmax", "s1", "s2", "s3", "s4", "h1", "h2", "h3", "h4"}
-STATUS_URL_PREFIX = "# awg-jump-status-url ="
-
-
 @dataclass(slots=True)
-class ParsedEntryNode:
+class ParsedUpstreamConf:
     name: str
     raw_conf: str
     endpoint: str
@@ -24,8 +18,7 @@ class ParsedEntryNode:
     dns_servers: list[str]
     allowed_ips: list[str]
     persistent_keepalive: int | None
-    obfuscation: dict[str, int | str]
-    status_api_url: str | None
+    obfuscation: dict[str, str | int]
 
 
 def _parse_sections(conf_text: str) -> dict[str, dict[str, str]]:
@@ -59,8 +52,41 @@ def _split_endpoint(endpoint: str) -> tuple[str, int]:
     return parts.hostname, parts.port
 
 
-def split_endpoint(endpoint: str) -> tuple[str, int]:
-    return _split_endpoint(endpoint)
+def parse_peer_conf(conf_text: str, *, name: str | None = None) -> ParsedUpstreamConf:
+    parsed = _parse_sections(conf_text)
+    interface = parsed.get("interface", {})
+    peer = parsed.get("peer", {})
+    required_interface = {"privatekey", "address"}
+    required_peer = {"publickey", "endpoint", "allowedips"}
+    missing = sorted((required_interface - set(interface)) | (required_peer - set(peer)))
+    if missing:
+        raise ValueError(f"Config is missing required keys: {', '.join(missing)}")
+
+    endpoint = peer["endpoint"]
+    endpoint_host, endpoint_port = _split_endpoint(endpoint)
+    obfuscation: dict[str, str | int] = {}
+    for key, value in interface.items():
+        if key in {"jc", "jmin", "jmax", "s1", "s2", "s3", "s4", "h1", "h2", "h3", "h4"}:
+            try:
+                obfuscation[key.upper()] = int(value)
+            except ValueError:
+                obfuscation[key.upper()] = value
+
+    return ParsedUpstreamConf(
+        name=name or endpoint_host,
+        raw_conf=conf_text.strip() + "\n",
+        endpoint=endpoint,
+        endpoint_host=endpoint_host,
+        endpoint_port=endpoint_port,
+        public_key=peer["publickey"],
+        private_key=interface["privatekey"],
+        preshared_key=peer.get("presharedkey"),
+        tunnel_address=interface["address"],
+        dns_servers=_split_csv(interface.get("dns")),
+        allowed_ips=_split_csv(peer.get("allowedips")),
+        persistent_keepalive=int(peer["persistentkeepalive"]) if peer.get("persistentkeepalive") else None,
+        obfuscation=obfuscation,
+    )
 
 
 def render_peer_conf(
@@ -68,23 +94,18 @@ def render_peer_conf(
     private_key: str,
     tunnel_address: str,
     dns_servers: list[str],
-    obfuscation: dict[str, int | str],
+    obfuscation: dict[str, str | int],
     public_key: str,
     endpoint: str,
     allowed_ips: list[str],
     preshared_key: str | None = None,
     persistent_keepalive: int | None = None,
-    status_api_url: str | None = None,
 ) -> str:
-    lines = []
-    if status_api_url:
-        lines.append(f"{STATUS_URL_PREFIX} {status_api_url}")
-        lines.append("")
-    lines.extend([
+    lines = [
         "[Interface]",
         f"PrivateKey = {private_key}",
         f"Address = {tunnel_address}",
-    ])
+    ]
     if dns_servers:
         lines.append(f"DNS = {', '.join(dns_servers)}")
     for key, value in sorted(obfuscation.items()):
@@ -103,52 +124,3 @@ def render_peer_conf(
     if persistent_keepalive is not None:
         lines.append(f"PersistentKeepalive = {persistent_keepalive}")
     return "\n".join(lines).strip() + "\n"
-
-
-def parse_peer_conf(conf_text: str, *, name: str | None = None) -> ParsedEntryNode:
-    status_api_url = None
-    for raw_line in conf_text.splitlines():
-        line = raw_line.strip()
-        if not line.lower().startswith(STATUS_URL_PREFIX):
-            continue
-        status_api_url = line.split("=", 1)[1].strip() or None
-        break
-
-    parsed = _parse_sections(conf_text)
-    interface = parsed.get("interface", {})
-    peer = parsed.get("peer", {})
-
-    missing_interface = REQUIRED_INTERFACE_KEYS - set(interface)
-    missing_peer = REQUIRED_PEER_KEYS - set(peer)
-    if missing_interface or missing_peer:
-        missing = sorted(missing_interface | missing_peer)
-        raise ValueError(f"Config is missing required keys: {', '.join(missing)}")
-
-    endpoint = peer["endpoint"]
-    endpoint_host, endpoint_port = _split_endpoint(endpoint)
-
-    obfuscation: dict[str, int | str] = {}
-    for key, value in interface.items():
-        if key in OBFUSCATION_KEYS:
-            try:
-                obfuscation[key.upper()] = int(value)
-            except ValueError:
-                obfuscation[key.upper()] = value
-
-    chosen_name = name or endpoint_host
-    return ParsedEntryNode(
-        name=chosen_name,
-        raw_conf=conf_text.strip() + "\n",
-        endpoint=endpoint,
-        endpoint_host=endpoint_host,
-        endpoint_port=endpoint_port,
-        public_key=peer["publickey"],
-        private_key=interface["privatekey"],
-        preshared_key=peer.get("presharedkey"),
-        tunnel_address=interface["address"],
-        dns_servers=_split_csv(interface.get("dns")),
-        allowed_ips=_split_csv(peer.get("allowedips")),
-        persistent_keepalive=int(peer["persistentkeepalive"]) if peer.get("persistentkeepalive") else None,
-        obfuscation=obfuscation,
-        status_api_url=status_api_url,
-    )

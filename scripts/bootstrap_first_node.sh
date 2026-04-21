@@ -86,7 +86,6 @@ prompt DOCKER_NAMESPACE "Docker Hub namespace" "your-dockerhub-namespace"
 prompt IMAGE_TAG "Docker image tag" "latest"
 
 IMAGE_JUMP="docker.io/${DOCKER_NAMESPACE}/awg-jump:${IMAGE_TAG}"
-IMAGE_NGINX="docker.io/${DOCKER_NAMESPACE}/awg-jump-nginx:${IMAGE_TAG}"
 
 REMOTE_ROOT_PREFIX=""
 if [[ "$SSH_USER" != "root" ]]; then
@@ -104,7 +103,6 @@ cp "$REPO_ROOT/.env.ru.example" "$TMP_DIR/.env"
 replace_env_value "$TMP_DIR/.env" "TLS_COMMON_NAME" "$HOST"
 replace_env_value "$TMP_DIR/.env" "SERVER_HOST" "$HOST"
 replace_env_value "$TMP_DIR/.env" "AWG_JUMP_IMAGE" "$IMAGE_JUMP"
-replace_env_value "$TMP_DIR/.env" "AWG_NGINX_IMAGE" "$IMAGE_NGINX"
 
 cat >"$TMP_DIR/REMOTE_BOOTSTRAP.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -192,7 +190,7 @@ Files created:
 
 Next steps on the node:
   1. Edit ${REMOTE_DIR}/.env and set at least ADMIN_PASSWORD and SECRET_KEY.
-  2. Verify AWG_JUMP_IMAGE and AWG_NGINX_IMAGE in ${REMOTE_DIR}/.env.
+  2. Verify AWG_JUMP_IMAGE in ${REMOTE_DIR}/.env.
   3. Start the stack:
      cd ${REMOTE_DIR}
      docker compose -f docker-compose.yml pull

@@ -71,6 +71,7 @@ class EntryNodeVisualUpdate(BaseModel):
     dns_servers: list[str] = []
     allowed_ips: list[str] = []
     persistent_keepalive: int | None = None
+    status_api_url: str | None = None
 
 
 class FirstNodeBootstrapRequest(BaseModel):
@@ -118,6 +119,7 @@ def _to_payload(
     latency_method: str | None = None,
 ) -> dict:
     node_state = get_node_runtime_state(node.id)
+    parsed_status_api_url = parse_peer_conf(node.raw_conf, name=node.name).status_api_url if node.raw_conf else None
     return {
         "id": node.id,
         "name": node.name,
@@ -134,6 +136,7 @@ def _to_payload(
         "allowed_ips": node.allowed_ips,
         "persistent_keepalive": node.persistent_keepalive,
         "obfuscation": node.obfuscation,
+        "status_api_url": parsed_status_api_url,
         "latest_latency_ms": node_state.latency_ms if latency_ms is None else latency_ms,
         "latest_latency_at": node_state.latency_at.isoformat() if node_state.latency_at else None,
         "latest_latency_target": latency_target,
@@ -380,6 +383,7 @@ async def update_node_visual(
         allowed_ips=payload.allowed_ips,
         preshared_key=payload.preshared_key,
         persistent_keepalive=payload.persistent_keepalive,
+        status_api_url=payload.status_api_url,
     )
     parsed = parse_peer_conf(raw_conf, name=payload.name)
     _apply_parsed_node(node, parsed, name=payload.name)

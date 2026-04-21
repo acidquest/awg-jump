@@ -1,4 +1,5 @@
 import logging
+import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
@@ -13,7 +14,7 @@ _INSECURE_DEFAULTS = {
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=os.environ.get("APP_ENV_FILE", "/app/.env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -24,8 +25,14 @@ class Settings(BaseSettings):
 
     # ── Веб-интерфейс ────────────────────────────────────────────────────
     web_port: int = 8080
+    web_mode: str = "https"
+    web_access_log: bool = True
     secret_key: str = "insecure-default-key-change-me"
     session_ttl_hours: int = 8
+    tls_common_name: str = "localhost"
+    tls_cert_path: str = "/data/certs/server.crt"
+    tls_key_path: str = "/data/certs/server.key"
+    env_file_path: str = "/app/.env"
 
     # ── Публичный адрес сервера (для Endpoint в клиентских конфигах) ─────
     server_host: str = ""
@@ -74,9 +81,18 @@ class Settings(BaseSettings):
     geoip_cache_dir: str = "/data/geoip"
     backup_dir: str = "/data/backups"
     wg_config_dir: str = "/data/wg_configs"
+    certs_dir: str = "/data/certs"
 
 
 settings = Settings()
+
+
+def reload_settings() -> Settings:
+    """Reload settings from the current env/.env into the shared settings object."""
+    fresh = Settings()
+    for key, value in fresh.model_dump().items():
+        setattr(settings, key, value)
+    return settings
 
 
 def validate_security_settings() -> None:

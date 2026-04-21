@@ -6,6 +6,7 @@ Backup router — экспорт/импорт ZIP-архива с config.db и r
   env_snapshot.json      — публичные параметры конфигурации (без паролей)
   wg_configs/            — сгенерированные WG-конфиги
   geoip_cache/           — локальный кэш GeoIP-префиксов
+  certs/                 — TLS сертификаты FastAPI
 """
 import io
 import json
@@ -25,7 +26,7 @@ from backend.routers.auth import get_current_user
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/backup", tags=["backup"])
 
-_BACKUP_VERSION = "2"
+_BACKUP_VERSION = "3"
 
 
 def _json_safe_setting(name: str, default):
@@ -58,6 +59,10 @@ def _env_snapshot() -> dict:
             "geoip_update_cron": _json_safe_setting("geoip_update_cron", "0 4 * * *"),
             "node_awg_port": _json_safe_setting("node_awg_port", 51821),
             "node_vpn_subnet": _json_safe_setting("node_vpn_subnet", "10.20.0.0/24"),
+            "web_mode": _json_safe_setting("web_mode", "https"),
+            "web_port": _json_safe_setting("web_port", 8080),
+            "tls_cert_path": _json_safe_setting("tls_cert_path", "/data/certs/server.crt"),
+            "tls_key_path": _json_safe_setting("tls_key_path", "/data/certs/server.key"),
         },
         "note": (
             "dns_domains (split DNS rules) are stored in config.db and restored automatically. "
@@ -140,6 +145,7 @@ def _build_zip_bytes() -> bytes:
         # runtime-файлы, которые нужны после восстановления без повторной генерации
         _add_dir_to_zip(zf, settings.wg_config_dir, "wg_configs")
         _add_dir_to_zip(zf, settings.geoip_cache_dir, "geoip_cache")
+        _add_dir_to_zip(zf, settings.certs_dir, "certs")
 
     return buf.getvalue()
 
@@ -229,6 +235,7 @@ async def import_backup(
 
             _replace_directory_from_archive(zf, "wg_configs", settings.wg_config_dir)
             _replace_directory_from_archive(zf, "geoip_cache", settings.geoip_cache_dir)
+            _replace_directory_from_archive(zf, "certs", settings.certs_dir)
     except HTTPException:
         raise
     except Exception as e:

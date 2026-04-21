@@ -6,25 +6,31 @@ Nodes router — управление upstream нодами.
 import asyncio
 import json
 import logging
+import subprocess
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import Response, StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import settings
 from backend.database import AsyncSessionLocal, get_db
-from backend.models.upstream_node import DeployLog, DeployStatus, NodeStatus, UpstreamNode
+from backend.models.interface import Interface
+from backend.models.peer import Peer
+from backend.models.upstream_node import DeployLog, DeployStatus, NodePeer, NodeStatus, ProvisioningMode, UpstreamNode
 from backend.routers.auth import get_current_user
+from backend.services.conf_parser import parse_peer_conf, render_peer_conf
 from backend.services.node_deployer import (
     _finish_log,
     cleanup_deploy_queue,
     deployer,
     get_deploy_queue,
 )
+import backend.services.awg as awg_svc
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 logger = logging.getLogger(__name__)
@@ -39,6 +45,7 @@ class NodeOut(BaseModel):
     host: str
     ssh_port: int
     awg_port: int
+    provisioning_mode: str
     awg_address: Optional[str]
     public_key: Optional[str]
     status: str
@@ -50,6 +57,8 @@ class NodeOut(BaseModel):
     tx_bytes: Optional[int]
     latency_ms: Optional[float]
     created_at: Optional[datetime]
+    can_redeploy: bool
+    can_manage_peers: bool
 
     model_config = {"from_attributes": True}
 
@@ -67,15 +76,33 @@ class DeployLogOut(BaseModel):
 
 class NodeDetailOut(NodeOut):
     last_deploy_log: Optional[DeployLogOut] = None
+    raw_conf: Optional[str] = None
+
+
+class NodePeerOut(BaseModel):
+    id: int
+    node_id: int
+    name: str
+    public_key: str
+    preshared_key: Optional[str]
+    tunnel_address: str
+    allowed_ips: str
+    persistent_keepalive: Optional[int]
+    enabled: bool
+    created_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}
 
 
 class NodeCreate(BaseModel):
     name: str
-    host: str
+    host: str = ""
     ssh_port: int = 22
     awg_port: int = 51821
     awg_address: Optional[str] = None  # если None — выделяется автоматически при деплое
     priority: int = 100
+    provisioning_mode: str = ProvisioningMode.managed.value
+    conf_text: Optional[str] = None
 
 
 class NodeUpdate(BaseModel):
@@ -85,6 +112,7 @@ class NodeUpdate(BaseModel):
     awg_port: Optional[int] = None
     awg_address: Optional[str] = None
     priority: Optional[int] = None
+    raw_conf: Optional[str] = None
 
 
 class DeployRequest(BaseModel):
@@ -107,6 +135,22 @@ class DeleteRequest(BaseModel):
     ssh_port: int = 22
 
 
+class NodePeerCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    tunnel_address: str = Field(min_length=3, max_length=64)
+    allowed_ips: str = Field(default="0.0.0.0/0", max_length=256)
+    persistent_keepalive: Optional[int] = Field(default=25, ge=0, le=65535)
+    enabled: bool = True
+
+
+class NodePeerUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    tunnel_address: Optional[str] = Field(default=None, min_length=3, max_length=64)
+    allowed_ips: Optional[str] = Field(default=None, max_length=256)
+    persistent_keepalive: Optional[int] = Field(default=None, ge=0, le=65535)
+    enabled: Optional[bool] = None
+
+
 # ── Вспомогательные функции ───────────────────────────────────────────────
 
 def _node_to_out(node: UpstreamNode) -> NodeOut:
@@ -116,6 +160,7 @@ def _node_to_out(node: UpstreamNode) -> NodeOut:
         host=node.host,
         ssh_port=node.ssh_port,
         awg_port=node.awg_port,
+        provisioning_mode=node.provisioning_mode.value if hasattr(node.provisioning_mode, "value") else node.provisioning_mode,
         awg_address=node.awg_address,
         public_key=node.public_key,
         status=node.status.value if hasattr(node.status, "value") else node.status,
@@ -127,6 +172,8 @@ def _node_to_out(node: UpstreamNode) -> NodeOut:
         tx_bytes=node.tx_bytes,
         latency_ms=node.latency_ms,
         created_at=node.created_at,
+        can_redeploy=(node.provisioning_mode == ProvisioningMode.managed),
+        can_manage_peers=(node.provisioning_mode == ProvisioningMode.managed),
     )
 
 
@@ -143,12 +190,89 @@ def _log_to_out(log: DeployLog) -> DeployLogOut:
 
 async def _get_node_or_404(node_id: int, session: AsyncSession) -> UpstreamNode:
     result = await session.execute(
-        select(UpstreamNode).where(UpstreamNode.id == node_id)
+        select(UpstreamNode)
+        .options(selectinload(UpstreamNode.shared_peers))
+        .where(UpstreamNode.id == node_id)
     )
     node = result.scalar_one_or_none()
     if node is None:
         raise HTTPException(status_code=404, detail="Node not found")
     return node
+
+
+async def _get_awg1_or_500(session: AsyncSession) -> Interface:
+    result = await session.execute(select(Interface).where(Interface.name == "awg1"))
+    iface = result.scalar_one_or_none()
+    if iface is None:
+        raise HTTPException(status_code=500, detail="awg1 interface not found")
+    return iface
+
+
+def _node_peer_to_out(peer: NodePeer) -> NodePeerOut:
+    return NodePeerOut(
+        id=peer.id,
+        node_id=peer.node_id,
+        name=peer.name,
+        public_key=peer.public_key,
+        preshared_key=peer.preshared_key,
+        tunnel_address=peer.tunnel_address,
+        allowed_ips=peer.allowed_ips,
+        persistent_keepalive=peer.persistent_keepalive,
+        enabled=peer.enabled,
+        created_at=peer.created_at,
+    )
+
+
+def _derive_public_key(private_key: str) -> str:
+    proc = subprocess.run(
+        ["awg", "pubkey"],
+        input=private_key.encode(),
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.decode(errors="replace") or "awg pubkey failed")
+    return proc.stdout.decode().strip()
+
+
+async def _apply_manual_node_to_awg1(session: AsyncSession, node: UpstreamNode) -> None:
+    awg1 = await _get_awg1_or_500(session)
+    awg1.private_key = node.private_key
+    awg1.public_key = _derive_public_key(node.private_key or "")
+    awg1.endpoint = f"{node.host}:{node.awg_port}"
+    awg1.allowed_ips = node.client_allowed_ips or settings.awg1_allowed_ips
+    awg1.persistent_keepalive = node.client_keepalive or settings.awg1_persistent_keepalive
+
+    parsed = parse_peer_conf(node.raw_conf or "", name=node.name)
+    for key, attr in {
+        "JC": "obf_jc",
+        "JMIN": "obf_jmin",
+        "JMAX": "obf_jmax",
+        "S1": "obf_s1",
+        "S2": "obf_s2",
+        "S3": "obf_s3",
+        "S4": "obf_s4",
+        "H1": "obf_h1",
+        "H2": "obf_h2",
+        "H3": "obf_h3",
+        "H4": "obf_h4",
+    }.items():
+        if key in parsed.obfuscation:
+            setattr(awg1, attr, parsed.obfuscation[key])
+
+    session.add(awg1)
+    await session.flush()
+
+    synthetic_peer = Peer(
+        interface_id=awg1.id,
+        name=node.name,
+        public_key=node.public_key or "",
+        preshared_key=node.preshared_key,
+        allowed_ips=node.client_allowed_ips or settings.awg1_allowed_ips,
+        persistent_keepalive=node.client_keepalive or settings.awg1_persistent_keepalive,
+        enabled=True,
+    )
+    await awg_svc.apply_interface(awg1, [synthetic_peer])
 
 
 async def _create_deploy_log(node_id: int) -> int:
@@ -205,14 +329,35 @@ async def create_node(
     session: AsyncSession = Depends(get_db),
     _user: str = Depends(get_current_user),
 ) -> NodeOut:
+    try:
+        provisioning_mode = ProvisioningMode(body.provisioning_mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Unsupported provisioning_mode") from exc
+    parsed = None
+    if provisioning_mode == ProvisioningMode.manual:
+        if not body.conf_text:
+            raise HTTPException(status_code=400, detail="conf_text is required for manual nodes")
+        try:
+            parsed = parse_peer_conf(body.conf_text, name=body.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     node = UpstreamNode(
-        name=body.name,
-        host=body.host,
+        name=parsed.name if parsed else body.name,
+        host=parsed.endpoint_host if parsed else body.host,
         ssh_port=body.ssh_port,
-        awg_port=body.awg_port,
-        awg_address=body.awg_address,
+        awg_port=parsed.endpoint_port if parsed else body.awg_port,
+        provisioning_mode=provisioning_mode,
+        awg_address=parsed.tunnel_address if parsed else body.awg_address,
+        public_key=parsed.public_key if parsed else None,
+        private_key=parsed.private_key if parsed else None,
+        preshared_key=parsed.preshared_key if parsed else None,
+        raw_conf=parsed.raw_conf if parsed else body.conf_text,
+        client_dns=",".join(parsed.dns_servers) if parsed else None,
+        client_allowed_ips=",".join(parsed.allowed_ips) if parsed else None,
+        client_keepalive=parsed.persistent_keepalive if parsed else None,
         priority=body.priority,
-        status=NodeStatus.pending,
+        status=NodeStatus.online if parsed else NodeStatus.pending,
         is_active=False,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
@@ -239,6 +384,8 @@ async def deploy_node(
 
     if node.status == NodeStatus.deploying:
         raise HTTPException(status_code=409, detail="Node is already being deployed")
+    if node.provisioning_mode != ProvisioningMode.managed:
+        raise HTTPException(status_code=400, detail="Manual nodes cannot be deployed via SSH")
 
     log_id = await _create_deploy_log(body.node_id)
     # Инициализировать очередь до старта задачи
@@ -323,6 +470,7 @@ async def get_node(
     last_log = last_log_result.scalar_one_or_none()
 
     out = NodeDetailOut(**_node_to_out(node).model_dump())
+    out.raw_conf = node.raw_conf
     if last_log:
         out.last_deploy_log = _log_to_out(last_log)
     return out
@@ -336,7 +484,25 @@ async def update_node(
     _user: str = Depends(get_current_user),
 ) -> NodeOut:
     node = await _get_node_or_404(node_id, session)
+    if body.raw_conf and node.provisioning_mode == ProvisioningMode.manual:
+        try:
+            parsed = parse_peer_conf(body.raw_conf, name=body.name or node.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        node.name = parsed.name
+        node.host = parsed.endpoint_host
+        node.awg_port = parsed.endpoint_port
+        node.awg_address = parsed.tunnel_address
+        node.public_key = parsed.public_key
+        node.private_key = parsed.private_key
+        node.preshared_key = parsed.preshared_key
+        node.raw_conf = parsed.raw_conf
+        node.client_dns = ",".join(parsed.dns_servers)
+        node.client_allowed_ips = ",".join(parsed.allowed_ips)
+        node.client_keepalive = parsed.persistent_keepalive
     for field, value in body.model_dump(exclude_none=True).items():
+        if field == "raw_conf":
+            continue
         setattr(node, field, value)
     node.updated_at = datetime.now(timezone.utc)
     session.add(node)
@@ -356,7 +522,7 @@ async def delete_node(
     """
     node = await _get_node_or_404(node_id, session)
 
-    if body and body.ssh_user and body.ssh_password:
+    if node.provisioning_mode == ProvisioningMode.managed and body and body.ssh_user and body.ssh_password:
         try:
             await deployer.remove(
                 node_id,
@@ -391,6 +557,14 @@ async def reset_node(
     Используется для восстановления ноды после offline без повторного деплоя.
     """
     node = await _get_node_or_404(node_id, session)
+    if node.provisioning_mode == ProvisioningMode.manual:
+        await _apply_manual_node_to_awg1(session, node)
+        node.status = NodeStatus.online
+        node.updated_at = datetime.now(timezone.utc)
+        session.add(node)
+        await session.flush()
+        return _node_to_out(node)
+
     if not node.public_key or not node.awg_address:
         raise HTTPException(
             status_code=400,
@@ -456,7 +630,13 @@ async def activate_node(
     await session.flush()
 
     # Переключить awg1 endpoint
-    if node.public_key and node.awg_address:
+    if node.provisioning_mode == ProvisioningMode.manual and node.raw_conf:
+        await _apply_manual_node_to_awg1(session, node)
+        from backend.services.routing import update_upstream_host_route, update_vpn_route
+        update_vpn_route("awg1")
+        if node.awg_address:
+            update_upstream_host_route(node.awg_address)
+    elif node.public_key and node.awg_address:
         from backend.services.awg import _run_cmd
         rc, out = _run_cmd([
             "awg", "set", "awg1",
@@ -512,8 +692,139 @@ async def get_node_stats(
         "tx_bytes": node.tx_bytes,
         "last_seen": node.last_seen,
         "last_deploy": node.last_deploy,
+        "provisioning_mode": node.provisioning_mode.value if hasattr(node.provisioning_mode, "value") else node.provisioning_mode,
+        "shared_peers": [_node_peer_to_out(peer).model_dump() for peer in node.shared_peers],
         "deploy_logs": [log.model_dump() for log in logs],
     }
+
+
+async def _get_node_peer_or_404(node_id: int, peer_id: int, session: AsyncSession) -> NodePeer:
+    result = await session.execute(
+        select(NodePeer).where(NodePeer.id == peer_id, NodePeer.node_id == node_id)
+    )
+    peer = result.scalar_one_or_none()
+    if peer is None:
+        raise HTTPException(status_code=404, detail="Node peer not found")
+    return peer
+
+
+@router.get("/{node_id}/peers", response_model=list[NodePeerOut])
+async def list_node_peers(
+    node_id: int,
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+) -> list[NodePeerOut]:
+    node = await _get_node_or_404(node_id, session)
+    if node.provisioning_mode != ProvisioningMode.managed:
+        return []
+    return [_node_peer_to_out(peer) for peer in node.shared_peers]
+
+
+@router.post("/{node_id}/peers", response_model=NodePeerOut, status_code=201)
+async def create_node_peer(
+    node_id: int,
+    body: NodePeerCreate,
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+) -> NodePeerOut:
+    node = await _get_node_or_404(node_id, session)
+    if node.provisioning_mode != ProvisioningMode.managed:
+        raise HTTPException(status_code=400, detail="Only managed nodes support shared peers")
+    priv, pub = awg_svc.generate_keypair()
+    peer = NodePeer(
+        node_id=node_id,
+        name=body.name,
+        private_key=priv,
+        public_key=pub,
+        tunnel_address=body.tunnel_address,
+        allowed_ips=body.allowed_ips,
+        persistent_keepalive=body.persistent_keepalive,
+        enabled=body.enabled,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    session.add(peer)
+    await session.flush()
+    return _node_peer_to_out(peer)
+
+
+@router.put("/{node_id}/peers/{peer_id}", response_model=NodePeerOut)
+async def update_node_peer(
+    node_id: int,
+    peer_id: int,
+    body: NodePeerUpdate,
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+) -> NodePeerOut:
+    node = await _get_node_or_404(node_id, session)
+    if node.provisioning_mode != ProvisioningMode.managed:
+        raise HTTPException(status_code=400, detail="Only managed nodes support shared peers")
+    peer = await _get_node_peer_or_404(node_id, peer_id, session)
+    for field, value in body.model_dump(exclude_none=True).items():
+        setattr(peer, field, value)
+    peer.updated_at = datetime.now(timezone.utc)
+    session.add(peer)
+    await session.flush()
+    return _node_peer_to_out(peer)
+
+
+@router.delete("/{node_id}/peers/{peer_id}", status_code=204)
+async def delete_node_peer(
+    node_id: int,
+    peer_id: int,
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+) -> None:
+    node = await _get_node_or_404(node_id, session)
+    if node.provisioning_mode != ProvisioningMode.managed:
+        raise HTTPException(status_code=400, detail="Only managed nodes support shared peers")
+    peer = await _get_node_peer_or_404(node_id, peer_id, session)
+    await session.delete(peer)
+    await session.flush()
+
+
+@router.get("/{node_id}/peers/{peer_id}/config")
+async def export_node_peer_config(
+    node_id: int,
+    peer_id: int,
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+) -> Response:
+    node = await _get_node_or_404(node_id, session)
+    if node.provisioning_mode != ProvisioningMode.managed:
+        raise HTTPException(status_code=400, detail="Only managed nodes support shared peers")
+    peer = await _get_node_peer_or_404(node_id, peer_id, session)
+    awg1 = await _get_awg1_or_500(session)
+    config = render_peer_conf(
+        private_key=peer.private_key,
+        tunnel_address=peer.tunnel_address,
+        dns_servers=[],
+        obfuscation={
+            key: value
+            for key, value in {
+                "S1": awg1.obf_s1,
+                "S2": awg1.obf_s2,
+                "S3": awg1.obf_s3,
+                "S4": awg1.obf_s4,
+                "H1": awg1.obf_h1,
+                "H2": awg1.obf_h2,
+                "H3": awg1.obf_h3,
+                "H4": awg1.obf_h4,
+            }.items()
+            if value is not None
+        },
+        public_key=node.public_key or "",
+        endpoint=f"{node.host}:{node.awg_port}",
+        allowed_ips=[peer.allowed_ips or "0.0.0.0/0"],
+        preshared_key=peer.preshared_key,
+        persistent_keepalive=peer.persistent_keepalive,
+    )
+    filename = f"{peer.name or f'node-peer-{peer.id}'}.conf"
+    return Response(
+        content=config,
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/{node_id}/redeploy", status_code=202)
@@ -532,6 +843,9 @@ async def redeploy_node(
 
     if node.status == NodeStatus.deploying:
         raise HTTPException(status_code=409, detail="Node is already being deployed")
+
+    if node.provisioning_mode != ProvisioningMode.managed:
+        raise HTTPException(status_code=400, detail="Manual nodes do not support redeploy")
 
     if not node.private_key:
         raise HTTPException(

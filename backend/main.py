@@ -26,7 +26,7 @@ from backend.models.geoip import GeoipSource
 from backend.models.routing_settings import RoutingSettings
 from backend.models.upstream_node import NodeStatus, UpstreamNode
 from backend.models.dns_manual_address import DnsManualAddress
-from backend.routers import auth, backup, dns, geoip, interfaces, nodes, peers, routing, system
+from backend.routers import auth, backup, dns, geoip, interfaces, nodes, peers, routing, settings as settings_router, system
 from backend.scheduler import scheduler, setup_scheduler
 import backend.services.awg as awg_svc
 import backend.services.dns_manager as dns_mgr
@@ -98,6 +98,34 @@ async def _ensure_sqlite_columns() -> None:
         result = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='dns_manual_addresses'"))
         if result.first() is None:
             await conn.run_sync(lambda sync_conn: Base.metadata.tables["dns_manual_addresses"].create(sync_conn))
+
+        result = await conn.execute(text("PRAGMA table_info(peers)"))
+        peer_columns = {row[1] for row in result.fetchall()}
+        if "client_code" not in peer_columns:
+            await conn.execute(text("ALTER TABLE peers ADD COLUMN client_code INTEGER"))
+        if "client_kind" not in peer_columns:
+            await conn.execute(text("ALTER TABLE peers ADD COLUMN client_kind VARCHAR(64)"))
+        if "client_reported_ip" not in peer_columns:
+            await conn.execute(text("ALTER TABLE peers ADD COLUMN client_reported_ip VARCHAR(64)"))
+        if "client_reported_at" not in peer_columns:
+            await conn.execute(text("ALTER TABLE peers ADD COLUMN client_reported_at DATETIME"))
+
+        result = await conn.execute(text("PRAGMA table_info(upstream_nodes)"))
+        node_columns = {row[1] for row in result.fetchall()}
+        if "provisioning_mode" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN provisioning_mode VARCHAR(16) NOT NULL DEFAULT 'managed'"))
+        if "raw_conf" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN raw_conf TEXT"))
+        if "client_dns" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_dns VARCHAR(256)"))
+        if "client_allowed_ips" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_allowed_ips VARCHAR(256)"))
+        if "client_keepalive" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_keepalive INTEGER"))
+
+        result = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='node_peers'"))
+        if result.first() is None:
+            await conn.run_sync(lambda sync_conn: Base.metadata.tables["node_peers"].create(sync_conn))
 
 async def _init_keys_and_obfuscation() -> None:
     """Генерирует AWG ключи и параметры обфускации если отсутствуют."""
@@ -303,6 +331,7 @@ app.include_router(dns.router)
 app.include_router(system.router)
 app.include_router(backup.router)
 app.include_router(nodes.router)
+app.include_router(settings_router.router)
 
 
 # ── Health (no auth) ──────────────────────────────────────────────────────

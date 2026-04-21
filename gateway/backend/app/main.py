@@ -32,6 +32,11 @@ from app.services.external_ip import EXTERNAL_IP_REFRESH_INTERVAL_SECONDS, refre
 from app.services.failover import evaluate_failover_health, failover_to_next_available, start_tunnel_with_retries
 from app.services.maintenance import wait_until_ready
 from app.services.routing import apply_local_passthrough, apply_routing_plan, sync_firewall_backend
+from app.services.status_reporting import (
+    STATUS_REPORT_POLL_SECONDS,
+    maybe_report_gateway_status,
+    reset_status_report_state,
+)
 from app.services.traffic_sources import migrate_legacy_source_settings
 from app.services.runtime import reset_active_node_uptime, resolve_live_tunnel_status, stop_tunnel
 from app.services.runtime_state import get_tunnel_runtime_state
@@ -52,6 +57,7 @@ EXTERNAL_IP_LOOP_START_DELAY_SECONDS = 11
 FAILOVER_LOOP_START_DELAY_SECONDS = 17
 DEVICE_TRACKING_LOOP_START_DELAY_SECONDS = 23
 BACKUP_LOOP_START_DELAY_SECONDS = 29
+STATUS_REPORT_LOOP_START_DELAY_SECONDS = 7
 
 
 def _is_sqlite_lock_error(exc: Exception) -> bool:
@@ -280,6 +286,24 @@ async def _external_ip_loop(stop_event: asyncio.Event) -> None:
             continue
 
 
+async def _status_report_loop(stop_event: asyncio.Event) -> None:
+    if await _initial_loop_delay(stop_event, STATUS_REPORT_LOOP_START_DELAY_SECONDS):
+        return
+    while not stop_event.is_set():
+        async def action(session: AsyncSession) -> None:
+            try:
+                await maybe_report_gateway_status(session)
+            except Exception:
+                await session.rollback()
+                raise
+
+        await _run_db_cycle_with_retry("gateway-status-report", AsyncSessionLocal, action)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=STATUS_REPORT_POLL_SECONDS)
+        except asyncio.TimeoutError:
+            continue
+
+
 async def _failover_loop(stop_event: asyncio.Event) -> None:
     if await _initial_loop_delay(stop_event, FAILOVER_LOOP_START_DELAY_SECONDS):
         return
@@ -331,12 +355,14 @@ async def lifespan(app: FastAPI):
     failover_stop = asyncio.Event()
     device_tracking_stop = asyncio.Event()
     backup_stop = asyncio.Event()
+    status_report_stop = asyncio.Event()
     metrics_task: asyncio.Task | None = None
     traffic_metrics_task: asyncio.Task | None = None
     external_ip_task: asyncio.Task | None = None
     failover_task: asyncio.Task | None = None
     device_tracking_task: asyncio.Task | None = None
     backup_task: asyncio.Task | None = None
+    status_report_task: asyncio.Task | None = None
     ensure_directories()
     async with engine.begin() as conn:
         await conn.run_sync(lambda sync_conn: [table.create(sync_conn, checkfirst=True) for table in MAIN_DB_TABLES])
@@ -385,6 +411,7 @@ async def lifespan(app: FastAPI):
     failover_task = asyncio.create_task(_failover_loop(failover_stop))
     device_tracking_task = asyncio.create_task(_device_tracking_loop(device_tracking_stop))
     backup_task = asyncio.create_task(_backup_loop(backup_stop))
+    status_report_task = asyncio.create_task(_status_report_loop(status_report_stop))
     yield
     metrics_stop.set()
     traffic_metrics_stop.set()
@@ -392,6 +419,7 @@ async def lifespan(app: FastAPI):
     failover_stop.set()
     device_tracking_stop.set()
     backup_stop.set()
+    status_report_stop.set()
     if metrics_task is not None:
         await metrics_task
     if traffic_metrics_task is not None:
@@ -404,6 +432,8 @@ async def lifespan(app: FastAPI):
         await device_tracking_task
     if backup_task is not None:
         await backup_task
+    if status_report_task is not None:
+        await status_report_task
     async with AsyncSessionLocal() as session:
         prepare_session(session)
         gateway_settings = await session.get(GatewaySettings, 1)
@@ -412,6 +442,7 @@ async def lifespan(app: FastAPI):
             apply_local_passthrough(gateway_settings)
             await commit_with_lock(session)
     stop_dnsmasq()
+    reset_status_report_state()
 
 
 app = FastAPI(

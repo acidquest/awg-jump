@@ -20,31 +20,19 @@ services:
       - .env
     volumes:
       - ./data:/data
+      - ./.env:/app/.env
     networks:
       - awg-net
     ports:
       - "${AWG0_LISTEN_PORT:-51820}:${AWG0_LISTEN_PORT:-51820}/udp"
+      - "${WEB_PORT:-8080}:${WEB_PORT:-8080}/tcp"
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:${WEB_PORT:-8080}/api/health"]
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/venv/bin/python -c \"from backend.config import reload_settings, settings; import subprocess; reload_settings(); url=f'{settings.web_mode.lower()}://localhost:{settings.web_port}/api/health'; cmd=['curl','-f']; cmd.insert(1,'-k') if settings.web_mode.lower()=='https' else None; cmd.append(url); raise SystemExit(subprocess.call(cmd))\"",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 15s
-
-  nginx:
-    image: ${AWG_NGINX_IMAGE:?set AWG_NGINX_IMAGE in .env}
-    pull_policy: always
-    container_name: awg-nginx
-    restart: unless-stopped
-    depends_on:
-      awg-jump:
-        condition: service_healthy
-    env_file:
-      - .env
-    volumes:
-      - ./data/certs:/etc/nginx/certs
-    networks:
-      - awg-net
-    ports:
-      - "${NGINX_HTTPS_PORT:-443}:443"
-      - "${NGINX_HTTP_PORT:-80}:80"

@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.config import settings
 from backend.database import AsyncSessionLocal
 from backend.models.interface import Interface
-from backend.models.upstream_node import DeployLog, DeployStatus, NodeStatus, UpstreamNode
+from backend.models.upstream_node import DeployLog, DeployStatus, NodePeer, NodeStatus, UpstreamNode
 from backend.services.awg import _run_cmd, generate_keypair
 
 logger = logging.getLogger(__name__)
@@ -76,34 +76,70 @@ async def _allocate_awg_address(session: AsyncSession) -> str:
     raise RuntimeError("No available addresses in NODE_VPN_SUBNET")
 
 
-def _make_env_content(
+def _make_node_server_config(
+    *,
     private_key: str,
     awg_address: str,
     awg_port: int,
     awg1_public_key: str,
     awg1: Interface,
+    shared_peers: list[NodePeer],
 ) -> str:
-    """Генерирует содержимое .env для awg-node (нода — сервер, без Junk)."""
-    # AWG_PEER_ALLOWED_IPS — адрес awg1 jump-сервера (он пир для ноды)
-    jump_awg1_address = settings.awg1_address  # например 10.20.0.2/32
     lines = [
-        f"AWG_LISTEN_PORT={awg_port}",
-        f"AWG_PRIVATE_KEY={private_key}",
-        f"AWG_ADDRESS={awg_address}",
-        f"AWG_PEER_PUBLIC_KEY={awg1_public_key}",
-        f"AWG_PEER_ALLOWED_IPS={jump_awg1_address}",
-        "AWG_PEER_ENDPOINT=",
-        # Симметричные параметры обфускации (нода — сервер, Junk не нужен)
-        f"AWG_S1={awg1.obf_s1 or 0}",
-        f"AWG_S2={awg1.obf_s2 or 0}",
-        f"AWG_S3={awg1.obf_s3 or 0}",
-        f"AWG_S4={awg1.obf_s4 or 0}",
-        f"AWG_H1={awg1.obf_h1 or 0}",
-        f"AWG_H2={awg1.obf_h2 or 0}",
-        f"AWG_H3={awg1.obf_h3 or 0}",
-        f"AWG_H4={awg1.obf_h4 or 0}",
+        "[Interface]",
+        f"ListenPort = {awg_port}",
+        f"PrivateKey = {private_key}",
     ]
-    return "\n".join(lines) + "\n"
+    for key, value in [
+        ("S1", awg1.obf_s1),
+        ("S2", awg1.obf_s2),
+        ("S3", awg1.obf_s3),
+        ("S4", awg1.obf_s4),
+        ("H1", awg1.obf_h1),
+        ("H2", awg1.obf_h2),
+        ("H3", awg1.obf_h3),
+        ("H4", awg1.obf_h4),
+    ]:
+        if value is not None:
+            lines.append(f"{key} = {value}")
+    lines.append("")
+
+    lines.extend(
+        [
+            "[Peer]",
+            f"PublicKey = {awg1_public_key}",
+            f"AllowedIPs = {settings.awg1_address}",
+        ]
+    )
+    lines.append("")
+
+    for peer in shared_peers:
+        if not peer.enabled:
+            continue
+        lines.extend(
+            [
+                "[Peer]",
+                f"PublicKey = {peer.public_key}",
+                f"AllowedIPs = {peer.tunnel_address}",
+            ]
+        )
+        if peer.preshared_key:
+            lines.append(f"PresharedKey = {peer.preshared_key}")
+        if peer.persistent_keepalive:
+            lines.append(f"PersistentKeepalive = {peer.persistent_keepalive}")
+        lines.append("")
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def _make_env_content(private_key: str, awg_address: str, awg_port: int) -> str:
+    return "\n".join(
+        [
+            f"AWG_LISTEN_PORT={awg_port}",
+            f"AWG_PRIVATE_KEY={private_key}",
+            f"AWG_ADDRESS={awg_address}",
+        ]
+    ) + "\n"
 
 
 def _make_compose_content(awg_port: int) -> str:
@@ -119,6 +155,8 @@ def _make_compose_content(awg_port: int) -> str:
         f"      - /dev/net/tun:/dev/net/tun\n"
         f"    network_mode: host\n"
         f"    env_file: .env\n"
+        f"    volumes:\n"
+        f"      - ./awg0.conf:/etc/awg-node/awg0.conf:ro\n"
     )
 
 
@@ -234,6 +272,7 @@ class NodeDeployer:
                 awg_port = node.awg_port
                 host = node.host
                 awg1_public_key = awg1.public_key
+                shared_peers = list(node.shared_peers)
 
                 node.status = NodeStatus.deploying
                 node.updated_at = datetime.now(timezone.utc)
@@ -339,12 +378,20 @@ class NodeDeployer:
                     private_key=node_private_key,
                     awg_address=awg_address,
                     awg_port=awg_port,
+                )
+                node_config_content = _make_node_server_config(
+                    private_key=node_private_key,
+                    awg_address=awg_address,
+                    awg_port=awg_port,
                     awg1_public_key=awg1_public_key,
                     awg1=awg1_fresh or awg1,
+                    shared_peers=shared_peers,
                 )
                 async with conn.start_sftp_client() as sftp:
                     async with sftp.open("/opt/awg-node/.env", "w") as f:
                         await f.write(env_content)
+                    async with sftp.open("/opt/awg-node/awg0.conf", "w") as f:
+                        await f.write(node_config_content)
 
                 # ── Шаг 9: docker build (стриминг построчно) ─────────────
                 await emit("Building docker image (this may take 2-5 min)...")
@@ -510,6 +557,7 @@ class NodeDeployer:
                 awg_address = node.awg_address
                 node_private_key = node.private_key
                 node_public_key = node.public_key
+                shared_peers = list(node.shared_peers)
 
                 awg1 = await session.scalar(select(Interface).where(Interface.name == "awg1"))
 
@@ -552,13 +600,21 @@ class NodeDeployer:
                     private_key=node_private_key,
                     awg_address=awg_address,
                     awg_port=awg_port,
+                )
+                node_config_content = _make_node_server_config(
+                    private_key=node_private_key,
+                    awg_address=awg_address,
+                    awg_port=awg_port,
                     awg1_public_key=awg1.public_key if awg1 else "",
                     awg1=awg1,
+                    shared_peers=shared_peers,
                 )
                 compose_content = _make_compose_content(awg_port)
                 async with conn.start_sftp_client() as sftp:
                     async with sftp.open("/opt/awg-node/.env", "w") as f:
                         await f.write(env_content)
+                    async with sftp.open("/opt/awg-node/awg0.conf", "w") as f:
+                        await f.write(node_config_content)
                     async with sftp.open("/opt/awg-node/docker-compose.yml", "w") as f:
                         await f.write(compose_content)
 

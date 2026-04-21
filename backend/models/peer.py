@@ -28,6 +28,10 @@ class Peer(Base):
     last_handshake = Column(DateTime, nullable=True)
     rx_bytes = Column(Integer, nullable=True, default=0)
     tx_bytes = Column(Integer, nullable=True, default=0)
+    client_code = Column(Integer, nullable=True)
+    client_kind = Column(String(64), nullable=True)
+    client_reported_ip = Column(String(64), nullable=True)
+    client_reported_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(

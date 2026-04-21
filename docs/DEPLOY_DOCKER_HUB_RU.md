@@ -10,7 +10,6 @@
 ## Какие образы публикуются
 
 - `awg-jump`: backend + frontend + runtime
-- `awg-jump-nginx`: nginx-конфиг и автогенерация self-signed TLS
 
 ## 1. Публикация образов в Docker Hub
 
@@ -35,7 +34,6 @@ docker login
 Скрипт пушит:
 
 - `docker.io/myteam/awg-jump:2026-04-08`
-- `docker.io/myteam/awg-jump-nginx:2026-04-08`
 - и теги `latest`, если передан `--latest`
 
 Если нужно также запушить образ upstream-ноды, добавь флаг `--with-node`:
@@ -53,7 +51,7 @@ docker login
 - `.env.ru.example`
 - `.env.en.example`
 
-Этот bootstrap предназначен для основной ноды с `awg-jump` и `awg-jump-nginx`.
+Этот bootstrap предназначен для основной ноды с `awg-jump`.
 Upstream-ноды через него не разворачиваются.
 
 Запуск:
@@ -98,7 +96,6 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_first_node.ps1
 - `ADMIN_PASSWORD`
 - `SECRET_KEY`
 - `AWG_JUMP_IMAGE`
-- `AWG_NGINX_IMAGE`
 - при необходимости `TLS_COMMON_NAME`
 - при необходимости `SERVER_HOST`
 

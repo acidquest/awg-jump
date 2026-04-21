@@ -12,13 +12,13 @@
    - EN: `cp .env.en.example .env`
 2. Измени как минимум `ADMIN_PASSWORD`, `SECRET_KEY`, `TLS_COMMON_NAME`.
 3. Подними стек: `docker compose up -d --build`
-4. Открой `https://<host>:${NGINX_HTTPS_PORT:-443}`
+4. Открой `https://<host>:${WEB_PORT:-8080}` или `http://<host>:${WEB_PORT:-8080}` в зависимости от `WEB_MODE`
 
 Для деплоя без локальной сборки через Docker Hub смотри:
 - [Deploy via Docker Hub (RU)](docs/DEPLOY_DOCKER_HUB_RU.md)
 - [Deploy via Docker Hub (EN)](docs/DEPLOY_DOCKER_HUB_EN.md)
 
-API контейнера `awg-jump` также биндуется на `127.0.0.1:8080` только для локальной диагностики и smoke-тестов. Наружу публикуются `NGINX_HTTPS_PORT`, `NGINX_HTTP_PORT` и AWG UDP-порт.
+Наружу публикуются `WEB_PORT/tcp` и AWG UDP-порт. UI/API обслуживаются самим контейнером `awg-jump` без отдельного `nginx`.
 
 ## Основные переменные
 
