@@ -25,6 +25,7 @@ services:
       - awg-net
     ports:
       - "${AWG0_LISTEN_PORT:-51820}:${AWG0_LISTEN_PORT:-51820}/udp"
+      - "${WG0_LISTEN_PORT:-51821}:${WG0_LISTEN_PORT:-51821}/udp"
       - "${WEB_PORT:-8080}:${WEB_PORT:-8080}/tcp"
     healthcheck:
       test:

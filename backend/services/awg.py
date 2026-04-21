@@ -1,8 +1,8 @@
 """
-AWG сервис — управление AmneziaWG интерфейсами.
+Tunnel service — управление AmneziaWG и classic WireGuard интерфейсами.
 
-Демон amneziawg-go запускается как дочерний процесс.
-PIDs хранятся в памяти (module-level singleton).
+AmneziaWG при необходимости использует userspace amneziawg-go.
+Classic WireGuard поддерживается как kernel interface.
 """
 import asyncio
 import io
@@ -21,24 +21,45 @@ logger = logging.getLogger(__name__)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models.interface import Interface, InterfaceMode
+from backend.models.interface import Interface, InterfaceMode, InterfaceProtocol
 from backend.models.peer import Peer
 from backend.models.upstream_node import NodeStatus, UpstreamNode
-from backend.config import settings
+from backend.config import classic_wg_enabled, settings
 
 
-# ── Singleton — PID таблица запущенных демонов (userspace режим) ─────────
+# ── Singleton — PID таблица userspace amneziawg-go ───────────────────────
 _awg_processes: dict[str, subprocess.Popen] = {}
 
-# ── Режим работы: kernel module или userspace amneziawg-go ────────────────
-_kernel_mode: bool | None = None  # None = ещё не определено
+# ── Режимы kernel/userspace ───────────────────────────────────────────────
+_awg_kernel_mode: bool | None = None
+_wg_kernel_mode: bool | None = None
 _INTERFACE_MTU = {
     "awg0": "1380",
     "awg1": "1300",
+    "wg0": "1420",
 }
 
 
-def _detect_kernel_mode() -> bool:
+def visible_interface_names() -> set[str]:
+    names = {"awg0", "awg1"}
+    if classic_wg_enabled():
+        names.add("wg0")
+    return names
+
+
+def _tool_bin(protocol: InterfaceProtocol | str) -> str:
+    return "wg" if protocol == InterfaceProtocol.wg else "awg"
+
+
+def _link_kind(protocol: InterfaceProtocol | str) -> str:
+    return "wireguard" if protocol == InterfaceProtocol.wg else "amneziawg"
+
+
+def _protocol_for_name(ifname: str) -> InterfaceProtocol:
+    return InterfaceProtocol.wg if ifname == "wg0" else InterfaceProtocol.awg
+
+
+def _detect_awg_kernel_mode() -> bool:
     """
     Определяет доступен ли нативный kernel module AmneziaWG (не обычный wireguard!).
     Только amneziawg поддерживает обфускацию — стандартный wireguard нам не подходит.
@@ -47,36 +68,64 @@ def _detect_kernel_mode() -> bool:
     потому что имя модуля в /proc/modules может отличаться (amneziawg vs amnezia_wg).
     Именно этот же метод использует amneziawg-go для детекции ядра.
     """
-    global _kernel_mode
-    if _kernel_mode is not None:
-        return _kernel_mode
+    global _awg_kernel_mode
+    if _awg_kernel_mode is not None:
+        return _awg_kernel_mode
 
     # Пробуем создать интерфейс типа amneziawg — если успешно, ядро поддерживает
     rc, out = _run_cmd(["ip", "link", "add", "awg_probe", "type", "amneziawg"])
     if rc == 0:
         _run_cmd(["ip", "link", "delete", "awg_probe"])
         logger.info("[awg] Kernel mode confirmed via ip link probe (amneziawg module present)")
-        _kernel_mode = True
+        _awg_kernel_mode = True
         return True
 
     logger.info("[awg] AmneziaWG kernel module not available (ip link probe rc=%d), using amneziawg-go userspace", rc)
-    _kernel_mode = False
+    _awg_kernel_mode = False
     return False
+
+
+def _detect_wg_kernel_mode() -> bool:
+    global _wg_kernel_mode
+    if _wg_kernel_mode is not None:
+        return _wg_kernel_mode
+
+    rc, _out = _run_cmd(["ip", "link", "add", "wg_probe", "type", "wireguard"])
+    if rc == 0:
+        _run_cmd(["ip", "link", "delete", "wg_probe"])
+        logger.info("[wg] Kernel mode confirmed via ip link probe (wireguard module present)")
+        _wg_kernel_mode = True
+        return True
+
+    logger.warning("[wg] WireGuard kernel module unavailable (ip link probe rc=%d)", rc)
+    _wg_kernel_mode = False
+    return False
+
+
+def _supports_userspace(protocol: InterfaceProtocol) -> bool:
+    return protocol == InterfaceProtocol.awg
+
+
+def _detect_kernel_mode(protocol: InterfaceProtocol) -> bool:
+    if protocol == InterfaceProtocol.wg:
+        return _detect_wg_kernel_mode()
+    return _detect_awg_kernel_mode()
 
 
 # ── Генерация ключей ─────────────────────────────────────────────────────
 
-def generate_keypair() -> tuple[str, str]:
+def generate_keypair(protocol: InterfaceProtocol = InterfaceProtocol.awg) -> tuple[str, str]:
     """Возвращает (private_key, public_key) в base64 формате WireGuard."""
-    priv = subprocess.check_output(["awg", "genkey"]).decode().strip()
+    tool = _tool_bin(protocol)
+    priv = subprocess.check_output([tool, "genkey"]).decode().strip()
     pub = subprocess.check_output(
-        ["awg", "pubkey"], input=priv.encode()
+        [tool, "pubkey"], input=priv.encode()
     ).decode().strip()
     return priv, pub
 
 
-def generate_preshared_key() -> str:
-    return subprocess.check_output(["awg", "genpsk"]).decode().strip()
+def generate_preshared_key(protocol: InterfaceProtocol = InterfaceProtocol.awg) -> str:
+    return subprocess.check_output([_tool_bin(protocol), "genpsk"]).decode().strip()
 
 
 # ── Генерация параметров обфускации ──────────────────────────────────────
@@ -184,15 +233,15 @@ def generate_interface_config(iface: Interface, peers: list[Peer]) -> str:
 
     if iface.mode == InterfaceMode.server:
         lines.append(f"ListenPort = {iface.listen_port}")
-        # Сервер: только симметричные параметры (без Junk)
-        obf = _obf_server_lines(iface)
-        if obf:
-            lines.append(obf)
+        if iface.protocol == InterfaceProtocol.awg:
+            obf = _obf_server_lines(iface)
+            if obf:
+                lines.append(obf)
     else:
-        # Клиент (awg1): все параметры включая Junk
-        obf = _obf_client_lines(iface)
-        if obf:
-            lines.append(obf)
+        if iface.protocol == InterfaceProtocol.awg:
+            obf = _obf_client_lines(iface)
+            if obf:
+                lines.append(obf)
 
     lines.append("")
 
@@ -211,7 +260,6 @@ def generate_interface_config(iface: Interface, peers: list[Peer]) -> str:
         lines.append(f"AllowedIPs = {server_allowed_ips}")
         if peer.persistent_keepalive:
             lines.append(f"PersistentKeepalive = {peer.persistent_keepalive}")
-        # Для клиентского интерфейса (awg1): endpoint upstream ноды
         if iface.mode == InterfaceMode.client and iface.endpoint:
             lines.append(f"Endpoint = {iface.endpoint}")
         lines.append("")
@@ -244,18 +292,18 @@ def generate_client_config(peer: Peer, server: Interface, server_endpoint: str) 
     if server.dns:
         lines.append(f"DNS = {server.dns}")
 
-    # Клиент несёт все параметры обфускации (Jc + S*/H*)
-    obf = _obf_client_lines(server)
-    if obf:
-        lines.append(obf)
-    try:
-        server_tunnel_ip = str(ipaddress.ip_interface(server.address).ip)
-    except ValueError:
-        server_tunnel_ip = server.address.split("/", 1)[0]
-    lines.append(
-        f"# awg-jump-status-url = "
-        f"{settings.web_mode.lower()}://{server_tunnel_ip}:{settings.web_port}/api/peers/status"
-    )
+    if server.protocol == InterfaceProtocol.awg:
+        obf = _obf_client_lines(server)
+        if obf:
+            lines.append(obf)
+        try:
+            server_tunnel_ip = str(ipaddress.ip_interface(server.address).ip)
+        except ValueError:
+            server_tunnel_ip = server.address.split("/", 1)[0]
+        lines.append(
+            f"# awg-jump-status-url = "
+            f"{settings.web_mode.lower()}://{server_tunnel_ip}:{settings.web_port}/api/peers/status"
+        )
 
     lines.append("")
     lines.append("[Peer]")
@@ -303,6 +351,13 @@ async def _wait_for_socket(ifname: str, timeout: float = 10.0) -> bool:
     return False
 
 
+def _sanitize_config_for_log(config_str: str) -> str:
+    return "\n".join(
+        line if "PrivateKey" not in line and "PresharedKey" not in line else line.split("=")[0] + "= [REDACTED]"
+        for line in config_str.splitlines()
+    )
+
+
 def _run_cmd(args: list[str], input_data: Optional[bytes] = None) -> tuple[int, str]:
     """Запускает команду, возвращает (returncode, combined_output)."""
     result = subprocess.run(
@@ -326,11 +381,19 @@ async def apply_interface(iface: Interface, peers: list[Peer]) -> None:
     и применяет конфигурацию через wg setconf.
     """
     ifname = iface.name
-    logger.info("[awg] apply_interface: %s (mode=%s, addr=%s, port=%s, peers=%d)",
-                ifname, iface.mode, iface.address, iface.listen_port, len(peers))
+    protocol = iface.protocol if isinstance(iface.protocol, InterfaceProtocol) else InterfaceProtocol(iface.protocol or "awg")
+    logger.info(
+        "[tunnel] apply_interface: %s (protocol=%s, mode=%s, addr=%s, port=%s, peers=%d)",
+        ifname, protocol.value, iface.mode, iface.address, iface.listen_port, len(peers)
+    )
 
-    use_kernel = _detect_kernel_mode()
-    logger.info("[awg] Using %s mode for %s", "kernel" if use_kernel else "userspace", ifname)
+    use_kernel = _detect_kernel_mode(protocol)
+    logger.info(
+        "[tunnel] Using %s mode for %s (%s)",
+        "kernel" if use_kernel else "userspace",
+        ifname,
+        protocol.value,
+    )
 
     # Остановить/удалить старый интерфейс если есть
     if ifname in _awg_processes:
@@ -349,13 +412,16 @@ async def apply_interface(iface: Interface, peers: list[Peer]) -> None:
     logger.debug("[awg] ip link delete %s: rc=%d %s", ifname, rc_del, out_del)
 
     if use_kernel:
-        # ── Kernel module: создать интерфейс через ip link ────────────────
-        rc, out = _run_cmd(["ip", "link", "add", ifname, "type", "amneziawg"])
+        rc, out = _run_cmd(["ip", "link", "add", ifname, "type", _link_kind(protocol)])
         if rc != 0:
-            raise RuntimeError(f"ip link add {ifname} type amneziawg failed: {out}")
-        logger.info("[awg] Kernel interface %s created", ifname)
+            raise RuntimeError(f"ip link add {ifname} type {_link_kind(protocol)} failed: {out}")
+        logger.info("[tunnel] Kernel interface %s created", ifname)
     else:
-        # ── Userspace: запустить amneziawg-go демон ───────────────────────
+        if not _supports_userspace(protocol):
+            raise RuntimeError(
+                f"{protocol.value} userspace mode is not available in this image; "
+                "enable the host wireguard kernel module"
+            )
         rc_which, which_out = _run_cmd(["which", "amneziawg-go"])
         if rc_which != 0:
             raise RuntimeError("amneziawg-go binary not found in PATH")
@@ -397,10 +463,7 @@ async def apply_interface(iface: Interface, peers: list[Peer]) -> None:
 
     # Сгенерировать конфиг (логируем без приватного ключа)
     config_str = generate_interface_config(iface, peers)
-    config_preview = "\n".join(
-        line if "PrivateKey" not in line and "PresharedKey" not in line else line.split("=")[0] + "= [REDACTED]"
-        for line in config_str.splitlines()
-    )
+    config_preview = _sanitize_config_for_log(config_str)
     logger.debug("[awg] Config for %s:\n%s", ifname, config_preview)
 
     # Записать конфиг во временный файл и применить
@@ -410,10 +473,11 @@ async def apply_interface(iface: Interface, peers: list[Peer]) -> None:
         os.chmod(conf_path, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(config_str)
-        rc, out = _run_cmd(["awg", "setconf", ifname, conf_path])
-        logger.info("[awg] awg setconf %s: rc=%d %s", ifname, rc, out)
+        tool = _tool_bin(protocol)
+        rc, out = _run_cmd([tool, "setconf", ifname, conf_path])
+        logger.info("[tunnel] %s setconf %s: rc=%d %s", tool, ifname, rc, out)
         if rc != 0:
-            raise RuntimeError(f"awg setconf failed: {out}")
+            raise RuntimeError(f"{tool} setconf failed: {out}")
     finally:
         try:
             os.unlink(conf_path)
@@ -446,15 +510,16 @@ async def apply_interface(iface: Interface, peers: list[Peer]) -> None:
 async def sync_peers(iface: Interface, peers: list[Peer]) -> None:
     """Hot-reload пиров через wg syncconf (без перезапуска демона)."""
     ifname = iface.name
+    protocol = iface.protocol if isinstance(iface.protocol, InterfaceProtocol) else InterfaceProtocol(iface.protocol or "awg")
     config_str = generate_interface_config(iface, peers)
     fd, conf_path = tempfile.mkstemp(suffix=".conf")
     try:
         os.chmod(conf_path, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(config_str)
-        rc, out = _run_cmd(["awg", "syncconf", ifname, conf_path])
+        rc, out = _run_cmd([_tool_bin(protocol), "syncconf", ifname, conf_path])
         if rc != 0:
-            raise RuntimeError(f"awg syncconf failed: {out}")
+            raise RuntimeError(f"{protocol.value} syncconf failed: {out}")
     finally:
         try:
             os.unlink(conf_path)
@@ -478,49 +543,37 @@ async def stop_interface(ifname: str) -> None:
 
 # ── Статус ───────────────────────────────────────────────────────────────
 
-def get_status() -> dict:
-    """
-    Парсит вывод `wg show all dump`.
-
-    Формат строк:
-      interface  private_key  public_key  listen_port  fwmark
-      <TAB>peer_pubkey  psk  endpoint  allowed_ips  handshake  rx  tx  keepalive
-    """
-    rc, output = _run_cmd(["awg", "show", "all", "dump"])
-    if rc != 0:
-        return {}
-
+def _parse_show_dump(output: str, protocol: InterfaceProtocol) -> dict[str, dict]:
     result: dict[str, dict] = {}
-    current_iface: Optional[str] = None
 
     for line in output.splitlines():
         if not line.strip():
             continue
         parts = line.strip().split("\t")
         if len(parts) >= 4 and parts[3].isdigit():
-            ifname, priv, pub, port = (parts + [""] * 4)[:4]
-            current_iface = ifname
+            ifname, _priv, pub, port = (parts + [""] * 4)[:4]
             result[ifname] = {
                 "name": ifname,
+                "protocol": protocol.value,
                 "public_key": pub,
                 "listen_port": int(port) if port.isdigit() else None,
-                "running": ifname in _awg_processes,
+                "running": is_running(ifname),
                 "peers": {},
             }
         elif len(parts) >= 9:
-            ifname, pubkey, psk, endpoint, allowed_ips, handshake, rx, tx, keepalive = (
+            ifname, pubkey, _psk, endpoint, allowed_ips, handshake, rx, tx, keepalive = (
                 parts + [""] * 9
             )[:9]
-            ifname = ifname.strip()
             if ifname not in result:
                 result[ifname] = {
                     "name": ifname,
+                    "protocol": protocol.value,
                     "public_key": "",
                     "listen_port": None,
-                    "running": ifname in _awg_processes,
+                    "running": is_running(ifname),
                     "peers": {},
                 }
-            peer_data = {
+            result[ifname]["peers"][pubkey] = {
                 "public_key": pubkey,
                 "endpoint": endpoint if endpoint != "(none)" else None,
                 "allowed_ips": allowed_ips,
@@ -529,16 +582,24 @@ def get_status() -> dict:
                 "tx_bytes": int(tx) if tx.isdigit() else 0,
                 "persistent_keepalive": int(keepalive) if keepalive.isdigit() else None,
             }
-            result[ifname]["peers"][pubkey] = peer_data
+    return result
+
+
+def get_status() -> dict:
+    result: dict[str, dict] = {}
+    for protocol in (InterfaceProtocol.awg, InterfaceProtocol.wg):
+        rc, output = _run_cmd([_tool_bin(protocol), "show", "all", "dump"])
+        if rc != 0 or not output:
+            continue
+        result.update(_parse_show_dump(output, protocol))
     return result
 
 
 def is_running(ifname: str) -> bool:
-    if _detect_kernel_mode():
-        # Kernel mode: проверяем наличие интерфейса
+    protocol = _protocol_for_name(ifname)
+    if _detect_kernel_mode(protocol):
         rc, _ = _run_cmd(["ip", "link", "show", ifname])
         return rc == 0
-    # Userspace mode: проверяем живой процесс
     if ifname not in _awg_processes:
         return False
     return _awg_processes[ifname].poll() is None
@@ -583,3 +644,13 @@ async def load_interface(iface: Interface, session: AsyncSession) -> None:
             )
 
     await apply_interface(iface, peers)
+
+
+async def list_enabled_server_interface_names(session: AsyncSession) -> list[str]:
+    result = await session.execute(
+        select(Interface).where(
+            Interface.enabled == True,  # noqa: E712
+            Interface.mode == InterfaceMode.server,
+        )
+    )
+    return [iface.name for iface in result.scalars().all() if iface.name in visible_interface_names()]

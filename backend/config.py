@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     awg0_address: str = "10.10.0.1/24"
     awg0_dns: str = "1.1.1.1"
 
+    # ── WG0 (сервер classic WireGuard, принимает клиентов) ──────────────
+    classic_wg: str = ""
+    wg0_listen_port: Optional[int] = None
+    wg0_private_key: str = ""
+    wg0_address: str = "10.11.0.1/24"
+    wg0_dns: str = "10.11.0.1"
+
     # ── AWG1 (клиент, upstream VPN) ──────────────────────────────────────
     awg1_endpoint: str = ""
     awg1_private_key: str = ""
@@ -85,6 +92,10 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def classic_wg_enabled() -> bool:
+    return settings.classic_wg.strip().lower() == "on"
 
 
 def reload_settings() -> Settings:

@@ -133,6 +133,7 @@ def test_env_snapshot_excludes_secrets() -> None:
     assert "private_key" not in snapshot_str
     # Публичные параметры должны быть
     assert "awg0_listen_port" in snapshot_str
+    assert "wg0_listen_port" in snapshot_str
     assert "version" in snapshot
 
 

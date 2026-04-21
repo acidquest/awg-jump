@@ -26,7 +26,7 @@ from backend.routers.auth import get_current_user
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/backup", tags=["backup"])
 
-_BACKUP_VERSION = "3"
+_BACKUP_VERSION = "4"
 
 
 def _json_safe_setting(name: str, default):
@@ -45,6 +45,10 @@ def _env_snapshot() -> dict:
             "awg0_listen_port": _json_safe_setting("awg0_listen_port", 51820),
             "awg0_address": _json_safe_setting("awg0_address", "10.10.0.1/24"),
             "awg0_dns": _json_safe_setting("awg0_dns", "1.1.1.1"),
+            "classic_wg": _json_safe_setting("classic_wg", ""),
+            "wg0_listen_port": _json_safe_setting("wg0_listen_port", None),
+            "wg0_address": _json_safe_setting("wg0_address", "10.11.0.1/24"),
+            "wg0_dns": _json_safe_setting("wg0_dns", "10.11.0.1"),
             "awg1_address": _json_safe_setting("awg1_address", "10.20.0.2/32"),
             "awg1_allowed_ips": _json_safe_setting("awg1_allowed_ips", "0.0.0.0/0"),
             "awg1_persistent_keepalive": _json_safe_setting("awg1_persistent_keepalive", 25),

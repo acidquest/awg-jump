@@ -21,7 +21,7 @@ from sqlalchemy import select, text
 
 from backend.config import settings as _settings, validate_security_settings
 from backend.database import AsyncSessionLocal, engine, Base
-from backend.models.interface import Interface
+from backend.models.interface import Interface, InterfaceProtocol
 from backend.models.geoip import GeoipSource
 from backend.models.routing_settings import RoutingSettings
 from backend.models.upstream_node import NodeStatus, UpstreamNode
@@ -127,6 +127,23 @@ async def _ensure_sqlite_columns() -> None:
         if result.first() is None:
             await conn.run_sync(lambda sync_conn: Base.metadata.tables["node_peers"].create(sync_conn))
 
+        result = await conn.execute(text("PRAGMA table_info(interfaces)"))
+        interface_columns = {row[1] for row in result.fetchall()}
+        if "protocol" not in interface_columns:
+            await conn.execute(text("ALTER TABLE interfaces ADD COLUMN protocol VARCHAR(16) NOT NULL DEFAULT 'awg'"))
+        await conn.execute(
+            text(
+                """
+                UPDATE interfaces
+                SET protocol = CASE
+                    WHEN name = 'wg0' THEN 'wg'
+                    WHEN protocol IS NULL OR protocol = '' THEN 'awg'
+                    ELSE protocol
+                END
+                """
+            )
+        )
+
 async def _init_keys_and_obfuscation() -> None:
     """Генерирует AWG ключи и параметры обфускации если отсутствуют."""
     async with AsyncSessionLocal() as session:
@@ -135,13 +152,14 @@ async def _init_keys_and_obfuscation() -> None:
         for iface in ifaces:
             changed = False
             if not iface.private_key:
-                priv, pub = awg_svc.generate_keypair()
+                protocol = iface.protocol if isinstance(iface.protocol, InterfaceProtocol) else InterfaceProtocol(iface.protocol or "awg")
+                priv, pub = awg_svc.generate_keypair(protocol=protocol)
                 iface.private_key = priv
                 iface.public_key = pub
                 iface.updated_at = datetime.now(timezone.utc)
                 changed = True
                 logger.info("Generated keys for interface %s", iface.name)
-            if iface.obf_h1 is None:
+            if iface.protocol == InterfaceProtocol.awg and iface.obf_h1 is None:
                 await awg_svc.ensure_obfuscation_params(iface, session)
                 changed = True
                 logger.info("Generated obfuscation params for %s", iface.name)
@@ -153,10 +171,16 @@ async def _init_keys_and_obfuscation() -> None:
 async def _start_interfaces() -> None:
     """Поднимает все enabled AWG интерфейсы."""
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(Interface).where(Interface.enabled == True)  # noqa: E712
-        )
+        visible_names = awg_svc.visible_interface_names()
+        result = await session.execute(select(Interface).where(Interface.enabled == True))  # noqa: E712
         for iface in result.scalars().all():
+            if iface.name not in visible_names:
+                if awg_svc.is_running(iface.name):
+                    try:
+                        await awg_svc.stop_interface(iface.name)
+                    except Exception as exc:
+                        logger.warning("Failed to stop hidden interface %s: %s", iface.name, exc)
+                continue
             if not iface.private_key:
                 logger.warning("Skipping %s — no private key", iface.name)
                 continue
@@ -225,12 +249,13 @@ async def _init_geoip_and_routing() -> None:
                     UpstreamNode.status == NodeStatus.online,
                 )
             )
+            server_ifaces = await awg_svc.list_enabled_server_interface_names(session)
         routing_svc.setup_policy_routing()
         routing_svc.update_vpn_route("awg1" if active_node else None)
         routing_svc.update_upstream_host_route(
             active_node.awg_address if active_node and active_node.awg_address else None
         )
-        routing_svc.setup_iptables(invert_geoip=invert_geoip)
+        routing_svc.setup_iptables(server_ifaces=server_ifaces, invert_geoip=invert_geoip)
         logger.info("Policy routing configured")
     except Exception as e:
         logger.error("Routing setup failed: %s", e)
@@ -299,6 +324,7 @@ async def lifespan(app: FastAPI):
                 await awg_svc.stop_interface(iface.name)
             except Exception:
                 pass
+    await engine.dispose()
 
 
 # ── App ───────────────────────────────────────────────────────────────────

@@ -35,10 +35,12 @@ class Base(DeclarativeBase):
 
 async def get_db():
     """Dependency для FastAPI — предоставляет async сессию."""
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
+    session = AsyncSessionLocal()
+    try:
+        yield session
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()

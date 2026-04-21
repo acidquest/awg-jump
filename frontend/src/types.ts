@@ -2,6 +2,7 @@ export interface Interface {
   id: number
   name: string
   mode: 'server' | 'client'
+  protocol: 'awg' | 'wg'
   public_key: string
   listen_port: number | null
   address: string
@@ -28,6 +29,8 @@ export interface Interface {
 export interface Peer {
   id: number
   interface_id: number
+  interface_name: string
+  interface_protocol: 'awg' | 'wg'
   name: string
   public_key: string
   preshared_key: string | null
@@ -200,6 +203,7 @@ export interface SystemStatus {
   interfaces: Array<{
     name: string
     mode: string
+    protocol: string
     address: string
     enabled: boolean
     running: boolean

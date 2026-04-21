@@ -41,4 +41,4 @@ class Peer(Base):
     )
 
     # ── Связи ────────────────────────────────────────────────────────────
-    interface = relationship("Interface", back_populates="peers")
+    interface = relationship("Interface", back_populates="peers", lazy="selectin")

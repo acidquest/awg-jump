@@ -27,6 +27,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.config import classic_wg_enabled, settings
 from backend.services.protected_dns import (
     dnsmasq_target,
     status as protected_dns_status,
@@ -69,13 +70,24 @@ def _to_dnsmasq_domain(domain: str) -> str:
     return normalized.encode("idna").decode("ascii")
 
 
+def _iface_ip(address: str) -> str:
+    try:
+        return str(ipaddress.ip_interface(address).ip)
+    except Exception:
+        return address.split("/")[0]
+
+
 def get_awg0_ip() -> str:
     """Извлекает IP-адрес awg0 из настройки awg0_address (напр. '10.10.0.1/24' → '10.10.0.1')."""
-    from backend.config import settings
-    try:
-        return str(ipaddress.ip_interface(settings.awg0_address).ip)
-    except Exception:
-        return settings.awg0_address.split("/")[0]
+    return _iface_ip(settings.awg0_address)
+
+
+def get_dns_listen_ips() -> list[str]:
+    listen_ips = [get_awg0_ip()]
+    if classic_wg_enabled():
+        listen_ips.append(_iface_ip(settings.wg0_address))
+    listen_ips.append("127.0.0.1")
+    return list(dict.fromkeys(ip for ip in listen_ips if ip))
 
 
 def is_valid_dns_server(value: str) -> bool:
@@ -121,12 +133,12 @@ def _zone_payload(zone) -> dict:
 
 def _write_config(domains: list, zones_by_key: dict[str, dict], manual_addresses: list | None = None) -> None:
     """Генерирует конфиг dnsmasq из списка доменов и DNS-серверов зон."""
-    listen_ip = get_awg0_ip()
+    listen_ips = get_dns_listen_ips()
     vpn_dns = _zone_targets(zones_by_key.get("vpn", {"protocol": "plain", "dns_servers": []}))
 
     lines = [
         "# AWG Split DNS — auto-generated, do not edit manually",
-        f"listen-address={listen_ip},127.0.0.1",
+        f"listen-address={','.join(listen_ips)}",
         "bind-interfaces",
         "no-resolv",
         "no-hosts",
@@ -165,7 +177,7 @@ def _write_config(domains: list, zones_by_key: dict[str, dict], manual_addresses
     Path(_CONF_FILE).write_text("\n".join(lines) + "\n")
     logger.info(
         "dnsmasq config written: listen=%s, override_domains=%d, manual_addresses=%d, zones=%s",
-        listen_ip, len(special_domains), len(manual_rules), sorted(zones_by_key),
+        ",".join(listen_ips), len(special_domains), len(manual_rules), sorted(zones_by_key),
     )
 
 
@@ -286,7 +298,7 @@ def start() -> None:
     else:
         raise RuntimeError("dnsmasq startup timed out")
 
-    logger.info("dnsmasq started (listen=%s,127.0.0.1)", get_awg0_ip())
+    logger.info("dnsmasq started (listen=%s)", ",".join(get_dns_listen_ips()))
 
     _patch_resolv_conf()
 
@@ -376,6 +388,7 @@ def get_status() -> dict:
         "running": is_running(),
         "pid": _get_pid() if is_running() else None,
         "listen_ip": get_awg0_ip(),
+        "listen_ips": get_dns_listen_ips(),
         "conf_file": _CONF_FILE,
         "local_zone_dns": _DEFAULT_ZONE_SETTINGS["local"]["dns_servers"],
         "vpn_zone_dns": _DEFAULT_ZONE_SETTINGS["vpn"]["dns_servers"],

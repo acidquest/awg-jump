@@ -3,7 +3,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models.interface import Interface
+from backend.models.interface import Interface, InterfaceMode, InterfaceProtocol
 from backend.models.peer import Peer
 
 
@@ -38,6 +38,7 @@ async def test_create_peer(
     data = resp.json()
     assert data["name"] == "test-peer"
     assert data["interface_id"] == iface.id
+    assert data["interface_protocol"] == "awg"
     assert data["enabled"] is True
     assert "public_key" in data
     assert data["public_key"]  # не пустой
@@ -180,6 +181,60 @@ async def test_filter_peers_by_interface(
     assert resp.status_code == 200
     for p in resp.json():
         assert p["interface_id"] == iface.id
+
+
+@pytest.mark.asyncio
+async def test_wg_peer_config_plain_wireguard(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession
+) -> None:
+    wg_iface = Interface(
+        name="wg0",
+        mode=InterfaceMode.server,
+        protocol=InterfaceProtocol.wg,
+        private_key="aGVsbG8gd2cga2V5IGhlbGxvIHdnIGtleQ==",
+        public_key="d2ctcHVibGljLWtleS10ZXN0",
+        listen_port=51821,
+        address="10.11.0.1/24",
+        dns="10.11.0.1",
+        enabled=True,
+    )
+    db_session.add(wg_iface)
+    await db_session.commit()
+    await db_session.refresh(wg_iface)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("CLASSIC_WG", "on")
+        from backend.config import reload_settings
+        reload_settings()
+
+        create_resp = await client.post(
+            "/api/peers",
+            json={
+                "interface_id": wg_iface.id,
+                "name": "wg-peer",
+                "tunnel_address": "10.11.0.2/32",
+                "allowed_ips": "10.11.0.2/32",
+            },
+            headers=auth_headers,
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        peer_id = create_resp.json()["id"]
+
+        resp = await client.get(
+            f"/api/peers/{peer_id}/config",
+            params={"server_endpoint": "1.2.3.4:51821"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        content = resp.text
+        assert "1.2.3.4:51821" in content
+        assert "DNS = 10.11.0.1" in content
+        assert "Jc =" not in content
+        assert "S1 =" not in content
+        assert "H1 =" not in content
+
+    from backend.config import reload_settings
+    reload_settings()
 
 
 @pytest.mark.asyncio

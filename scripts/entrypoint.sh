@@ -94,12 +94,29 @@ import sys
 sys.path.insert(0, '/app')
 
 import backend.models  # noqa: F401 - регистрирует все таблицы в metadata
+from sqlalchemy import text
 from backend.database import Base, engine
 
 
 async def ensure_tables():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        result = await conn.execute(text("PRAGMA table_info(interfaces)"))
+        interface_columns = {row[1] for row in result.fetchall()}
+        if "protocol" not in interface_columns:
+            await conn.execute(text("ALTER TABLE interfaces ADD COLUMN protocol VARCHAR(16) NOT NULL DEFAULT 'awg'"))
+        await conn.execute(
+            text(
+                """
+                UPDATE interfaces
+                SET protocol = CASE
+                    WHEN name = 'wg0' THEN 'wg'
+                    WHEN protocol IS NULL OR protocol = '' THEN 'awg'
+                    ELSE protocol
+                END
+                """
+            )
+        )
 
 
 asyncio.run(ensure_tables())
@@ -116,10 +133,10 @@ sys.path.insert(0, '/app')
 from datetime import datetime, timezone
 from sqlalchemy import select
 from backend.database import AsyncSessionLocal
-from backend.models.interface import Interface, InterfaceMode
+from backend.models.interface import Interface, InterfaceMode, InterfaceProtocol
 from backend.models.geoip import GeoipSource
 import ipaddress
-from backend.config import settings
+from backend.config import classic_wg_enabled, settings
 from backend.models.dns_domain import DnsDomain
 
 
@@ -162,6 +179,7 @@ async def init_defaults():
             awg0 = Interface(
                 name="awg0",
                 mode=InterfaceMode.server,
+                protocol=InterfaceProtocol.awg,
                 listen_port=settings.awg0_listen_port,
                 address=settings.awg0_address,
                 dns=awg0_ip,   # dnsmasq слушает на этом IP
@@ -173,6 +191,9 @@ async def init_defaults():
             print(f"[init] Created default interface: awg0 (dns={awg0_ip})")
         else:
             changed = False
+            if awg0.protocol != InterfaceProtocol.awg:
+                awg0.protocol = InterfaceProtocol.awg
+                changed = True
             if awg0.listen_port != settings.awg0_listen_port:
                 awg0.listen_port = settings.awg0_listen_port
                 changed = True
@@ -193,6 +214,7 @@ async def init_defaults():
             awg1 = Interface(
                 name="awg1",
                 mode=InterfaceMode.client,
+                protocol=InterfaceProtocol.awg,
                 address=settings.awg1_address,
                 allowed_ips=settings.awg1_allowed_ips,
                 persistent_keepalive=settings.awg1_persistent_keepalive,
@@ -202,6 +224,57 @@ async def init_defaults():
             )
             session.add(awg1)
             print("[init] Created default interface: awg1")
+        elif awg1.protocol != InterfaceProtocol.awg:
+            awg1.protocol = InterfaceProtocol.awg
+            session.add(awg1)
+
+        # ── wg0 (classic wireguard server) ─────────────────────────────
+        result = await session.execute(select(Interface).where(Interface.name == "wg0"))
+        wg0 = result.scalar_one_or_none()
+        if classic_wg_enabled():
+            wg0_dns = settings.wg0_dns or _awg0_ip(settings.wg0_address)
+            if not settings.wg0_listen_port:
+                print("[init] CLASSIC_WG=on but WG0_LISTEN_PORT is empty; wg0 will stay disabled")
+            if not wg0:
+                wg0 = Interface(
+                    name="wg0",
+                    mode=InterfaceMode.server,
+                    protocol=InterfaceProtocol.wg,
+                    listen_port=settings.wg0_listen_port,
+                    address=settings.wg0_address,
+                    dns=wg0_dns,
+                    enabled=bool(settings.wg0_listen_port),
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                )
+                session.add(wg0)
+                print("[init] Created optional interface: wg0")
+            else:
+                changed = False
+                if wg0.protocol != InterfaceProtocol.wg:
+                    wg0.protocol = InterfaceProtocol.wg
+                    changed = True
+                if wg0.listen_port != settings.wg0_listen_port:
+                    wg0.listen_port = settings.wg0_listen_port
+                    changed = True
+                if wg0.address != settings.wg0_address:
+                    wg0.address = settings.wg0_address
+                    changed = True
+                if wg0.dns != wg0_dns:
+                    wg0.dns = wg0_dns
+                    changed = True
+                desired_enabled = bool(settings.wg0_listen_port)
+                if wg0.enabled != desired_enabled:
+                    wg0.enabled = desired_enabled
+                    changed = True
+                if changed:
+                    wg0.updated_at = datetime.now(timezone.utc)
+                    session.add(wg0)
+        elif wg0 and wg0.enabled:
+            wg0.enabled = False
+            wg0.updated_at = datetime.now(timezone.utc)
+            session.add(wg0)
+            print("[init] Disabled hidden interface: wg0")
 
         # ── GeoIP источники ──────────────────────────────────────────────
         # По умолчанию не создаём преднастроенную страну: local zone

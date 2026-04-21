@@ -32,7 +32,7 @@ export default function Interfaces() {
       <div className="page-header">
         <div>
           <div className="page-title">Interfaces</div>
-          <div className="page-subtitle">AWG tunnel interfaces</div>
+          <div className="page-subtitle">Tunnel interfaces</div>
         </div>
       </div>
 
@@ -45,6 +45,7 @@ export default function Interfaces() {
               </span>
               <StatusBadge status={iface.running ? 'up' : 'down'} />
               <span className="badge badge-unknown">{iface.mode}</span>
+              <span className="badge badge-unknown">{iface.protocol}</span>
             </div>
             <div className="flex gap-2">
               {busy[iface.id] ? (
@@ -96,7 +97,7 @@ export default function Interfaces() {
           </div>
 
           {/* Obfuscation params */}
-          {iface.obf_h1 != null && (
+          {iface.protocol === 'awg' && iface.obf_h1 != null && (
             <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
               <div className="flex items-center justify-between" style={{ marginBottom: 10 }}>
                 <span className="card-title">Obfuscation Parameters</span>
@@ -179,7 +180,7 @@ function RegenConfirmModal({ iface, onClose, onConfirm }: { iface: Interface; on
               After generating new parameters, all clients will lose connectivity.
             </div>
             <div className="text-muted">
-              The new obfuscation parameters must match on both ends of the tunnel.
+              The new obfuscation parameters must match on both ends of the AWG tunnel.
               You will need to redistribute configs to all clients of interface <span className="text-mono">{iface.name}</span> and ask them to reconnect.
             </div>
           </div>

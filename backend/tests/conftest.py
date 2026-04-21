@@ -15,7 +15,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from backend.database import Base, get_db
-from backend.models.interface import Interface, InterfaceMode
+from backend.models.interface import Interface, InterfaceMode, InterfaceProtocol
 from backend.models.geoip import GeoipSource
 from backend.models.routing_settings import RoutingSettings
 
@@ -36,6 +36,7 @@ async def _create_test_db() -> None:
         session.add(Interface(
             name="awg0",
             mode=InterfaceMode.server,
+            protocol=InterfaceProtocol.awg,
             private_key="aGVsbG8gd29ybGQgaGVsbG8gd29ybGQgaGVsbG8hISE=",
             public_key="dGVzdHB1YmxpY2tleWZvcmF3ZzAxMjM0NTY3ODk=",
             listen_port=51820,
@@ -53,6 +54,7 @@ async def _create_test_db() -> None:
         session.add(Interface(
             name="awg1",
             mode=InterfaceMode.client,
+            protocol=InterfaceProtocol.awg,
             private_key="aGVsbG8gd29ybGQgaGVsbG8gd29ybGQgaGVsbG8hIiM=",
             public_key="dGVzdHB1YmxpY2tleWZvcmF3ZzExMjM0NTY3ODk=",
             address="10.20.0.2/32",

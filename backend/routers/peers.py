@@ -8,10 +8,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from backend.config import settings
-from backend.database import get_db
-from backend.models.interface import Interface, InterfaceMode
+from backend.database import AsyncSessionLocal, get_db
+from backend.models.interface import Interface, InterfaceMode, InterfaceProtocol
 from backend.models.peer import Peer
 from backend.routers.auth import get_current_user
 import backend.services.awg as awg_svc
@@ -20,11 +21,27 @@ router = APIRouter(prefix="/api/peers", tags=["peers"])
 _STATUS_REPORT_MIN_INTERVAL_SECONDS = 300
 
 
+async def get_authenticated_db(
+    _user: str = Depends(get_current_user),
+):
+    session = AsyncSessionLocal()
+    try:
+        yield session
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
+
+
 # ── Schemas ───────────────────────────────────────────────────────────────
 
 class PeerOut(BaseModel):
     id: int
     interface_id: int
+    interface_name: str
+    interface_protocol: str
     name: str
     public_key: str
     preshared_key: Optional[str]
@@ -80,6 +97,12 @@ def _peer_to_out(peer: Peer) -> PeerOut:
     return PeerOut(
         id=peer.id,
         interface_id=peer.interface_id,
+        interface_name=peer.interface.name if peer.interface else "",
+        interface_protocol=(
+            peer.interface.protocol.value
+            if peer.interface and hasattr(peer.interface.protocol, "value")
+            else (peer.interface.protocol if peer.interface else "awg")
+        ),
         name=peer.name,
         public_key=peer.public_key,
         preshared_key=peer.preshared_key,
@@ -128,7 +151,7 @@ async def _apply_live_stats(peers: list[Peer], session: AsyncSession) -> list[Pe
 
 
 async def _get_peer_or_404(peer_id: int, session: AsyncSession) -> Peer:
-    result = await session.execute(select(Peer).where(Peer.id == peer_id))
+    result = await session.execute(select(Peer).options(selectinload(Peer.interface)).where(Peer.id == peer_id))
     peer = result.scalar_one_or_none()
     if peer is None:
         raise HTTPException(status_code=404, detail="Peer not found")
@@ -202,10 +225,15 @@ async def _sync_interface(interface_id: int, session: AsyncSession) -> None:
 @router.get("", response_model=list[PeerOut])
 async def list_peers(
     interface_id: Optional[int] = Query(None),
-    session: AsyncSession = Depends(get_db),
-    _user: str = Depends(get_current_user),
+    session: AsyncSession = Depends(get_authenticated_db),
 ) -> list[PeerOut]:
-    q = select(Peer).order_by(Peer.id)
+    q = (
+        select(Peer)
+        .options(selectinload(Peer.interface))
+        .join(Interface, Interface.id == Peer.interface_id)
+        .where(Interface.name.in_(awg_svc.visible_interface_names()))
+        .order_by(Peer.id)
+    )
     if interface_id is not None:
         q = q.where(Peer.interface_id == interface_id)
     result = await session.execute(q)
@@ -231,7 +259,11 @@ async def report_peer_status(
     result = await session.execute(
         select(Peer, Interface)
         .join(Interface, Interface.id == Peer.interface_id)
-        .where(Interface.name == "awg0", Peer.tunnel_address.isnot(None))
+        .where(
+            Interface.name == "awg0",
+            Interface.protocol == InterfaceProtocol.awg,
+            Peer.tunnel_address.isnot(None),
+        )
     )
     peer = None
     for peer_obj, iface in result.all():
@@ -277,8 +309,7 @@ async def report_peer_status(
 @router.post("", response_model=PeerOut, status_code=201)
 async def create_peer(
     body: PeerCreate,
-    session: AsyncSession = Depends(get_db),
-    _user: str = Depends(get_current_user),
+    session: AsyncSession = Depends(get_authenticated_db),
 ) -> PeerOut:
     # Проверить что интерфейс существует
     result = await session.execute(
@@ -287,8 +318,11 @@ async def create_peer(
     iface = result.scalar_one_or_none()
     if iface is None:
         raise HTTPException(status_code=404, detail="Interface not found")
+    if iface.name not in awg_svc.visible_interface_names():
+        raise HTTPException(status_code=404, detail="Interface not found")
 
-    psk = body.preshared_key or awg_svc.generate_preshared_key()
+    protocol = iface.protocol if isinstance(iface.protocol, InterfaceProtocol) else InterfaceProtocol(iface.protocol or "awg")
+    psk = body.preshared_key or awg_svc.generate_preshared_key(protocol=protocol)
 
     # Автоматически выделить tunnel_address если не указан явно
     tunnel_address = body.tunnel_address
@@ -301,7 +335,7 @@ async def create_peer(
             pub = body.public_key
             priv = body.private_key
         else:
-            priv, pub = awg_svc.generate_keypair()
+            priv, pub = awg_svc.generate_keypair(protocol=protocol)
             if attempt:
                 # Тестовые моки могут возвращать одинаковые ключи; добиваемся уникальности
                 pub = f"{pub}-{attempt}"
@@ -333,6 +367,7 @@ async def create_peer(
     if peer is None:
         raise HTTPException(status_code=500, detail="Could not create peer")
 
+    peer.interface = iface
     await _sync_interface(body.interface_id, session)
     return _peer_to_out(peer)
 
@@ -340,10 +375,11 @@ async def create_peer(
 @router.get("/{peer_id}", response_model=PeerOut)
 async def get_peer(
     peer_id: int,
-    session: AsyncSession = Depends(get_db),
-    _user: str = Depends(get_current_user),
+    session: AsyncSession = Depends(get_authenticated_db),
 ) -> PeerOut:
     peer = await _get_peer_or_404(peer_id, session)
+    if peer.interface and peer.interface.name not in awg_svc.visible_interface_names():
+        raise HTTPException(status_code=404, detail="Peer not found")
     await _apply_live_stats([peer], session)
     return _peer_to_out(peer)
 
@@ -352,10 +388,11 @@ async def get_peer(
 async def update_peer(
     peer_id: int,
     body: PeerUpdate,
-    session: AsyncSession = Depends(get_db),
-    _user: str = Depends(get_current_user),
+    session: AsyncSession = Depends(get_authenticated_db),
 ) -> PeerOut:
     peer = await _get_peer_or_404(peer_id, session)
+    if peer.interface and peer.interface.name not in awg_svc.visible_interface_names():
+        raise HTTPException(status_code=404, detail="Peer not found")
     for field, value in body.model_dump(exclude_none=True).items():
         setattr(peer, field, value)
     peer.updated_at = datetime.now(timezone.utc)
@@ -368,10 +405,11 @@ async def update_peer(
 @router.delete("/{peer_id}", status_code=204)
 async def delete_peer(
     peer_id: int,
-    session: AsyncSession = Depends(get_db),
-    _user: str = Depends(get_current_user),
+    session: AsyncSession = Depends(get_authenticated_db),
 ) -> None:
     peer = await _get_peer_or_404(peer_id, session)
+    if peer.interface and peer.interface.name not in awg_svc.visible_interface_names():
+        raise HTTPException(status_code=404, detail="Peer not found")
     interface_id = peer.interface_id
     await session.delete(peer)
     await session.flush()
@@ -381,10 +419,11 @@ async def delete_peer(
 @router.post("/{peer_id}/toggle", response_model=PeerOut)
 async def toggle_peer(
     peer_id: int,
-    session: AsyncSession = Depends(get_db),
-    _user: str = Depends(get_current_user),
+    session: AsyncSession = Depends(get_authenticated_db),
 ) -> PeerOut:
     peer = await _get_peer_or_404(peer_id, session)
+    if peer.interface and peer.interface.name not in awg_svc.visible_interface_names():
+        raise HTTPException(status_code=404, detail="Peer not found")
     peer.enabled = not peer.enabled
     peer.updated_at = datetime.now(timezone.utc)
     session.add(peer)
@@ -397,8 +436,7 @@ async def toggle_peer(
 async def get_peer_config(
     peer_id: int,
     server_endpoint: Optional[str] = Query(None, description="host:port для клиентского конфига"),
-    session: AsyncSession = Depends(get_db),
-    _user: str = Depends(get_current_user),
+    session: AsyncSession = Depends(get_authenticated_db),
 ) -> Response:
     peer = await _get_peer_or_404(peer_id, session)
     result = await session.execute(
@@ -406,6 +444,8 @@ async def get_peer_config(
     )
     iface = result.scalar_one_or_none()
     if iface is None:
+        raise HTTPException(status_code=404, detail="Interface not found")
+    if iface.name not in awg_svc.visible_interface_names():
         raise HTTPException(status_code=404, detail="Interface not found")
 
     # Endpoint: query-параметр → settings.server_host → поле интерфейса → заглушка
@@ -423,8 +463,7 @@ async def get_peer_config(
 async def get_peer_qr(
     peer_id: int,
     server_endpoint: Optional[str] = Query(None),
-    session: AsyncSession = Depends(get_db),
-    _user: str = Depends(get_current_user),
+    session: AsyncSession = Depends(get_authenticated_db),
 ) -> Response:
     peer = await _get_peer_or_404(peer_id, session)
     result = await session.execute(
@@ -432,6 +471,8 @@ async def get_peer_qr(
     )
     iface = result.scalar_one_or_none()
     if iface is None:
+        raise HTTPException(status_code=404, detail="Interface not found")
+    if iface.name not in awg_svc.visible_interface_names():
         raise HTTPException(status_code=404, detail="Interface not found")
 
     endpoint = _build_endpoint(server_endpoint, iface)

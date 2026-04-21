@@ -65,7 +65,7 @@ def _ipt_del(table: str, chain: str, rule_args: list[str]) -> None:
         _run(["iptables", "-t", table, "-D", chain] + rule_args)
 
 
-def _mark_rules(invert_geoip: bool) -> dict[str, str | list[str]]:
+def _mark_rules(server_ifaces: list[str], invert_geoip: bool) -> dict[str, str | list[list[str]] | list[str]]:
     geoip_mark = settings.fwmark_vpn if invert_geoip else settings.fwmark_local
     other_mark = settings.fwmark_local if invert_geoip else settings.fwmark_vpn
 
@@ -73,14 +73,12 @@ def _mark_rules(invert_geoip: bool) -> dict[str, str | list[str]]:
         "geoip_mark": geoip_mark,
         "other_mark": other_mark,
         "prerouting_geoip": [
-            "-i", "awg0",
-            "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
-            "-j", "MARK", "--set-mark", geoip_mark,
+            ["-i", iface, "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst", "-j", "MARK", "--set-mark", geoip_mark]
+            for iface in server_ifaces
         ],
         "prerouting_other": [
-            "-i", "awg0",
-            "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
-            "-j", "MARK", "--set-mark", other_mark,
+            ["-i", iface, "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst", "-j", "MARK", "--set-mark", other_mark]
+            for iface in server_ifaces
         ],
         "output_geoip": [
             "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
@@ -94,10 +92,13 @@ def _mark_rules(invert_geoip: bool) -> dict[str, str | list[str]]:
 
 
 def _remove_all_policy_mark_rules() -> None:
+    candidate_ifaces = ["awg0", "wg0"]
     for invert_geoip in (False, True):
-        rules = _mark_rules(invert_geoip)
-        _ipt_del("mangle", "PREROUTING", rules["prerouting_geoip"])  # type: ignore[arg-type]
-        _ipt_del("mangle", "PREROUTING", rules["prerouting_other"])  # type: ignore[arg-type]
+        rules = _mark_rules(candidate_ifaces, invert_geoip)
+        for rule in rules["prerouting_geoip"]:  # type: ignore[assignment]
+            _ipt_del("mangle", "PREROUTING", rule)
+        for rule in rules["prerouting_other"]:  # type: ignore[assignment]
+            _ipt_del("mangle", "PREROUTING", rule)
         for proto in _DNS_OUTPUT_PROTOCOLS:
             _ipt_del("mangle", "OUTPUT", [
                 "-p", proto,
@@ -249,13 +250,14 @@ def update_vpn_route(
         logger.warning("Cannot determine fallback gateway for VPN table on %s", phys_iface)
 
 
-def setup_iptables(invert_geoip: bool = False) -> None:
+def setup_iptables(server_ifaces: list[str] | None = None, invert_geoip: bool = False) -> None:
     """
     Настраивает правила iptables для policy routing + NAT.
     Идемпотентно.
     """
     phys_iface = settings.physical_iface
-    rules = _mark_rules(invert_geoip)
+    effective_server_ifaces = [iface for iface in (server_ifaces or ["awg0"]) if iface]
+    rules = _mark_rules(effective_server_ifaces, invert_geoip)
 
     _ensure_geoip_ipset()
     _remove_all_policy_mark_rules()
@@ -263,8 +265,10 @@ def setup_iptables(invert_geoip: bool = False) -> None:
     # mangle PREROUTING: fwmark для трафика от AWG-клиентов (-i awg0).
     # Ограничение по интерфейсу обязательно: без него маркируются и ответные пакеты
     # из интернета, что ломает маршрутизацию обратно к клиентам.
-    _ipt_add("mangle", "PREROUTING", rules["prerouting_geoip"])  # type: ignore[arg-type]
-    _ipt_add("mangle", "PREROUTING", rules["prerouting_other"])  # type: ignore[arg-type]
+    for rule in rules["prerouting_geoip"]:  # type: ignore[assignment]
+        _ipt_add("mangle", "PREROUTING", rule)
+    for rule in rules["prerouting_other"]:  # type: ignore[assignment]
+        _ipt_add("mangle", "PREROUTING", rule)
     logger.info("iptables mangle PREROUTING rules configured")
 
     # mangle OUTPUT: fwmark только для DNS-трафика самого контейнера.
@@ -317,14 +321,15 @@ def teardown() -> None:
     logger.info("Routing teardown complete")
 
 
-def get_status(invert_geoip: bool = False) -> dict:
+def get_status(server_ifaces: list[str] | None = None, invert_geoip: bool = False) -> dict:
     """Возвращает текущее состояние правил маршрутизации."""
     fwmark_local = settings.fwmark_local
     fwmark_vpn = settings.fwmark_vpn
     table_local = settings.routing_table_local
     table_vpn = settings.routing_table_vpn
     phys_iface = settings.physical_iface
-    rules = _mark_rules(invert_geoip)
+    effective_server_ifaces = [iface for iface in (server_ifaces or ["awg0"]) if iface]
+    rules = _mark_rules(effective_server_ifaces, invert_geoip)
 
     _, rules_out = _run(["ip", "rule", "show"])
     _, route_local_out = _run(["ip", "route", "show", "table", str(table_local)])
@@ -338,8 +343,9 @@ def get_status(invert_geoip: bool = False) -> dict:
         "invert_geoip": invert_geoip,
         "geoip_mark": rules["geoip_mark"],
         "other_mark": rules["other_mark"],
-        "prerouting_geoip": _ipt_rule_exists("mangle", "PREROUTING", rules["prerouting_geoip"]),  # type: ignore[arg-type]
-        "prerouting_other": _ipt_rule_exists("mangle", "PREROUTING", rules["prerouting_other"]),  # type: ignore[arg-type]
+        "prerouting_geoip": all(_ipt_rule_exists("mangle", "PREROUTING", rule) for rule in rules["prerouting_geoip"]),  # type: ignore[arg-type]
+        "prerouting_other": all(_ipt_rule_exists("mangle", "PREROUTING", rule) for rule in rules["prerouting_other"]),  # type: ignore[arg-type]
+        "server_ifaces": effective_server_ifaces,
         "forward_tcpmss_awg1": _ipt_rule_exists(
             "mangle",
             "FORWARD",

@@ -11,12 +11,18 @@ class InterfaceMode(str, enum.Enum):
     client = "client"
 
 
+class InterfaceProtocol(str, enum.Enum):
+    awg = "awg"
+    wg = "wg"
+
+
 class Interface(Base):
     __tablename__ = "interfaces"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(32), unique=True, nullable=False)  # awg0, awg1
     mode = Column(SAEnum(InterfaceMode), nullable=False, default=InterfaceMode.server)
+    protocol = Column(SAEnum(InterfaceProtocol), nullable=False, default=InterfaceProtocol.awg)
 
     # Ключи
     private_key = Column(String(64), nullable=False, default="")
@@ -62,4 +68,4 @@ class Interface(Base):
     obf_generated_at = Column(DateTime, nullable=True)
 
     # ── Связи ────────────────────────────────────────────────────────────
-    peers = relationship("Peer", back_populates="interface", cascade="all, delete-orphan")
+    peers = relationship("Peer", back_populates="interface", cascade="all, delete-orphan", lazy="selectin")

@@ -70,7 +70,7 @@ export default function Peers() {
       <div className="page-header">
         <div>
           <div className="page-title">Peers</div>
-          <div className="page-subtitle">awg0 client configurations</div>
+          <div className="page-subtitle">Client configurations for server interfaces</div>
         </div>
         <div className="flex gap-2">
           <select
@@ -110,7 +110,8 @@ export default function Peers() {
             ) : peers.map((p) => {
               const iface = ifaces.find((i) => i.id === p.interface_id)
               const rowBg =
-                p.client_kind === 'awg-gateway' ? 'rgba(245, 158, 11, 0.14)'
+                p.interface_protocol === 'wg' ? 'rgba(16, 185, 129, 0.14)'
+                  : p.client_kind === 'awg-gateway' ? 'rgba(245, 158, 11, 0.14)'
                   : p.client_kind === 'awg-jump-client-android' ? 'rgba(34, 211, 238, 0.14)'
                     : p.client_kind === 'awg-jump-client-ios' ? 'rgba(99, 102, 241, 0.12)'
                       : undefined
@@ -137,7 +138,7 @@ export default function Peers() {
                   <td className="text-mono" style={{ fontSize: 12 }}>
                     {fmtBytes(p.rx_bytes)} / {fmtBytes(p.tx_bytes)}
                   </td>
-                  <td className="text-mono text-muted">{iface?.name ?? `#${p.interface_id}`}</td>
+                  <td className="text-mono text-muted">{p.interface_name || iface?.name || `#${p.interface_id}`}</td>
                   <td>
                     <div className="flex gap-2">
                       <button className="btn btn-ghost btn-sm" onClick={() => downloadConfig(p)} title="Download config">
@@ -240,7 +241,7 @@ function CreatePeerModal({ ifaces, onClose, onSaved }: {
       <div className="form-row form-row-2">
         <div className="form-group">
           <label className="form-label">Tunnel address (optional)</label>
-          <input className="form-input mono" value={form.tunnel_address} onChange={f('tunnel_address')} placeholder="10.10.0.2/32" />
+          <input className="form-input mono" value={form.tunnel_address} onChange={f('tunnel_address')} placeholder="10.x.x.x/32" />
         </div>
         <div className="form-group">
           <label className="form-label">Allowed IPs</label>
@@ -252,7 +253,7 @@ function CreatePeerModal({ ifaces, onClose, onSaved }: {
         <input className="form-input mono" value={form.persistent_keepalive} onChange={f('persistent_keepalive')} placeholder="25" />
       </div>
       <div className="info-box" style={{ fontSize: 12 }}>
-        Keys will be auto-generated if not specified
+        Keys are auto-generated. `wg0` configs are plain WireGuard; `awg0` configs include obfuscation.
       </div>
       <div className="modal-actions">
         <button className="btn btn-secondary" onClick={onClose}>Cancel</button>

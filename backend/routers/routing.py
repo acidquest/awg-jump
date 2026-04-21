@@ -9,6 +9,7 @@ from backend.database import get_db
 from backend.models.routing_settings import RoutingSettings
 from backend.models.upstream_node import NodeStatus, UpstreamNode
 from backend.routers.auth import get_current_user
+from backend.services import awg as awg_svc
 from backend.services import routing as routing_svc
 
 router = APIRouter(prefix="/api/routing", tags=["routing"])
@@ -48,7 +49,8 @@ async def get_status(
 ) -> dict:
     try:
         settings_row = await _get_or_create_settings(session)
-        return routing_svc.get_status(invert_geoip=settings_row.invert_geoip)
+        server_ifaces = await awg_svc.list_enabled_server_interface_names(session)
+        return routing_svc.get_status(server_ifaces=server_ifaces, invert_geoip=settings_row.invert_geoip)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -67,13 +69,14 @@ async def update_settings(
         await session.flush()
 
         active_node = await _get_active_node(session)
+        server_ifaces = await awg_svc.list_enabled_server_interface_names(session)
         routing_svc.setup_policy_routing()
         routing_svc.update_vpn_route("awg1" if active_node else None)
         routing_svc.update_upstream_host_route(
             active_node.awg_address if active_node and active_node.awg_address else None
         )
-        routing_svc.setup_iptables(invert_geoip=settings_row.invert_geoip)
-        return {"status": "updated", **routing_svc.get_status(invert_geoip=settings_row.invert_geoip)}
+        routing_svc.setup_iptables(server_ifaces=server_ifaces, invert_geoip=settings_row.invert_geoip)
+        return {"status": "updated", **routing_svc.get_status(server_ifaces=server_ifaces, invert_geoip=settings_row.invert_geoip)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -86,13 +89,14 @@ async def apply_routing(
     try:
         settings_row = await _get_or_create_settings(session)
         active_node = await _get_active_node(session)
+        server_ifaces = await awg_svc.list_enabled_server_interface_names(session)
         routing_svc.setup_policy_routing()
         routing_svc.update_vpn_route("awg1" if active_node else None)
         routing_svc.update_upstream_host_route(
             active_node.awg_address if active_node and active_node.awg_address else None
         )
-        routing_svc.setup_iptables(invert_geoip=settings_row.invert_geoip)
-        return {"status": "applied", **routing_svc.get_status(invert_geoip=settings_row.invert_geoip)}
+        routing_svc.setup_iptables(server_ifaces=server_ifaces, invert_geoip=settings_row.invert_geoip)
+        return {"status": "applied", **routing_svc.get_status(server_ifaces=server_ifaces, invert_geoip=settings_row.invert_geoip)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

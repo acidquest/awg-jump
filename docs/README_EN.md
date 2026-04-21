@@ -161,10 +161,15 @@ On first launch, the container automatically:
 
 | Variable | Default | Description |
 |---------|---------|-------------|
-| `AWG0_LISTEN_PORT` | `51820` | UDP port |
+| `AWG0_LISTEN_PORT` | `51820` | AWG server UDP port |
 | `AWG0_PRIVATE_KEY` | _(auto)_ | Private key; auto-generated if empty |
-| `AWG0_ADDRESS` | `10.10.0.1/24` | awg0 interface address (also the dnsmasq IP for clients) |
-| `AWG0_DNS` | _(awg0 IP)_ | DNS for clients; automatically set to the awg0 IP |
+| `AWG0_ADDRESS` | `10.10.0.1/24` | awg0 interface address |
+| `AWG0_DNS` | _(awg0 IP)_ | DNS for awg0 clients |
+| `CLASSIC_WG` | _(empty)_ | `on` enables the optional `wg0` interface |
+| `WG0_LISTEN_PORT` | _(required when `CLASSIC_WG=on`)_ | classic WireGuard server UDP port |
+| `WG0_PRIVATE_KEY` | _(auto)_ | wg0 private key |
+| `WG0_ADDRESS` | `10.11.0.1/24` | wg0 interface address |
+| `WG0_DNS` | `10.11.0.1` | DNS for wg0 clients |
 | `SERVER_HOST` | `` | Public IP/hostname for `Endpoint` in client configs |
 
 ### AWG1 Client (upstream VPN)
@@ -216,7 +221,7 @@ Summary panel: interface status, connected peers, active upstream node, GeoIP st
 
 ### Interfaces
 
-Manage AWG interfaces `awg0` and `awg1`:
+Manage tunnel interfaces `awg0`, `awg1`, and optional `wg0`:
 
 - View keys, addresses, ports.
 - Edit parameters (listen port, address, DNS, keepalive).
@@ -226,7 +231,7 @@ Manage AWG interfaces `awg0` and `awg1`:
 
 ### Peers
 
-Manage awg0 clients:
+Manage peers for server interfaces:
 
 - Create peers with automatic IP allocation from the awg0 subnet.
 - Download client config as `.conf` file and QR code for mobile apps.

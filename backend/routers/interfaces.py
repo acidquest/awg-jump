@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
-from backend.models.interface import Interface, InterfaceMode
+from backend.models.interface import Interface, InterfaceMode, InterfaceProtocol
 from backend.models.peer import Peer
 from backend.routers.auth import get_current_user
 import backend.services.awg as awg_svc
@@ -21,6 +21,7 @@ class InterfaceOut(BaseModel):
     id: int
     name: str
     mode: str
+    protocol: str
     public_key: str
     listen_port: Optional[int]
     address: str
@@ -63,6 +64,7 @@ def _iface_to_out(iface: Interface) -> InterfaceOut:
         id=iface.id,
         name=iface.name,
         mode=iface.mode.value if hasattr(iface.mode, "value") else iface.mode,
+        protocol=iface.protocol.value if hasattr(iface.protocol, "value") else iface.protocol,
         public_key=iface.public_key or "",
         listen_port=iface.listen_port,
         address=iface.address,
@@ -105,7 +107,7 @@ async def list_interfaces(
     _user: str = Depends(get_current_user),
 ) -> list[InterfaceOut]:
     result = await session.execute(select(Interface).order_by(Interface.id))
-    return [_iface_to_out(i) for i in result.scalars().all()]
+    return [_iface_to_out(i) for i in result.scalars().all() if i.name in awg_svc.visible_interface_names()]
 
 
 @router.get("/{iface_id}", response_model=InterfaceOut)
@@ -115,6 +117,8 @@ async def get_interface(
     _user: str = Depends(get_current_user),
 ) -> InterfaceOut:
     iface = await _get_iface_or_404(iface_id, session)
+    if iface.name not in awg_svc.visible_interface_names():
+        raise HTTPException(status_code=404, detail="Interface not found")
     return _iface_to_out(iface)
 
 
@@ -126,6 +130,8 @@ async def update_interface(
     _user: str = Depends(get_current_user),
 ) -> InterfaceOut:
     iface = await _get_iface_or_404(iface_id, session)
+    if iface.name not in awg_svc.visible_interface_names():
+        raise HTTPException(status_code=404, detail="Interface not found")
     for field, value in body.model_dump(exclude_none=True).items():
         setattr(iface, field, value)
     iface.updated_at = datetime.now(timezone.utc)
@@ -141,8 +147,12 @@ async def apply_interface(
     _user: str = Depends(get_current_user),
 ) -> InterfaceOut:
     iface = await _get_iface_or_404(iface_id, session)
+    if iface.name not in awg_svc.visible_interface_names():
+        raise HTTPException(status_code=404, detail="Interface not found")
     if not iface.private_key:
         raise HTTPException(status_code=400, detail="Interface has no private key")
+    if iface.name == "wg0" and not iface.listen_port:
+        raise HTTPException(status_code=400, detail="WG0_LISTEN_PORT is required when CLASSIC_WG=on")
     result = await session.execute(
         select(Peer).where(Peer.interface_id == iface_id, Peer.enabled == True)  # noqa: E712
     )
@@ -161,6 +171,8 @@ async def stop_interface(
     _user: str = Depends(get_current_user),
 ) -> InterfaceOut:
     iface = await _get_iface_or_404(iface_id, session)
+    if iface.name not in awg_svc.visible_interface_names():
+        raise HTTPException(status_code=404, detail="Interface not found")
     await awg_svc.stop_interface(iface.name)
     return _iface_to_out(iface)
 
@@ -172,6 +184,8 @@ async def interface_status(
     _user: str = Depends(get_current_user),
 ) -> dict:
     iface = await _get_iface_or_404(iface_id, session)
+    if iface.name not in awg_svc.visible_interface_names():
+        raise HTTPException(status_code=404, detail="Interface not found")
     all_status = awg_svc.get_status()
     iface_status = all_status.get(iface.name, {"name": iface.name, "running": False, "peers": {}})
     return iface_status
@@ -185,6 +199,8 @@ async def regenerate_obfuscation(
 ) -> InterfaceOut:
     """Перегенерировать параметры обфускации для интерфейса."""
     iface = await _get_iface_or_404(iface_id, session)
+    if iface.protocol == InterfaceProtocol.wg:
+        raise HTTPException(status_code=400, detail="Obfuscation is available only for AWG interfaces")
     params = awg_svc.generate_obfuscation_params()
     iface.obf_jc = params["jc"]
     iface.obf_jmin = params["jmin"]

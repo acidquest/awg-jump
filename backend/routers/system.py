@@ -57,10 +57,13 @@ async def get_status(
     ifaces = result.scalars().all()
     interfaces_out = []
     for iface in ifaces:
+        if iface.name not in awg_svc.visible_interface_names():
+            continue
         live = awg_status.get(iface.name, {})
         interfaces_out.append({
             "name": iface.name,
             "mode": iface.mode.value if hasattr(iface.mode, "value") else iface.mode,
+            "protocol": iface.protocol.value if hasattr(iface.protocol, "value") else iface.protocol,
             "address": iface.address,
             "enabled": iface.enabled,
             "running": awg_svc.is_running(iface.name),
@@ -93,7 +96,8 @@ async def get_status(
     # Routing
     try:
         invert_geoip = await _get_invert_geoip(session)
-        routing_status = routing_svc.get_status(invert_geoip=invert_geoip)
+        server_ifaces = await awg_svc.list_enabled_server_interface_names(session)
+        routing_status = routing_svc.get_status(server_ifaces=server_ifaces, invert_geoip=invert_geoip)
     except Exception as e:
         routing_status = {"error": str(e)}
 
@@ -214,14 +218,18 @@ async def restart_routing(
                 UpstreamNode.status == NodeStatus.online,
             )
         )
+        server_ifaces = await awg_svc.list_enabled_server_interface_names(session)
         routing_svc.setup_policy_routing()
         routing_svc.update_vpn_route("awg1" if active_node else None)
         routing_svc.update_upstream_host_route(
             active_node.awg_address if active_node and active_node.awg_address else None
         )
-        routing_svc.setup_iptables(invert_geoip=invert_geoip)
+        routing_svc.setup_iptables(server_ifaces=server_ifaces, invert_geoip=invert_geoip)
     except Exception as e:
         errors.append(f"setup: {e}")
 
-    status = routing_svc.get_status(invert_geoip=invert_geoip if 'invert_geoip' in locals() else False)
+    status = routing_svc.get_status(
+        server_ifaces=server_ifaces if 'server_ifaces' in locals() else None,
+        invert_geoip=invert_geoip if 'invert_geoip' in locals() else False,
+    )
     return {"status": "restarted" if not errors else "partial", "errors": errors, **status}

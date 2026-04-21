@@ -24,7 +24,8 @@
 
 - `ADMIN_USERNAME`, `ADMIN_PASSWORD`: логин администратора UI/API.
 - `SECRET_KEY`: секрет подписи токенов.
-- `AWG0_LISTEN_PORT`, `AWG0_ADDRESS`, `AWG0_DNS`: серверный интерфейс для клиентов.
+- `AWG0_LISTEN_PORT`, `AWG0_ADDRESS`, `AWG0_DNS`: серверный интерфейс AmneziaWG для клиентов.
+- `CLASSIC_WG`, `WG0_LISTEN_PORT`, `WG0_ADDRESS`, `WG0_DNS`: опциональный серверный интерфейс classic WireGuard `wg0`.
 - `AWG1_ADDRESS`, `AWG1_ALLOWED_IPS`, `AWG1_PERSISTENT_KEEPALIVE`: клиентский интерфейс jump → upstream node.
 - `PHYSICAL_IFACE`, `ROUTING_TABLE_LOCAL`: физический интерфейс и routing table для local-zone трафика.
 - `NODE_AWG_PORT`, `NODE_VPN_SUBNET`: параметры сети upstream-нод.
@@ -51,7 +52,7 @@
 
 **Как это работает:**
 
-- Клиенты получают IP интерфейса `awg0` в качестве DNS-сервера (автоматически).
+- Клиенты получают DNS сервера своего входного интерфейса (`awg0` или `wg0`) автоматически.
 - Домены из списка в веб-интерфейсе (страница **Split DNS**) могут быть направлены в `Local Zone` или `VPN Zone`.
 - Для каждой зоны задаётся свой список DNS-серверов в UI и хранится в БД.
 - DNS-запросы самого контейнера маршрутизируются по тем же правилам GeoIP: IP из `geoip_local` идут через `eth0`, остальные — через `awg1` (upstream VPN).

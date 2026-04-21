@@ -107,7 +107,11 @@ export default function Dashboard() {
   const s = data
 
   const awg0 = s.interfaces.find((i) => i.name === 'awg0')
+  const wg0 = s.interfaces.find((i) => i.name === 'wg0')
   const awg1 = s.interfaces.find((i) => i.name === 'awg1')
+  const serverPeerCount = s.interfaces
+    .filter((i) => i.mode === 'server')
+    .reduce((sum, i) => sum + i.peers_count, 0)
   const totalPrefixes = s.geoip.reduce((a, g) => a + (g.prefix_count || 0), 0)
   const routing = routingData ?? s.routing
   const latestMetrics = metricsData?.latest
@@ -157,8 +161,8 @@ export default function Dashboard() {
         </div>
         <div className="card">
           <div className="card-title" style={{ marginBottom: 10 }}>Active peers</div>
-          <div className="stat-value">{awg0?.peers_count ?? 0}</div>
-          <div className="stat-label">on awg0</div>
+          <div className="stat-value">{serverPeerCount}</div>
+          <div className="stat-label">across server interfaces</div>
         </div>
         <div className="card">
           <div className="card-title" style={{ marginBottom: 10 }}>Active node</div>
@@ -181,7 +185,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: wg0 ? '1fr 1fr 1fr' : '1fr 1fr', gap: 16, marginBottom: 20 }}>
         {/* AWG0 card */}
         <div className="card">
           <div className="card-header">
@@ -214,6 +218,20 @@ export default function Dashboard() {
             )}
           </div>
         </div>
+
+        {wg0 && (
+          <div className="card">
+            <div className="card-header">
+              <span className="card-title">wg0 — Classic WireGuard</span>
+              <StatusBadge status={wg0.running ? 'up' : 'down'} />
+            </div>
+            <div className="flex gap-4" style={{ fontSize: 13 }}>
+              <div><span className="text-muted">Address:</span>{' '}
+                <span className="text-mono">{wg0.address}</span></div>
+              <div><span className="text-muted">Peers:</span>{' '}{wg0.peers_count}</div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="section">
