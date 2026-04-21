@@ -178,6 +178,52 @@ def _flow_delta(previous_bytes: int | None, current_bytes: int) -> int:
     return max(current_bytes, 0)
 
 
+def _latest_timestamp(*values: datetime | None) -> datetime | None:
+    normalized = [value for value in (_as_utc_naive(item) for item in values) if value is not None]
+    if not normalized:
+        return None
+    return max(normalized)
+
+
+def _evaluate_device_presence(
+    device: TrackedDevice,
+    *,
+    neighbor: NeighborInfo | None,
+    now: datetime,
+    activity_timeout_seconds: int,
+) -> tuple[bool, bool, bool, str | None]:
+    timeout_cutoff = now - timedelta(seconds=activity_timeout_seconds)
+    last_traffic_at = _as_utc_naive(device.last_traffic_at)
+    is_active = last_traffic_at is not None and last_traffic_at >= timeout_cutoff
+    is_present = is_active
+    confirmed_present = is_active
+    mac_address: str | None = None
+
+    if not device.current_ip:
+        return bool(is_active), bool(is_present), bool(confirmed_present), mac_address
+
+    arp_present, mac_address = _presence_from_neighbor(neighbor)
+    if neighbor is not None:
+        if arp_present:
+            is_present = True
+            confirmed_present = True
+        else:
+            stale_since = _latest_timestamp(device.last_present_at, device.last_traffic_at, device.last_seen_at)
+            stale_grace_active = stale_since is not None and stale_since >= timeout_cutoff
+            if stale_grace_active:
+                is_present = True
+            else:
+                ping_ok = _ping(device.current_ip)
+                is_present = ping_ok
+                confirmed_present = ping_ok
+    elif not is_active:
+        ping_ok = _ping(device.current_ip)
+        is_present = ping_ok
+        confirmed_present = ping_ok
+
+    return bool(is_active), bool(is_present), bool(confirmed_present), mac_address
+
+
 def _coerce_device_defaults(device: TrackedDevice) -> TrackedDevice:
     if device.total_bytes is None:
         device.total_bytes = 0
@@ -443,31 +489,25 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
     await session.execute(delete(TrackedDeviceFlowState).where(TrackedDeviceFlowState.last_seen_at < cutoff))
 
     devices = (await session.scalars(select(TrackedDevice).order_by(TrackedDevice.last_seen_at.desc()))).all()
-    timeout_cutoff = now - timedelta(seconds=settings_row.device_activity_timeout_seconds)
     for device in devices:
         _coerce_device_defaults(device)
-        last_traffic_at = _as_utc_naive(device.last_traffic_at)
-        is_active = last_traffic_at is not None and last_traffic_at >= timeout_cutoff
-        is_present = is_active
-        if device.current_ip:
-            neighbor = neighbors.get(device.current_ip)
-            arp_present, mac_address = _presence_from_neighbor(neighbor)
-            if neighbor is not None and not arp_present:
-                is_active = False
-                is_present = False
-            elif not is_active:
-                ping_ok = _ping(device.current_ip) if neighbor is None else False
-                is_present = arp_present or ping_ok
-            if mac_address and not device.mac_address:
-                device.mac_address = mac_address
-                device.identity_key = f"mac:{mac_address}"
-                device.identity_source = "mac"
+        neighbor = neighbors.get(device.current_ip) if device.current_ip else None
+        is_active, is_present, confirmed_present, mac_address = _evaluate_device_presence(
+            device,
+            neighbor=neighbor,
+            now=now,
+            activity_timeout_seconds=settings_row.device_activity_timeout_seconds,
+        )
+        if mac_address and not device.mac_address:
+            device.mac_address = mac_address
+            device.identity_key = f"mac:{mac_address}"
+            device.identity_source = "mac"
         device.is_active = bool(is_active)
         device.is_present = bool(is_present)
         device.last_presence_check_at = now
-        if is_present:
+        if confirmed_present:
             device.last_present_at = now
-        else:
+        elif not is_present:
             device.last_absent_at = now
         session.add(device)
 

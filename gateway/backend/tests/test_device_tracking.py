@@ -91,12 +91,24 @@ def test_as_utc_naive_normalizes_aware_values_for_internal_comparisons() -> None
     assert normalized.tzinfo is None
 
 
-def test_stale_neighbor_forces_device_inactive_even_with_recent_traffic() -> None:
+def test_latest_timestamp_returns_most_recent_naive_utc_value() -> None:
+    latest = device_tracking._latest_timestamp(
+        datetime(2026, 4, 21, 11, 59, 0),
+        datetime(2026, 4, 21, 12, 0, 0, tzinfo=timezone.utc),
+        None,
+    )
+
+    assert latest == datetime(2026, 4, 21, 12, 0, 0)
+    assert latest.tzinfo is None
+
+
+def test_stale_neighbor_keeps_device_present_during_activity_timeout() -> None:
     now = datetime(2026, 4, 21, 12, 0, 0)
-    timeout_cutoff = now - timedelta(seconds=30)
     device = SimpleNamespace(
         current_ip="192.168.1.10",
-        last_traffic_at=now,
+        last_traffic_at=now - timedelta(seconds=45),
+        last_present_at=now - timedelta(seconds=20),
+        last_seen_at=now - timedelta(seconds=20),
         mac_address="aa:bb",
     )
     neighbor = device_tracking.NeighborInfo(
@@ -105,13 +117,71 @@ def test_stale_neighbor_forces_device_inactive_even_with_recent_traffic() -> Non
         state="STALE",
     )
 
-    last_traffic_at = device_tracking._as_utc_naive(device.last_traffic_at)
-    is_active = last_traffic_at is not None and last_traffic_at >= timeout_cutoff
-    is_present = is_active
-    arp_present, _mac_address = device_tracking._presence_from_neighbor(neighbor)
-    if neighbor is not None and not arp_present:
-        is_active = False
-        is_present = False
+    is_active, is_present, confirmed_present, mac_address = device_tracking._evaluate_device_presence(
+        device,
+        neighbor=neighbor,
+        now=now,
+        activity_timeout_seconds=30,
+    )
+
+    assert is_active is False
+    assert is_present is True
+    assert confirmed_present is False
+    assert mac_address == "aa:bb"
+
+
+def test_stale_neighbor_becomes_inactive_after_timeout_and_failed_ping(monkeypatch) -> None:
+    now = datetime(2026, 4, 21, 12, 0, 0)
+    device = SimpleNamespace(
+        current_ip="192.168.1.10",
+        last_traffic_at=now - timedelta(seconds=120),
+        last_present_at=now - timedelta(seconds=120),
+        last_seen_at=now - timedelta(seconds=120),
+        mac_address="aa:bb",
+    )
+    neighbor = device_tracking.NeighborInfo(
+        ip_address="192.168.1.10",
+        mac_address="aa:bb",
+        state="STALE",
+    )
+    monkeypatch.setattr(device_tracking, "_ping", lambda _ip: False)
+
+    is_active, is_present, confirmed_present, mac_address = device_tracking._evaluate_device_presence(
+        device,
+        neighbor=neighbor,
+        now=now,
+        activity_timeout_seconds=30,
+    )
 
     assert is_active is False
     assert is_present is False
+    assert confirmed_present is False
+    assert mac_address == "aa:bb"
+
+
+def test_reachable_neighbor_without_traffic_is_present_but_not_active() -> None:
+    now = datetime(2026, 4, 21, 12, 0, 0)
+    device = SimpleNamespace(
+        current_ip="192.168.1.10",
+        last_traffic_at=now - timedelta(seconds=120),
+        last_present_at=now - timedelta(seconds=120),
+        last_seen_at=now - timedelta(seconds=5),
+        mac_address="aa:bb",
+    )
+    neighbor = device_tracking.NeighborInfo(
+        ip_address="192.168.1.10",
+        mac_address="aa:bb",
+        state="REACHABLE",
+    )
+
+    is_active, is_present, confirmed_present, mac_address = device_tracking._evaluate_device_presence(
+        device,
+        neighbor=neighbor,
+        now=now,
+        activity_timeout_seconds=30,
+    )
+
+    assert is_active is False
+    assert is_present is True
+    assert confirmed_present is True
+    assert mac_address == "aa:bb"
