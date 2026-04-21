@@ -118,10 +118,16 @@ def generate_keypair(protocol: InterfaceProtocol = InterfaceProtocol.awg) -> tup
     """Возвращает (private_key, public_key) в base64 формате WireGuard."""
     tool = _tool_bin(protocol)
     priv = subprocess.check_output([tool, "genkey"]).decode().strip()
-    pub = subprocess.check_output(
-        [tool, "pubkey"], input=priv.encode()
-    ).decode().strip()
+    pub = subprocess.check_output([tool, "pubkey"], input=priv.encode()).decode().strip()
     return priv, pub
+
+
+def derive_public_key(
+    private_key: str,
+    protocol: InterfaceProtocol = InterfaceProtocol.awg,
+) -> str:
+    tool = _tool_bin(protocol)
+    return subprocess.check_output([tool, "pubkey"], input=private_key.encode()).decode().strip()
 
 
 def generate_preshared_key(protocol: InterfaceProtocol = InterfaceProtocol.awg) -> str:

@@ -51,11 +51,18 @@ export const regenObfuscation = (id: number) =>
 // ── Peers ─────────────────────────────────────────────────────────────────
 export const getPeers = (interfaceId?: number) =>
   api.get('/peers', { params: interfaceId ? { interface_id: interfaceId } : {} })
+export const getPeer = (id: number) => api.get(`/peers/${id}`)
 export const createPeer = (data: Record<string, unknown>) => api.post('/peers', data)
 export const updatePeer = (id: number, data: Record<string, unknown>) =>
   api.put(`/peers/${id}`, data)
 export const deletePeer = (id: number) => api.delete(`/peers/${id}`)
 export const togglePeer = (id: number) => api.post(`/peers/${id}/toggle`)
+export const generatePeerKeypair = (data: Record<string, unknown>) =>
+  api.post('/peers/generate-keypair', data)
+export const generatePeerPresharedKey = (data: Record<string, unknown>) =>
+  api.post('/peers/generate-preshared-key', data)
+export const derivePeerPublicKey = (data: Record<string, unknown>) =>
+  api.post('/peers/derive-public-key', data)
 export const getPeerConfig = (id: number, endpoint?: string) =>
   api.get(`/peers/${id}/config`, {
     params: endpoint ? { server_endpoint: endpoint } : {},

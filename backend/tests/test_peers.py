@@ -93,6 +93,38 @@ async def test_update_peer(
 
 
 @pytest.mark.asyncio
+async def test_update_peer_private_key_updates_public_key(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession
+) -> None:
+    result = await db_session.execute(select(Interface).where(Interface.name == "awg0"))
+    iface = result.scalar_one()
+
+    create_resp = await client.post(
+        "/api/peers",
+        json={"interface_id": iface.id, "name": "keys-peer", "allowed_ips": "0.0.0.0/0"},
+        headers=auth_headers,
+    )
+    peer_id = create_resp.json()["id"]
+
+    resp = await client.put(
+        f"/api/peers/{peer_id}",
+        json={
+            "private_key": "manual-private-key-base64==",
+            "preshared_key": None,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["public_key"] == "fake_key_base64=="
+    assert resp.json()["preshared_key"] is None
+
+    detail_resp = await client.get(f"/api/peers/{peer_id}", headers=auth_headers)
+    assert detail_resp.status_code == 200
+    assert detail_resp.json()["private_key"] == "manual-private-key-base64=="
+    assert detail_resp.json()["public_key"] == "fake_key_base64=="
+
+
+@pytest.mark.asyncio
 async def test_toggle_peer(
     client: AsyncClient, auth_headers: dict, db_session: AsyncSession
 ) -> None:
@@ -235,6 +267,82 @@ async def test_wg_peer_config_plain_wireguard(
 
     from backend.config import reload_settings
     reload_settings()
+
+
+@pytest.mark.asyncio
+async def test_create_peer_from_awg_conf(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession
+) -> None:
+    result = await db_session.execute(select(Interface).where(Interface.name == "awg0"))
+    iface = result.scalar_one()
+
+    resp = await client.post(
+        "/api/peers",
+        json={
+            "interface_id": iface.id,
+            "name": "imported-awg-peer",
+            "conf_text": """
+[Interface]
+PrivateKey = imported-private-key==
+Address = 10.10.0.50/32
+DNS = 1.1.1.1
+Jc = 7
+Jmin = 50
+Jmax = 90
+S1 = 83
+S2 = 47
+S3 = 121
+S4 = 33
+H1 = 3928541027
+H2 = 1847392610
+H3 = 2938471056
+H4 = 847392015
+
+[Peer]
+PublicKey = imported-public-key==
+PresharedKey = imported-psk==
+Endpoint = vpn.example.com:51820
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+""".strip(),
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert data["name"] == "imported-awg-peer"
+    assert data["tunnel_address"] == "10.10.0.50/32"
+    assert data["allowed_ips"] == "0.0.0.0/0"
+    assert data["preshared_key"] == "imported-psk=="
+    assert data["public_key"] == "fake_key_base64=="
+
+
+@pytest.mark.asyncio
+async def test_reject_wg_conf_on_awg_interface(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession
+) -> None:
+    result = await db_session.execute(select(Interface).where(Interface.name == "awg0"))
+    iface = result.scalar_one()
+
+    resp = await client.post(
+        "/api/peers",
+        json={
+            "interface_id": iface.id,
+            "conf_text": """
+[Interface]
+PrivateKey = imported-private-key==
+Address = 10.10.0.60/32
+
+[Peer]
+PublicKey = imported-public-key==
+Endpoint = vpn.example.com:51820
+AllowedIPs = 0.0.0.0/0
+""".strip(),
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400
+    assert "does not match interface protocol" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio

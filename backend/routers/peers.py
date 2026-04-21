@@ -15,6 +15,7 @@ from backend.database import AsyncSessionLocal, get_db
 from backend.models.interface import Interface, InterfaceMode, InterfaceProtocol
 from backend.models.peer import Peer
 from backend.routers.auth import get_current_user
+from backend.services.conf_parser import parse_peer_conf
 import backend.services.awg as awg_svc
 
 router = APIRouter(prefix="/api/peers", tags=["peers"])
@@ -61,12 +62,17 @@ class PeerOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PeerDetail(PeerOut):
+    private_key: Optional[str]
+
+
 class PeerCreate(BaseModel):
     interface_id: int
     name: str = ""
     tunnel_address: Optional[str] = None   # 10.10.0.x/32
     allowed_ips: str = "0.0.0.0/0"
     persistent_keepalive: Optional[int] = 25
+    conf_text: Optional[str] = None
     # Если не указаны — генерируются автоматически
     public_key: Optional[str] = None
     private_key: Optional[str] = None
@@ -79,11 +85,23 @@ class PeerUpdate(BaseModel):
     tunnel_address: Optional[str] = None
     persistent_keepalive: Optional[int] = None
     enabled: Optional[bool] = None
+    private_key: Optional[str] = None
     preshared_key: Optional[str] = None
 
 
 class PeerStatusReport(BaseModel):
     client_code: int
+
+
+class PeerPrivateKeyIn(BaseModel):
+    private_key: str
+    interface_id: Optional[int] = None
+    protocol: Optional[InterfaceProtocol] = None
+
+
+class PeerProtocolIn(BaseModel):
+    interface_id: Optional[int] = None
+    protocol: Optional[InterfaceProtocol] = None
 
 
 _CLIENT_KIND_BY_CODE = {
@@ -119,6 +137,22 @@ def _peer_to_out(peer: Peer) -> PeerOut:
         client_reported_at=peer.client_reported_at,
         created_at=peer.created_at,
     )
+
+
+def _peer_to_detail(peer: Peer) -> PeerDetail:
+    return PeerDetail(**_peer_to_out(peer).model_dump(), private_key=peer.private_key)
+
+
+def _protocol_from_interface(iface: Interface) -> InterfaceProtocol:
+    if isinstance(iface.protocol, InterfaceProtocol):
+        return iface.protocol
+    return InterfaceProtocol(iface.protocol or "awg")
+
+
+def _protocol_from_parsed_conf(conf_text: str) -> tuple[InterfaceProtocol, object]:
+    parsed = parse_peer_conf(conf_text)
+    protocol = InterfaceProtocol.awg if parsed.obfuscation else InterfaceProtocol.wg
+    return protocol, parsed
 
 
 async def _apply_live_stats(peers: list[Peer], session: AsyncSession) -> list[Peer]:
@@ -188,6 +222,23 @@ async def _allocate_tunnel_address(interface: Interface, session: AsyncSession) 
             return f"{host}/32"
 
     return None
+
+
+async def _resolve_protocol(
+    session: AsyncSession,
+    *,
+    interface_id: Optional[int],
+    protocol: Optional[InterfaceProtocol],
+) -> InterfaceProtocol:
+    if interface_id is not None:
+        result = await session.execute(select(Interface).where(Interface.id == interface_id))
+        iface = result.scalar_one_or_none()
+        if iface is None:
+            raise HTTPException(status_code=404, detail="Interface not found")
+        return _protocol_from_interface(iface)
+    if protocol is not None:
+        return protocol
+    return InterfaceProtocol.awg
 
 
 def _build_endpoint(override: Optional[str], iface: Interface) -> str:
@@ -321,19 +372,50 @@ async def create_peer(
     if iface.name not in awg_svc.visible_interface_names():
         raise HTTPException(status_code=404, detail="Interface not found")
 
-    protocol = iface.protocol if isinstance(iface.protocol, InterfaceProtocol) else InterfaceProtocol(iface.protocol or "awg")
-    psk = body.preshared_key or awg_svc.generate_preshared_key(protocol=protocol)
+    protocol = _protocol_from_interface(iface)
 
-    # Автоматически выделить tunnel_address если не указан явно
+    name = body.name
     tunnel_address = body.tunnel_address
+    allowed_ips = body.allowed_ips
+    persistent_keepalive = body.persistent_keepalive
+    private_key = body.private_key
+    public_key = body.public_key
+    preshared_key = body.preshared_key
+
+    if body.conf_text:
+        try:
+            conf_protocol, parsed = _protocol_from_parsed_conf(body.conf_text)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if conf_protocol != protocol:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Config protocol {conf_protocol.value} does not match interface protocol {protocol.value}",
+            )
+        name = body.name or parsed.name
+        tunnel_address = parsed.tunnel_address
+        allowed_ips = ",".join(parsed.allowed_ips) or body.allowed_ips
+        persistent_keepalive = parsed.persistent_keepalive
+        private_key = parsed.private_key
+        public_key = parsed.public_key
+        preshared_key = parsed.preshared_key
+
+    if private_key:
+        try:
+            public_key = awg_svc.derive_public_key(private_key, protocol=protocol)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Invalid private key") from exc
+
+    psk = preshared_key or awg_svc.generate_preshared_key(protocol=protocol)
+
     if not tunnel_address:
         tunnel_address = await _allocate_tunnel_address(iface, session)
 
     peer = None
     for attempt in range(5):
-        if body.public_key:
-            pub = body.public_key
-            priv = body.private_key
+        if public_key:
+            pub = public_key
+            priv = private_key
         else:
             priv, pub = awg_svc.generate_keypair(protocol=protocol)
             if attempt:
@@ -342,13 +424,13 @@ async def create_peer(
 
         peer = Peer(
             interface_id=body.interface_id,
-            name=body.name,
+            name=name,
             private_key=priv,
             public_key=pub,
             preshared_key=psk,
-            allowed_ips=body.allowed_ips,
+            allowed_ips=allowed_ips,
             tunnel_address=tunnel_address,
-            persistent_keepalive=body.persistent_keepalive,
+            persistent_keepalive=persistent_keepalive,
             enabled=True,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
@@ -360,7 +442,7 @@ async def create_peer(
             break
         except IntegrityError as exc:
             await session.rollback()
-            if body.public_key:
+            if public_key:
                 raise HTTPException(status_code=409, detail="Peer public key already exists") from exc
             if attempt == 4:
                 raise HTTPException(status_code=500, detail="Could not generate unique peer key") from exc
@@ -372,16 +454,16 @@ async def create_peer(
     return _peer_to_out(peer)
 
 
-@router.get("/{peer_id}", response_model=PeerOut)
+@router.get("/{peer_id}", response_model=PeerDetail)
 async def get_peer(
     peer_id: int,
     session: AsyncSession = Depends(get_authenticated_db),
-) -> PeerOut:
+) -> PeerDetail:
     peer = await _get_peer_or_404(peer_id, session)
     if peer.interface and peer.interface.name not in awg_svc.visible_interface_names():
         raise HTTPException(status_code=404, detail="Peer not found")
     await _apply_live_stats([peer], session)
-    return _peer_to_out(peer)
+    return _peer_to_detail(peer)
 
 
 @router.put("/{peer_id}", response_model=PeerOut)
@@ -393,13 +475,68 @@ async def update_peer(
     peer = await _get_peer_or_404(peer_id, session)
     if peer.interface and peer.interface.name not in awg_svc.visible_interface_names():
         raise HTTPException(status_code=404, detail="Peer not found")
-    for field, value in body.model_dump(exclude_none=True).items():
-        setattr(peer, field, value)
+    protocol = _protocol_from_interface(peer.interface)
+    update_fields = body.model_fields_set
+    if "private_key" in update_fields and body.private_key:
+        try:
+            peer.private_key = body.private_key
+            peer.public_key = awg_svc.derive_public_key(body.private_key, protocol=protocol)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Invalid private key") from exc
+    for field in update_fields:
+        if field == "private_key":
+            continue
+        setattr(peer, field, getattr(body, field))
     peer.updated_at = datetime.now(timezone.utc)
     session.add(peer)
     await session.flush()
     await _sync_interface(peer.interface_id, session)
     return _peer_to_out(peer)
+
+
+@router.post("/generate-keypair")
+async def generate_peer_keypair(
+    body: PeerProtocolIn,
+    session: AsyncSession = Depends(get_authenticated_db),
+) -> dict[str, str]:
+    protocol = await _resolve_protocol(
+        session,
+        interface_id=body.interface_id,
+        protocol=body.protocol,
+    )
+    private_key, public_key = awg_svc.generate_keypair(protocol=protocol)
+    return {"private_key": private_key, "public_key": public_key, "protocol": protocol.value}
+
+
+@router.post("/generate-preshared-key")
+async def generate_peer_preshared_key(
+    body: PeerProtocolIn,
+    session: AsyncSession = Depends(get_authenticated_db),
+) -> dict[str, str]:
+    protocol = await _resolve_protocol(
+        session,
+        interface_id=body.interface_id,
+        protocol=body.protocol,
+    )
+    preshared_key = awg_svc.generate_preshared_key(protocol=protocol)
+    return {"preshared_key": preshared_key, "protocol": protocol.value}
+
+
+@router.post("/derive-public-key")
+async def derive_peer_public_key(
+    body: PeerPrivateKeyIn,
+    session: AsyncSession = Depends(get_authenticated_db),
+) -> dict[str, str]:
+    protocol = await _resolve_protocol(
+        session,
+        interface_id=body.interface_id,
+        protocol=body.protocol,
+    )
+    try:
+        public_key = awg_svc.derive_public_key(body.private_key, protocol=protocol)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid private key") from exc
+    return {"public_key": public_key, "protocol": protocol.value}
 
 
 @router.delete("/{peer_id}", status_code=204)

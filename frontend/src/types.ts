@@ -48,6 +48,10 @@ export interface Peer {
   created_at: string | null
 }
 
+export interface PeerDetail extends Peer {
+  private_key: string | null
+}
+
 export type NodeStatus = 'pending' | 'deploying' | 'online' | 'degraded' | 'offline' | 'error'
 
 export interface Node {

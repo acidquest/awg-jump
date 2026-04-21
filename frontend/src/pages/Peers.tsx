@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  getInterfaces, getPeers, createPeer, updatePeer,
-  deletePeer, togglePeer, getPeerConfig, getPeerQr
+  getInterfaces, getPeers, getPeer, createPeer, updatePeer,
+  deletePeer, togglePeer, getPeerConfig, getPeerQr,
+  generatePeerKeypair, generatePeerPresharedKey, derivePeerPublicKey,
 } from '../api'
-import { Interface, Peer } from '../types'
+import { Interface, Peer, PeerDetail } from '../types'
 import StatusBadge from '../components/StatusBadge'
 import Modal from '../components/Modal'
 import { parseUtcDate } from '../utils/time'
@@ -26,6 +27,10 @@ function fmtHandshake(ts: string | null) {
   if (m < 1) return 'just now'
   if (m < 60) return `${m}m ago`
   return `${Math.floor(m / 60)}h ago`
+}
+
+function getApiError(e: unknown, fallback = 'Error') {
+  return (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? fallback
 }
 
 export default function Peers() {
@@ -204,8 +209,12 @@ function CreatePeerModal({ ifaces, onClose, onSaved }: {
     tunnel_address: '',
     allowed_ips: '0.0.0.0/0',
     persistent_keepalive: '25',
+    conf_text: '',
   })
   const [error, setError] = useState('')
+  const [importedFileName, setImportedFileName] = useState('')
+
+  const selectedIface = ifaces.find((i) => i.id === Number(form.interface_id))
 
   const mut = useMutation({
     mutationFn: () => createPeer({
@@ -214,19 +223,40 @@ function CreatePeerModal({ ifaces, onClose, onSaved }: {
       tunnel_address: form.tunnel_address || undefined,
       allowed_ips: form.allowed_ips,
       persistent_keepalive: form.persistent_keepalive ? Number(form.persistent_keepalive) : undefined,
+      conf_text: form.conf_text || undefined,
     }),
     onSuccess: onSaved,
     onError: (e: unknown) => {
-      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Error'
-      setError(msg)
+      setError(getApiError(e))
     },
   })
 
   const f = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm((p) => ({ ...p, [k]: e.target.value }))
 
+  const onConfChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) {
+      setImportedFileName('')
+      setForm((p) => ({ ...p, conf_text: '' }))
+      return
+    }
+    try {
+      const confText = await file.text()
+      setImportedFileName(file.name)
+      setForm((p) => ({
+        ...p,
+        conf_text: confText,
+        name: p.name || file.name.replace(/\.conf$/i, ''),
+      }))
+      setError('')
+    } catch {
+      setError('Failed to read .conf file')
+    }
+  }
+
   return (
-    <Modal open title="Add peer" onClose={onClose}>
+    <Modal open title="Add peer" onClose={onClose} size="lg">
       {error && <div className="error-box">{error}</div>}
       <div className="form-group">
         <label className="form-label">Name</label>
@@ -238,22 +268,46 @@ function CreatePeerModal({ ifaces, onClose, onSaved }: {
           {ifaces.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
         </select>
       </div>
+      <div className="form-group">
+        <label className="form-label">Import `.conf` (optional)</label>
+        <input className="form-input" type="file" accept=".conf,text/plain" onChange={onConfChange} />
+      </div>
+      {form.conf_text && (
+        <div className="info-box" style={{ fontSize: 12 }}>
+          Import file: <span className="text-mono">{importedFileName || 'peer.conf'}</span><br />
+          The server will detect {`AWG/WireGuard`} from the config and verify it matches interface <span className="text-mono">{selectedIface?.name ?? '—'}</span> ({selectedIface?.protocol ?? '—'}).
+        </div>
+      )}
       <div className="form-row form-row-2">
         <div className="form-group">
           <label className="form-label">Tunnel address (optional)</label>
-          <input className="form-input mono" value={form.tunnel_address} onChange={f('tunnel_address')} placeholder="10.x.x.x/32" />
+          <input
+            className="form-input mono"
+            value={form.tunnel_address}
+            onChange={f('tunnel_address')}
+            placeholder="10.x.x.x/32"
+            disabled={!!form.conf_text}
+          />
         </div>
         <div className="form-group">
           <label className="form-label">Allowed IPs</label>
-          <input className="form-input mono" value={form.allowed_ips} onChange={f('allowed_ips')} />
+          <input className="form-input mono" value={form.allowed_ips} onChange={f('allowed_ips')} disabled={!!form.conf_text} />
         </div>
       </div>
       <div className="form-group">
         <label className="form-label">Persistent keepalive</label>
-        <input className="form-input mono" value={form.persistent_keepalive} onChange={f('persistent_keepalive')} placeholder="25" />
+        <input
+          className="form-input mono"
+          value={form.persistent_keepalive}
+          onChange={f('persistent_keepalive')}
+          placeholder="25"
+          disabled={!!form.conf_text}
+        />
       </div>
       <div className="info-box" style={{ fontSize: 12 }}>
-        Keys are auto-generated. `wg0` configs are plain WireGuard; `awg0` configs include obfuscation.
+        {form.conf_text
+          ? 'Private/public/preshared keys, tunnel address and keepalive will be taken from the imported config.'
+          : 'Keys are auto-generated. `wg0` configs are plain WireGuard; `awg0` configs include obfuscation.'}
       </div>
       <div className="modal-actions">
         <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
@@ -266,33 +320,118 @@ function CreatePeerModal({ ifaces, onClose, onSaved }: {
 }
 
 function EditPeerModal({ peer, onClose, onSaved }: { peer: Peer; onClose: () => void; onSaved: () => void }) {
+  const { data: detail, isLoading } = useQuery<PeerDetail>({
+    queryKey: ['peer', peer.id],
+    queryFn: () => getPeer(peer.id).then((r) => r.data),
+  })
   const [form, setForm] = useState({
-    name: peer.name,
-    allowed_ips: peer.allowed_ips,
-    tunnel_address: peer.tunnel_address ?? '',
-    persistent_keepalive: peer.persistent_keepalive ?? '',
+    name: '',
+    allowed_ips: '',
+    tunnel_address: '',
+    persistent_keepalive: '',
+    private_key: '',
+    public_key: '',
+    preshared_key: '',
   })
   const [error, setError] = useState('')
+  const [keyError, setKeyError] = useState('')
+  const [keyBusy, setKeyBusy] = useState(false)
+  const deriveSeq = useRef(0)
+
+  useEffect(() => {
+    if (!detail) return
+    setForm({
+      name: detail.name,
+      allowed_ips: detail.allowed_ips,
+      tunnel_address: detail.tunnel_address ?? '',
+      persistent_keepalive: detail.persistent_keepalive != null ? String(detail.persistent_keepalive) : '',
+      private_key: detail.private_key ?? '',
+      public_key: detail.public_key ?? '',
+      preshared_key: detail.preshared_key ?? '',
+    })
+  }, [detail])
+
+  useEffect(() => {
+    if (!detail) return
+    const privateKey = form.private_key.trim()
+    const currentSeq = ++deriveSeq.current
+    if (!privateKey) {
+      setForm((p) => ({ ...p, public_key: '' }))
+      setKeyBusy(false)
+      setKeyError('')
+      return
+    }
+    setKeyBusy(true)
+    setKeyError('')
+    const timer = window.setTimeout(() => {
+      derivePeerPublicKey({ interface_id: detail.interface_id, private_key: privateKey })
+        .then((res) => {
+          if (currentSeq !== deriveSeq.current) return
+          setForm((p) => ({ ...p, public_key: res.data.public_key }))
+        })
+        .catch((e: unknown) => {
+          if (currentSeq !== deriveSeq.current) return
+          setKeyError(getApiError(e, 'Failed to derive public key'))
+        })
+        .finally(() => {
+          if (currentSeq === deriveSeq.current) {
+            setKeyBusy(false)
+          }
+        })
+    }, 300)
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [detail, form.private_key])
 
   const mut = useMutation({
     mutationFn: () => updatePeer(peer.id, {
       name: form.name || undefined,
       allowed_ips: form.allowed_ips || undefined,
-      tunnel_address: form.tunnel_address || undefined,
-      persistent_keepalive: form.persistent_keepalive ? Number(form.persistent_keepalive) : undefined,
+      tunnel_address: form.tunnel_address.trim() || null,
+      persistent_keepalive: form.persistent_keepalive === '' ? null : Number(form.persistent_keepalive),
+      private_key: form.private_key.trim() || undefined,
+      preshared_key: form.preshared_key.trim() || null,
     }),
     onSuccess: onSaved,
     onError: (e: unknown) => {
-      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Error'
-      setError(msg)
+      setError(getApiError(e))
     },
   })
 
   const f = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm((p) => ({ ...p, [k]: e.target.value }))
 
+  const onGenerateKeypair = async () => {
+    if (!detail) return
+    try {
+      setKeyError('')
+      const res = await generatePeerKeypair({ interface_id: detail.interface_id })
+      setForm((p) => ({
+        ...p,
+        private_key: res.data.private_key,
+        public_key: res.data.public_key,
+      }))
+    } catch (e) {
+      setKeyError(getApiError(e, 'Failed to generate keypair'))
+    }
+  }
+
+  const onGeneratePresharedKey = async () => {
+    if (!detail) return
+    try {
+      const res = await generatePeerPresharedKey({ interface_id: detail.interface_id })
+      setForm((p) => ({ ...p, preshared_key: res.data.preshared_key }))
+    } catch (e) {
+      setError(getApiError(e, 'Failed to generate preshared key'))
+    }
+  }
+
   return (
-    <Modal open title={`Edit peer: ${peer.name}`} onClose={onClose}>
+    <Modal open title={`Edit peer: ${peer.name}`} onClose={onClose} size="lg">
+      {isLoading && <div style={{ textAlign: 'center', padding: 24 }}><span className="spinner" /></div>}
+      {!isLoading && (
+        <>
       {error && <div className="error-box">{error}</div>}
       <div className="form-group">
         <label className="form-label">Name</label>
@@ -310,12 +449,40 @@ function EditPeerModal({ peer, onClose, onSaved }: { peer: Peer; onClose: () => 
         <label className="form-label">Persistent keepalive</label>
         <input className="form-input mono" value={String(form.persistent_keepalive)} onChange={f('persistent_keepalive')} />
       </div>
+      <div className="info-box" style={{ fontSize: 12 }}>
+        Interface <span className="text-mono">{detail?.interface_name ?? peer.interface_name}</span> uses protocol <span className="text-mono">{detail?.interface_protocol ?? peer.interface_protocol}</span>.
+      </div>
+      {keyError && <div className="error-box">{keyError}</div>}
+      <div className="form-group">
+        <label className="form-label">Private key</label>
+        <div className="flex gap-2" style={{ alignItems: 'center' }}>
+          <input className="form-input mono" value={form.private_key} onChange={f('private_key')} placeholder="Base64 private key" />
+          <button className="btn btn-secondary btn-sm" type="button" onClick={onGenerateKeypair}>
+            Generate
+          </button>
+        </div>
+      </div>
+      <div className="form-group">
+        <label className="form-label">Public key</label>
+        <input className="form-input mono" value={keyBusy ? 'Updating...' : form.public_key} readOnly />
+      </div>
+      <div className="form-group">
+        <label className="form-label">Preshared key</label>
+        <div className="flex gap-2" style={{ alignItems: 'center' }}>
+          <input className="form-input mono" value={form.preshared_key} onChange={f('preshared_key')} placeholder="Optional preshared key" />
+          <button className="btn btn-secondary btn-sm" type="button" onClick={onGeneratePresharedKey}>
+            Generate
+          </button>
+        </div>
+      </div>
       <div className="modal-actions">
         <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-        <button className="btn btn-primary" onClick={() => mut.mutate()} disabled={mut.isPending}>
+        <button className="btn btn-primary" onClick={() => mut.mutate()} disabled={mut.isPending || keyBusy || !!keyError}>
           {mut.isPending ? <span className="spinner" /> : 'Save'}
         </button>
       </div>
+        </>
+      )}
     </Modal>
   )
 }
