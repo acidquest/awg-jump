@@ -23,6 +23,7 @@ import backend.services.awg as awg_svc
 import backend.services.ipset_manager as ipset_mgr
 import backend.services.routing as routing_svc
 import backend.services.geoip_fetcher as geoip_fetcher
+import backend.services.telemt as telemt_svc
 from backend.services.system_metrics import get_metrics_history
 
 logger = logging.getLogger(__name__)
@@ -124,12 +125,19 @@ async def get_status(
 
     return {
         "uptime_seconds": uptime_seconds,
+        "features": {
+            "telemt": telemt_svc.runtime_enabled(),
+        },
         "interfaces": interfaces_out,
         "geoip": geoip_out,
         "ipsets": ipset_list,
         "routing": routing_status,
         "active_node": active_node_out,
         "local_external_ip": settings.server_host or None,
+        "telemt": {
+            **telemt_svc.get_service_status(),
+            "port": settings.telemt_port,
+        },
     }
 
 

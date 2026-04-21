@@ -154,3 +154,11 @@ export const uploadTlsMaterial = (certFile: File, keyFile: File) => {
   form.append('key_file', keyFile)
   return api.post('/settings/tls', form)
 }
+
+// ── TeleMT ───────────────────────────────────────────────────────────────
+export const getTelemt = () => api.get('/telemt')
+export const updateTelemtSettings = (data: Record<string, unknown>) => api.put('/telemt/settings', data)
+export const createTelemtUser = (data: Record<string, unknown>) => api.post('/telemt/users', data)
+export const updateTelemtUser = (id: number, data: Record<string, unknown>) => api.put(`/telemt/users/${id}`, data)
+export const deleteTelemtUser = (id: number) => api.delete(`/telemt/users/${id}`)
+export const telemtServiceAction = (action: 'start' | 'stop' | 'restart') => api.post(`/telemt/service/${action}`)

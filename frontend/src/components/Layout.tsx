@@ -1,5 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom'
-import { logout } from '../api'
+import { useQuery } from '@tanstack/react-query'
+import { getSystemStatus, logout } from '../api'
+import { SystemStatus } from '../types'
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: GridIcon },
@@ -10,11 +12,17 @@ const NAV = [
   { to: '/geoip', label: 'GeoIP', icon: GlobeIcon },
   { to: '/dns', label: 'Split DNS', icon: DnsIcon },
   { to: '/backup', label: 'Backup', icon: ArchiveIcon },
+  { to: '/telemt', label: 'TeleMT', icon: ShieldIcon, feature: 'telemt' as const },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ]
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate()
+  const { data: systemStatus } = useQuery<SystemStatus>({
+    queryKey: ['system-status'],
+    queryFn: () => getSystemStatus().then((r) => r.data),
+    staleTime: 10_000,
+  })
 
   const handleLogout = async () => {
     try { await logout() } catch {}
@@ -33,7 +41,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </div>
         </div>
         <nav className="sidebar-nav">
-          {NAV.map(({ to, label, icon: Icon }) => (
+          {NAV.filter((item) => !item.feature || systemStatus?.features?.[item.feature]).map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}
               to={to}
@@ -54,6 +62,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       </aside>
       <main className="main-content">{children}</main>
     </div>
+  )
+}
+
+function ShieldIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      <path d="M9 12l2 2 4-4"/>
+    </svg>
   )
 }
 

@@ -204,6 +204,9 @@ export interface DnsStatus {
 
 export interface SystemStatus {
   uptime_seconds: number
+  features: {
+    telemt: boolean
+  }
   interfaces: Array<{
     name: string
     mode: string
@@ -214,6 +217,13 @@ export interface SystemStatus {
     public_key: string
     peers_count: number
   }>
+  telemt: {
+    enabled: boolean
+    running: boolean
+    status: string
+    message?: string
+    port: number
+  }
   geoip: Array<{
     country_code: string
     ipset_name: string
@@ -233,6 +243,55 @@ export interface SystemStatus {
     latency_ms: number | null
     last_seen: string | null
   } | null
+}
+
+export interface TelemtSettings {
+  config_text: string
+  port: number
+  public_host: string
+  restart_required: boolean
+  docs_url: string
+}
+
+export interface TelemtLinks {
+  classic: string[]
+  secure: string[]
+  tls: string[]
+}
+
+export interface TelemtUser {
+  id: number
+  username: string
+  secret_hex: string
+  enabled: boolean
+  created_at: string | null
+  updated_at: string | null
+  links: TelemtLinks
+  address: string | null
+}
+
+export interface TelemtServiceStatus {
+  enabled: boolean
+  running: boolean
+  status: string
+  message?: string
+  action?: string
+  ok?: boolean
+  command_output?: string
+}
+
+export interface TelemtPageData {
+  feature_enabled: boolean
+  service: TelemtServiceStatus
+  settings: TelemtSettings
+  version: {
+    installed: string
+    latest_version: string | null
+    latest_release_url: string
+    version_status: 'latest' | 'outdated' | 'ahead' | 'unknown'
+    repo_url: string
+  }
+  users: TelemtUser[]
 }
 
 export interface SystemMetricPoint {

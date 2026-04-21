@@ -6,6 +6,7 @@
 """
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import AsyncGenerator
 from unittest.mock import MagicMock, patch
 
@@ -14,21 +15,31 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
+from backend.config import settings
 from backend.database import Base, get_db
 from backend.models.interface import Interface, InterfaceMode, InterfaceProtocol
 from backend.models.geoip import GeoipSource
 from backend.models.routing_settings import RoutingSettings
+from backend.models.telemt_settings import TelemtSettings  # noqa: F401
+from backend.models.telemt_user import TelemtUser  # noqa: F401
 
 
 # ── In-memory БД ─────────────────────────────────────────────────────────
 
-TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
+TEST_DB_URL = "sqlite+aiosqlite:////tmp/awg-jump-test.db"
+TEST_TELEMT_DIR = "/tmp/awg-jump-test-telemt"
 
 test_engine = create_async_engine(TEST_DB_URL, echo=False)
 TestSessionLocal = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
 
 
 async def _create_test_db() -> None:
+    settings.telemt_dir = TEST_TELEMT_DIR
+    settings.telemt_config_path = f"{TEST_TELEMT_DIR}/telemt.toml"
+    try:
+        Path("/tmp/awg-jump-test.db").unlink()
+    except FileNotFoundError:
+        pass
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with TestSessionLocal() as session:

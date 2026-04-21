@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     wg0_address: str = "10.11.0.1/24"
     wg0_dns: str = "10.11.0.1"
 
+    # ── TeleMT (MTProto proxy) ───────────────────────────────────────────
+    telemt_enabled: str = ""
+    telemt_port: int = 443
+    telemt_version: str = "3.4.3"
+
     # ── AWG1 (клиент, upstream VPN) ──────────────────────────────────────
     awg1_endpoint: str = ""
     awg1_private_key: str = ""
@@ -89,6 +94,8 @@ class Settings(BaseSettings):
     backup_dir: str = "/data/backups"
     wg_config_dir: str = "/data/wg_configs"
     certs_dir: str = "/data/certs"
+    telemt_dir: str = "/data/telemt"
+    telemt_config_path: str = "/data/telemt/telemt.toml"
 
 
 settings = Settings()
@@ -96,6 +103,10 @@ settings = Settings()
 
 def classic_wg_enabled() -> bool:
     return settings.classic_wg.strip().lower() == "on"
+
+
+def telemt_enabled() -> bool:
+    return settings.telemt_enabled.strip().lower() == "on"
 
 
 def reload_settings() -> Settings:

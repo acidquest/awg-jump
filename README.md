@@ -26,6 +26,8 @@
 - `SECRET_KEY`: секрет подписи токенов.
 - `AWG0_LISTEN_PORT`, `AWG0_ADDRESS`, `AWG0_DNS`: серверный интерфейс AmneziaWG для клиентов.
 - `CLASSIC_WG`, `WG0_LISTEN_PORT`, `WG0_ADDRESS`, `WG0_DNS`: опциональный серверный интерфейс classic WireGuard `wg0`.
+- `TELEMT_ENABLED`, `TELEMT_PORT`: включение и TCP-порт встроенного MTProto proxy TeleMT.
+- `TELEMT_VERSION`: версия TeleMT, которая вшивается при сборке образа `awg-jump`.
 - `AWG1_ADDRESS`, `AWG1_ALLOWED_IPS`, `AWG1_PERSISTENT_KEEPALIVE`: клиентский интерфейс jump → upstream node.
 - `PHYSICAL_IFACE`, `ROUTING_TABLE_LOCAL`: физический интерфейс и routing table для local-zone трафика.
 - `NODE_AWG_PORT`, `NODE_VPN_SUBNET`: параметры сети upstream-нод.
@@ -82,3 +84,22 @@
   - `./scripts/publish_dockerhub.sh <namespace> <tag> --latest --with-node`
   - `./scripts/bootstrap_first_node.sh`
   - `powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_first_node.ps1`
+
+## Обновление TeleMT
+
+Встроенная версия TeleMT задаётся через `TELEMT_VERSION` при сборке образа.
+
+- Быстрое обновление через скрипт:
+  - `./scripts/update_telemt.sh 3.4.3`
+- Что делает скрипт:
+  - обновляет `TELEMT_VERSION` в `.env`
+  - пересобирает сервис `awg-jump` с новым build arg
+  - поднимает контейнер заново через `docker compose up -d`
+
+Ручной эквивалент:
+
+```bash
+sed -i 's/^TELEMT_VERSION=.*/TELEMT_VERSION=3.4.3/' .env
+docker compose build --build-arg TELEMT_VERSION=3.4.3 awg-jump
+docker compose up -d awg-jump
+```

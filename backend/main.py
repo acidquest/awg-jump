@@ -26,13 +26,14 @@ from backend.models.geoip import GeoipSource
 from backend.models.routing_settings import RoutingSettings
 from backend.models.upstream_node import NodeStatus, UpstreamNode
 from backend.models.dns_manual_address import DnsManualAddress
-from backend.routers import auth, backup, dns, geoip, interfaces, nodes, peers, routing, settings as settings_router, system
+from backend.routers import auth, backup, dns, geoip, interfaces, nodes, peers, routing, settings as settings_router, system, telemt
 from backend.scheduler import scheduler, setup_scheduler
 import backend.services.awg as awg_svc
 import backend.services.dns_manager as dns_mgr
 import backend.services.geoip_fetcher as geoip_fetcher
 import backend.services.ipset_manager as ipset_mgr
 import backend.services.routing as routing_svc
+import backend.services.telemt as telemt_svc
 from backend.services.system_metrics import collect_system_metrics
 
 logging.basicConfig(
@@ -46,6 +47,19 @@ logger = logging.getLogger(__name__)
 
 async def _ensure_sqlite_columns() -> None:
     async with engine.begin() as conn:
+        result = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='telemt_settings'"))
+        if result.first() is None:
+            await conn.run_sync(lambda sync_conn: Base.metadata.tables["telemt_settings"].create(sync_conn))
+        else:
+            result = await conn.execute(text("PRAGMA table_info(telemt_settings)"))
+            telemt_columns = {row[1] for row in result.fetchall()}
+            if "config_text" not in telemt_columns:
+                await conn.execute(text("ALTER TABLE telemt_settings ADD COLUMN config_text TEXT NOT NULL DEFAULT ''"))
+
+        result = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='telemt_users'"))
+        if result.first() is None:
+            await conn.run_sync(lambda sync_conn: Base.metadata.tables["telemt_users"].create(sync_conn))
+
         result = await conn.execute(text("PRAGMA table_info(dns_zone_settings)"))
         zone_columns = {row[1] for row in result.fetchall()}
         if "name" not in zone_columns:
@@ -261,6 +275,21 @@ async def _init_geoip_and_routing() -> None:
         logger.error("Routing setup failed: %s", e)
 
 
+async def _init_telemt() -> None:
+    telemt_svc.ensure_runtime_dirs()
+    async with AsyncSessionLocal() as session:
+        await telemt_svc.ensure_settings_row(session)
+        await telemt_svc.refresh_generated_config(session)
+        await session.commit()
+
+    status = telemt_svc.get_service_status()
+    if not telemt_svc.runtime_enabled() and status.get("running"):
+        try:
+            telemt_svc.control_service("stop")
+        except Exception as exc:
+            logger.warning("Failed to stop TeleMT while feature disabled: %s", exc)
+
+
 # ── Lifespan ──────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -290,6 +319,11 @@ async def lifespan(app: FastAPI):
         await _init_geoip_and_routing()
     except Exception as e:
         logger.error("GeoIP/routing init failed: %s", e)
+
+    try:
+        await _init_telemt()
+    except Exception as e:
+        logger.error("TeleMT init failed: %s", e)
 
     # Step 6: Split DNS (dnsmasq)
     try:
@@ -358,6 +392,7 @@ app.include_router(system.router)
 app.include_router(backup.router)
 app.include_router(nodes.router)
 app.include_router(settings_router.router)
+app.include_router(telemt.router)
 
 
 # ── Health (no auth) ──────────────────────────────────────────────────────

@@ -39,6 +39,7 @@ mkdir -p "${GEOIP_CACHE_DIR:-/data/geoip}"
 mkdir -p "${BACKUP_DIR:-/data/backups}"
 mkdir -p "${WG_CONFIG_DIR:-/data/wg_configs}"
 mkdir -p "${CERTS_DIR:-/data/certs}"
+mkdir -p "${TELEMT_DIR:-/data/telemt}/tlsfront"
 mkdir -p /var/log/supervisor
 mkdir -p /var/run/amneziawg
 

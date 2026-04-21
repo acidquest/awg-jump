@@ -8,6 +8,8 @@ from backend.models.dns_domain import DnsDomain
 from backend.models.dns_manual_address import DnsManualAddress
 from backend.models.dns_zone_settings import DnsZoneSettings
 from backend.models.system_metric import SystemMetric
+from backend.models.telemt_settings import TelemtSettings
+from backend.models.telemt_user import TelemtUser
 
 __all__ = [
     "Interface",
@@ -21,4 +23,6 @@ __all__ = [
     "DnsManualAddress",
     "DnsZoneSettings",
     "SystemMetric",
+    "TelemtSettings",
+    "TelemtUser",
 ]

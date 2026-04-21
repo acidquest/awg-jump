@@ -12,6 +12,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        TELEMT_VERSION: ${TELEMT_VERSION:-3.4.3}
     container_name: awg-jump
     restart: unless-stopped
     cap_add:
@@ -29,9 +31,14 @@ services:
     networks:
       - awg-net
     ports:
+      - "${TELEMT_PORT:-443}:${TELEMT_PORT:-443}/tcp"
       - "${AWG0_LISTEN_PORT:-51820}:${AWG0_LISTEN_PORT:-51820}/udp"
       - "${WG0_LISTEN_PORT:-51821}:${WG0_LISTEN_PORT:-51821}/udp"
       - "${WEB_PORT:-8080}:${WEB_PORT:-8080}/tcp"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     healthcheck:
       test:
         [

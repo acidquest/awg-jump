@@ -63,7 +63,25 @@ RUN curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CL
     && chmod +x /usr/local/bin/cloudflared
 
 # ============================================================
-# Stage 4 — финальный образ
+# Stage 4 — сборка TeleMT
+# ============================================================
+FROM rust:1-bookworm AS telemt-builder
+
+ARG TELEMT_VERSION=3.4.3
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    git \
+    pkg-config \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+RUN git clone --depth 1 --branch "${TELEMT_VERSION}" https://github.com/telemt/telemt.git .
+RUN cargo build --release
+
+# ============================================================
+# Stage 5 — финальный образ
 # ============================================================
 FROM python:3.12-slim-bookworm AS final
 
@@ -92,6 +110,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=awg-builder /out/amneziawg-go /usr/local/bin/amneziawg-go
 COPY --from=awg-tools-builder /out/usr/bin/awg /usr/local/bin/awg
 COPY --from=cloudflared-builder /usr/local/bin/cloudflared /usr/local/bin/cloudflared
+COPY --from=telemt-builder /build/target/release/telemt /usr/local/bin/telemt
 COPY --from=python-builder /opt/venv /opt/venv
 COPY --from=frontend-builder /frontend/dist /app/static
 
@@ -101,7 +120,7 @@ COPY nginx/ /app/nginx/
 COPY scripts/ /app/scripts/
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 
-RUN chmod +x /usr/local/bin/amneziawg-go /app/scripts/*.sh \
+RUN chmod +x /usr/local/bin/amneziawg-go /usr/local/bin/telemt /app/scripts/*.sh \
     && mkdir -p /var/log/supervisor /var/run/amneziawg \
     # Отключаем системный dnsmasq — управляем вручную через dns_manager.py
     && rm -f /etc/dnsmasq.conf /etc/dnsmasq.d/* \
@@ -109,6 +128,7 @@ RUN chmod +x /usr/local/bin/amneziawg-go /app/scripts/*.sh \
 
 WORKDIR /app
 
+EXPOSE 443/tcp
 EXPOSE 51820/udp
 EXPOSE 8080/tcp
 
