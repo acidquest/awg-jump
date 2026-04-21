@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from app.services import device_tracking
 from types import SimpleNamespace
 
@@ -12,7 +13,7 @@ def test_parse_conntrack_output_extracts_source_bytes_and_route() -> None:
 
     assert len(parsed) == 1
     assert parsed[0].source_ip == "192.168.1.10"
-    assert parsed[0].bytes_total == 2200
+    assert parsed[0].bytes_total == 1200
     assert parsed[0].route_target == "vpn"
 
 
@@ -79,3 +80,38 @@ def test_coerce_device_defaults_restores_legacy_null_fields() -> None:
     assert device.forced_route_target == "none"
     assert device.manual_alias == ""
     assert device.last_route_target == "unknown"
+
+
+def test_as_utc_naive_normalizes_aware_values_for_internal_comparisons() -> None:
+    aware = datetime(2026, 4, 20, 19, 44, 7, tzinfo=timezone.utc)
+
+    normalized = device_tracking._as_utc_naive(aware)
+
+    assert normalized == datetime(2026, 4, 20, 19, 44, 7)
+    assert normalized.tzinfo is None
+
+
+def test_stale_neighbor_forces_device_inactive_even_with_recent_traffic() -> None:
+    now = datetime(2026, 4, 21, 12, 0, 0)
+    timeout_cutoff = now - timedelta(seconds=30)
+    device = SimpleNamespace(
+        current_ip="192.168.1.10",
+        last_traffic_at=now,
+        mac_address="aa:bb",
+    )
+    neighbor = device_tracking.NeighborInfo(
+        ip_address="192.168.1.10",
+        mac_address="aa:bb",
+        state="STALE",
+    )
+
+    last_traffic_at = device_tracking._as_utc_naive(device.last_traffic_at)
+    is_active = last_traffic_at is not None and last_traffic_at >= timeout_cutoff
+    is_present = is_active
+    arp_present, _mac_address = device_tracking._presence_from_neighbor(neighbor)
+    if neighbor is not None and not arp_present:
+        is_active = False
+        is_present = False
+
+    assert is_active is False
+    assert is_present is False

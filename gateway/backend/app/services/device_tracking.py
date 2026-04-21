@@ -43,6 +43,14 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def _as_utc_naive(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def _as_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -76,7 +84,8 @@ def _parse_conntrack_output(output: str, *, local_mark: str = "0x1", vpn_mark: s
         bytes_total = 0
         for candidate in values.get("bytes", []):
             try:
-                bytes_total = max(bytes_total, int(candidate))
+                bytes_total = int(candidate)
+                break
             except ValueError:
                 continue
 
@@ -265,18 +274,18 @@ async def _merge_devices(session: AsyncSession, target: TrackedDevice, source: T
         return target
     _coerce_device_defaults(target)
     _coerce_device_defaults(source)
-    target.first_seen_at = min(_as_utc(target.first_seen_at) or _utcnow(), _as_utc(source.first_seen_at) or _utcnow())
-    target.last_seen_at = max(_as_utc(target.last_seen_at) or _utcnow(), _as_utc(source.last_seen_at) or _utcnow())
-    source_last_traffic_at = _as_utc(source.last_traffic_at)
-    target_last_traffic_at = _as_utc(target.last_traffic_at)
+    target.first_seen_at = min(_as_utc_naive(target.first_seen_at) or _utcnow(), _as_utc_naive(source.first_seen_at) or _utcnow())
+    target.last_seen_at = max(_as_utc_naive(target.last_seen_at) or _utcnow(), _as_utc_naive(source.last_seen_at) or _utcnow())
+    source_last_traffic_at = _as_utc_naive(source.last_traffic_at)
+    target_last_traffic_at = _as_utc_naive(target.last_traffic_at)
     if source_last_traffic_at and (target_last_traffic_at is None or source_last_traffic_at > target_last_traffic_at):
         target.last_traffic_at = source_last_traffic_at
-    source_last_present_at = _as_utc(source.last_present_at)
-    target_last_present_at = _as_utc(target.last_present_at)
+    source_last_present_at = _as_utc_naive(source.last_present_at)
+    target_last_present_at = _as_utc_naive(target.last_present_at)
     if source_last_present_at and (target_last_present_at is None or source_last_present_at > target_last_present_at):
         target.last_present_at = source_last_present_at
-    source_last_absent_at = _as_utc(source.last_absent_at)
-    target_last_absent_at = _as_utc(target.last_absent_at)
+    source_last_absent_at = _as_utc_naive(source.last_absent_at)
+    target_last_absent_at = _as_utc_naive(target.last_absent_at)
     if source_last_absent_at and (target_last_absent_at is None or source_last_absent_at > target_last_absent_at):
         target.last_absent_at = source_last_absent_at
     target.total_bytes += source.total_bytes
@@ -437,13 +446,18 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
     timeout_cutoff = now - timedelta(seconds=settings_row.device_activity_timeout_seconds)
     for device in devices:
         _coerce_device_defaults(device)
-        last_traffic_at = _as_utc(device.last_traffic_at)
+        last_traffic_at = _as_utc_naive(device.last_traffic_at)
         is_active = last_traffic_at is not None and last_traffic_at >= timeout_cutoff
         is_present = is_active
-        if not is_active and device.current_ip:
-            ping_ok = _ping(device.current_ip)
-            arp_present, mac_address = _presence_from_neighbor(neighbors.get(device.current_ip))
-            is_present = ping_ok or arp_present
+        if device.current_ip:
+            neighbor = neighbors.get(device.current_ip)
+            arp_present, mac_address = _presence_from_neighbor(neighbor)
+            if neighbor is not None and not arp_present:
+                is_active = False
+                is_present = False
+            elif not is_active:
+                ping_ok = _ping(device.current_ip) if neighbor is None else False
+                is_present = arp_present or ping_ok
             if mac_address and not device.mac_address:
                 device.mac_address = mac_address
                 device.identity_key = f"mac:{mac_address}"
