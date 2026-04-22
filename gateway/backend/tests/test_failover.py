@@ -90,7 +90,7 @@ async def test_assign_active_node_moves_node_to_first() -> None:
     node_a = _make_node(1, "NodeA", 0, is_active=True)
     node_b = _make_node(2, "NodeB", 1)
     node_c = _make_node(3, "NodeC", 2)
-    settings_row = GatewaySettings(id=1, active_entry_node_id=node_a.id)
+    settings_row = GatewaySettings(id=1, active_entry_node_id=node_a.id, active_entry_node=node_a)
     db = FakeSession(nodes=[node_a, node_b, node_c], settings=settings_row)
 
     await failover.assign_active_node(db, settings_row, node_c, record_event=False)
@@ -100,6 +100,7 @@ async def test_assign_active_node_moves_node_to_first() -> None:
     assert ordered[0].is_active is True
     assert ordered[0].position == 0
     assert settings_row.active_entry_node_id == node_c.id
+    assert settings_row.active_entry_node is node_c
 
 
 @pytest.mark.asyncio

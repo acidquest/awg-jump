@@ -4,8 +4,8 @@ This workflow is for production setups where the server must not build images lo
 
 1. Build and push images to Docker Hub from your local machine.
 2. Install Docker on a clean Linux node.
-3. Copy `docker-compose.yml` and `.env` to the node.
-4. Run `docker compose pull && docker compose up -d` on the server.
+3. Copy the main `docker-compose.yml`, `docker-compose.nginx.yml`, `nginx/nginx.conf`, and `.env` to the node.
+4. Run `docker compose -f docker-compose.yml -f docker-compose.nginx.yml pull && docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d` on the server.
 
 ## Which images are published
 
@@ -47,9 +47,11 @@ If you also want to publish the upstream node image, add `--with-node`:
 The bootstrap script installs Docker on the remote machine, asks for the deploy directory, and places these files there:
 
 - `docker-compose.yml`
+- `docker-compose.nginx.yml`
 - `.env`
 - `.env.ru.example`
 - `.env.en.example`
+- `nginx/nginx.conf`
 
 This bootstrap is intended for the main node running `awg-jump`.
 It does not deploy upstream nodes.
@@ -103,15 +105,15 @@ Then start the stack:
 
 ```bash
 cd /opt/awg-jump
-docker compose -f docker-compose.yml pull
-docker compose -f docker-compose.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml pull
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d
 ```
 
 Check status:
 
 ```bash
-docker compose -f docker-compose.yml ps
-docker compose -f docker-compose.yml logs --tail=100
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml ps
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml logs --tail=100
 ```
 
 ## 4. Update without rebuilding on the server
@@ -122,6 +124,6 @@ After publishing a new tag:
 2. run:
 
 ```bash
-docker compose -f docker-compose.yml pull
-docker compose -f docker-compose.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml pull
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d
 ```

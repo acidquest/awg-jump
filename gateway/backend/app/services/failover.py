@@ -123,6 +123,7 @@ async def assign_active_node(
         last_error=None if resolve_tunnel_probe_target(node) else "Latency probe target is not configured",
     )
     settings_row.active_entry_node_id = node.id
+    settings_row.active_entry_node = node
     set_failover_runtime_state(
         unhealthy_since=None,
         last_error=None,

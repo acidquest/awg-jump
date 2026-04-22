@@ -59,6 +59,20 @@ path.write_text("\n".join(lines) + "\n")
 PYEOF
 }
 
+replace_compose_root() {
+    local file="$1"
+    local remote_dir="$2"
+    python3 - "$file" "$remote_dir" <<'PYEOF'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+remote_dir = sys.argv[2].rstrip("/")
+content = path.read_text()
+path.write_text(content.replace("/opt/awg-jump", remote_dir))
+PYEOF
+}
+
 require_cmd ssh
 require_cmd scp
 require_cmd tar
@@ -96,13 +110,17 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 cp "$REPO_ROOT/deploy/docker-compose.images.yml" "$TMP_DIR/docker-compose.yml"
+cp "$REPO_ROOT/nginx/docker-compose.yml" "$TMP_DIR/docker-compose.nginx.yml"
 cp "$REPO_ROOT/.env.ru.example" "$TMP_DIR/.env.ru.example"
 cp "$REPO_ROOT/.env.en.example" "$TMP_DIR/.env.en.example"
 cp "$REPO_ROOT/.env.ru.example" "$TMP_DIR/.env"
+mkdir -p "$TMP_DIR/nginx"
+cp "$REPO_ROOT/nginx/nginx.conf" "$TMP_DIR/nginx/nginx.conf"
 
 replace_env_value "$TMP_DIR/.env" "TLS_COMMON_NAME" "$HOST"
 replace_env_value "$TMP_DIR/.env" "SERVER_HOST" "$HOST"
 replace_env_value "$TMP_DIR/.env" "AWG_JUMP_IMAGE" "$IMAGE_JUMP"
+replace_compose_root "$TMP_DIR/docker-compose.nginx.yml" "$REMOTE_DIR"
 
 cat >"$TMP_DIR/REMOTE_BOOTSTRAP.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -156,6 +174,8 @@ fi
 
 mkdir -p "$REMOTE_DIR"
 mkdir -p "$REMOTE_DIR/data/certs" "$REMOTE_DIR/data/backups" "$REMOTE_DIR/data/geoip" "$REMOTE_DIR/data/wg_configs"
+mkdir -p "$REMOTE_DIR/nginx"
+mkdir -p /var/log/nginx
 
 if [[ ! -c /dev/net/tun ]]; then
     mkdir -p /dev/net
@@ -167,14 +187,16 @@ EOF
 echo "Uploading deploy bundle"
 tar -C "$TMP_DIR" -czf "$TMP_DIR/bundle.tgz" \
     docker-compose.yml \
+    docker-compose.nginx.yml \
     .env \
     .env.ru.example \
     .env.en.example \
+    nginx/nginx.conf \
     REMOTE_BOOTSTRAP.sh
 scp -P "$SSH_PORT" "$TMP_DIR/bundle.tgz" "${SSH_USER}@${HOST}:/tmp/awg-jump-bootstrap.tgz"
 
 echo "Installing Docker and unpacking files on remote host"
-ssh -p "$SSH_PORT" "${SSH_USER}@${HOST}" "tar -xzf /tmp/awg-jump-bootstrap.tgz -C /tmp && ${REMOTE_ROOT_PREFIX}bash /tmp/REMOTE_BOOTSTRAP.sh '$REMOTE_DIR' && ${REMOTE_ROOT_PREFIX}tar -xzf /tmp/awg-jump-bootstrap.tgz -C '$REMOTE_DIR' docker-compose.yml .env .env.ru.example .env.en.example && rm -f /tmp/awg-jump-bootstrap.tgz /tmp/REMOTE_BOOTSTRAP.sh"
+ssh -p "$SSH_PORT" "${SSH_USER}@${HOST}" "tar -xzf /tmp/awg-jump-bootstrap.tgz -C /tmp && ${REMOTE_ROOT_PREFIX}bash /tmp/REMOTE_BOOTSTRAP.sh '$REMOTE_DIR' && ${REMOTE_ROOT_PREFIX}tar -xzf /tmp/awg-jump-bootstrap.tgz -C '$REMOTE_DIR' docker-compose.yml docker-compose.nginx.yml .env .env.ru.example .env.en.example nginx/nginx.conf && rm -f /tmp/awg-jump-bootstrap.tgz /tmp/REMOTE_BOOTSTRAP.sh"
 
 cat <<EOF
 
@@ -184,15 +206,17 @@ Remote directory: ${REMOTE_DIR}
 
 Files created:
   ${REMOTE_DIR}/docker-compose.yml
+  ${REMOTE_DIR}/docker-compose.nginx.yml
   ${REMOTE_DIR}/.env
   ${REMOTE_DIR}/.env.ru.example
   ${REMOTE_DIR}/.env.en.example
+  ${REMOTE_DIR}/nginx/nginx.conf
 
 Next steps on the node:
   1. Edit ${REMOTE_DIR}/.env and set at least ADMIN_PASSWORD and SECRET_KEY.
   2. Verify AWG_JUMP_IMAGE in ${REMOTE_DIR}/.env.
   3. Start the stack:
      cd ${REMOTE_DIR}
-     docker compose -f docker-compose.yml pull
-     docker compose -f docker-compose.yml up -d
+     docker compose -f docker-compose.yml -f docker-compose.nginx.yml pull
+     docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d
 EOF

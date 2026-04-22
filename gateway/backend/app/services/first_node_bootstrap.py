@@ -34,9 +34,15 @@ def _resolve_assets_root() -> Path:
         Path(__file__).resolve().parents[5],
     ]
     for root in candidates:
-        if (root / "deploy" / "docker-compose.images.yml").exists():
+        if (
+            (root / "deploy" / "docker-compose.images.yml").exists()
+            and (root / "nginx" / "docker-compose.yml").exists()
+            and (root / "nginx" / "nginx.conf").exists()
+        ):
             return root
-    raise FileNotFoundError("Bootstrap assets are missing: deploy/docker-compose.images.yml")
+    raise FileNotFoundError(
+        "Bootstrap assets are missing: deploy/docker-compose.images.yml, nginx/docker-compose.yml, nginx/nginx.conf"
+    )
 
 
 def get_bootstrap_queue(log_id: int) -> asyncio.Queue[str | None]:
@@ -59,6 +65,10 @@ def _replace_env_value(content: str, key: str, value: str) -> str:
     else:
         lines.append(f"{key}={value}")
     return "\n".join(lines) + "\n"
+
+
+def _replace_compose_root(content: str, remote_dir: str) -> str:
+    return content.replace("/opt/awg-jump", remote_dir.rstrip("/"))
 
 
 def _wrap_remote_command(command: str, *, ssh_user: str) -> str:
@@ -104,12 +114,19 @@ async def _run_remote_command(
         )
 
 
-def _build_bundle(*, host: str, docker_namespace: str, image_tag: str) -> bytes:
+def _build_bundle(*, host: str, docker_namespace: str, image_tag: str, remote_dir: str) -> bytes:
     assets_root = _resolve_assets_root()
     compose_path = assets_root / "deploy" / "docker-compose.images.yml"
+    nginx_compose_path = assets_root / "nginx" / "docker-compose.yml"
+    nginx_config_path = assets_root / "nginx" / "nginx.conf"
     env_ru_path = assets_root / ".env.ru.example"
     env_en_path = assets_root / ".env.en.example"
     compose_content = compose_path.read_text(encoding="utf-8")
+    nginx_compose_content = _replace_compose_root(
+        nginx_compose_path.read_text(encoding="utf-8"),
+        remote_dir,
+    )
+    nginx_config_content = nginx_config_path.read_text(encoding="utf-8")
     env_ru_content = env_ru_path.read_text(encoding="utf-8")
     env_en_content = env_en_path.read_text(encoding="utf-8")
 
@@ -170,6 +187,8 @@ fi
 
 mkdir -p "$REMOTE_DIR"
 mkdir -p "$REMOTE_DIR/data/certs" "$REMOTE_DIR/data/backups" "$REMOTE_DIR/data/geoip" "$REMOTE_DIR/data/wg_configs"
+mkdir -p "$REMOTE_DIR/nginx"
+mkdir -p /var/log/nginx
 
 if [[ ! -c /dev/net/tun ]]; then
     mkdir -p /dev/net
@@ -182,9 +201,11 @@ fi
     with tarfile.open(fileobj=bundle, mode="w:gz") as archive:
         files = {
             "docker-compose.yml": compose_content,
+            "docker-compose.nginx.yml": nginx_compose_content,
             ".env": env_content,
             ".env.ru.example": env_ru_content,
             ".env.en.example": env_en_content,
+            "nginx/nginx.conf": nginx_config_content,
             "REMOTE_BOOTSTRAP.sh": remote_bootstrap,
         }
         for name, content in files.items():
@@ -264,7 +285,12 @@ async def bootstrap_first_node(
             await emit("Preparing deployment bundle...")
             bundle_bytes = await asyncio.get_running_loop().run_in_executor(
                 None,
-                lambda: _build_bundle(host=host, docker_namespace=docker_namespace, image_tag=image_tag),
+                lambda: _build_bundle(
+                    host=host,
+                    docker_namespace=docker_namespace,
+                    image_tag=image_tag,
+                    remote_dir=remote_dir,
+                ),
             )
 
             await emit("Uploading deployment bundle to remote host...")
@@ -307,9 +333,9 @@ async def bootstrap_first_node(
 
             await emit(f"Copying files into {remote_dir}...")
             unpack_command = (
-                f"mkdir -p {shlex.quote(remote_dir)} && "
+                f"mkdir -p {shlex.quote(remote_dir)} {shlex.quote(remote_dir + '/nginx')} && "
                 f"tar -xzf /tmp/awg-jump-bootstrap.tgz -C {shlex.quote(remote_dir)} "
-                "docker-compose.yml .env .env.ru.example .env.en.example"
+                "docker-compose.yml docker-compose.nginx.yml .env .env.ru.example .env.en.example nginx/nginx.conf"
             )
             result = await _run_remote_command(
                 conn,

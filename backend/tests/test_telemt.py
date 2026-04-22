@@ -65,6 +65,7 @@ async def test_update_telemt_settings_marks_restart_required(
     from backend.config import settings
 
     settings.env_file_path = str(tmp_path / ".env")
+    settings.server_host = "jump.example"
     Path(settings.env_file_path).write_text("TELEMT_ENABLED=on\nTELEMT_PORT=443\n", encoding="utf-8")
 
     resp = await client.put(
@@ -83,6 +84,8 @@ tls = true
 
 [general.links]
 show = "*"
+public_host = "adres.example"
+public_port = 444
 
 [server]
 port = 444
@@ -111,6 +114,80 @@ tls_front_dir = "tlsfront"
     data = resp.json()
     assert data["restart_required"] is True
     assert "TELEMT_PORT=444" in Path(settings.env_file_path).read_text(encoding="utf-8")
+    rendered = Path(settings.telemt_config_path).read_text(encoding="utf-8")
+    assert 'public_host = "adres.example"' in rendered
+    assert "public_port = 444" in rendered
+    assert 'public_host = "jump.example"' not in rendered
+
+
+async def test_update_telemt_settings_uses_env_public_links_when_commented(
+    client: AsyncClient,
+    auth_headers: dict,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(telemt_svc, "runtime_enabled", lambda: True)
+    monkeypatch.setattr(
+        telemt_svc,
+        "get_service_status",
+        lambda: {"enabled": True, "running": False, "status": "stopped", "message": "telemt STOPPED"},
+    )
+    monkeypatch.setattr(telemt_svc, "fetch_links", lambda: {})
+
+    from backend.config import settings
+
+    settings.env_file_path = str(tmp_path / ".env")
+    settings.server_host = "jump.example"
+    Path(settings.env_file_path).write_text("TELEMT_ENABLED=on\nTELEMT_PORT=443\n", encoding="utf-8")
+
+    resp = await client.put(
+        "/api/telemt/settings",
+        headers=auth_headers,
+        json={
+            "config_text": """
+[general]
+use_middle_proxy = true
+log_level = "normal"
+
+[general.modes]
+classic = false
+secure = false
+tls = true
+
+[general.links]
+show = "*"
+# public_host = "adres.example"
+# public_port = 444
+
+[server]
+port = 445
+
+[server.api]
+enabled = true
+listen = "127.0.0.1:9091"
+whitelist = ["127.0.0.1/32", "::1/128"]
+minimal_runtime_enabled = false
+minimal_runtime_cache_ttl_ms = 1000
+
+[[server.listeners]]
+ip = "0.0.0.0"
+
+[censorship]
+tls_domain = "example.com"
+mask = true
+tls_emulation = true
+tls_front_dir = "tlsfront"
+
+[access.users]
+""",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    rendered = Path(settings.telemt_config_path).read_text(encoding="utf-8")
+    assert '# public_host = "adres.example"' in rendered
+    assert '# public_port = 444' in rendered
+    assert 'public_host = "jump.example"' in rendered
+    assert "public_port = 445" in rendered
 
 
 async def test_telemt_service_action(client: AsyncClient, auth_headers: dict, monkeypatch) -> None:

@@ -111,6 +111,14 @@ _CLIENT_KIND_BY_CODE = {
 }
 
 
+def _to_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _peer_to_out(peer: Peer) -> PeerOut:
     return PeerOut(
         id=peer.id,
@@ -334,7 +342,7 @@ async def report_peer_status(
         raise HTTPException(status_code=403, detail="Client IP does not match any awg0 peer")
 
     now = datetime.now(timezone.utc)
-    last_report = peer.client_reported_at
+    last_report = _to_utc(peer.client_reported_at)
     recently_reported = (
         last_report is not None
         and (now - last_report).total_seconds() < _STATUS_REPORT_MIN_INTERVAL_SECONDS

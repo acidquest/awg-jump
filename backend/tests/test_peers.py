@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -213,6 +215,34 @@ async def test_filter_peers_by_interface(
     assert resp.status_code == 200
     for p in resp.json():
         assert p["interface_id"] == iface.id
+
+
+@pytest.mark.asyncio
+async def test_report_peer_status_accepts_naive_client_reported_at(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    iface = (
+        await db_session.execute(select(Interface).where(Interface.name == "awg0"))
+    ).scalar_one()
+    peer = Peer(
+        interface_id=iface.id,
+        name="status-peer",
+        public_key="status-peer-public-key",
+        allowed_ips="0.0.0.0/0",
+        tunnel_address="127.0.0.1/32",
+        client_code=1001,
+        client_kind="awg-gateway",
+        client_reported_ip="127.0.0.1",
+        client_reported_at=datetime.utcnow(),
+    )
+    db_session.add(peer)
+    await db_session.commit()
+
+    resp = await client.post("/api/peers/status", json={"client_code": 1001})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "ok"
+    assert resp.json()["client_kind"] == "awg-gateway"
 
 
 @pytest.mark.asyncio

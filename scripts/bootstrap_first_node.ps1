@@ -62,6 +62,19 @@ function Set-EnvValue {
     [System.IO.File]::WriteAllText($Path, (($lines -join "`n").TrimEnd("`n") + "`n"), $utf8NoBom)
 }
 
+function Replace-ComposeRoot {
+    param(
+        [string]$Path,
+        [string]$RemoteDir
+    )
+
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    $content = [System.IO.File]::ReadAllText($Path, $utf8NoBom)
+    $normalizedDir = $RemoteDir.TrimEnd('/')
+    $content = $content.Replace('/opt/awg-jump', $normalizedDir)
+    [System.IO.File]::WriteAllText($Path, $content, $utf8NoBom)
+}
+
 function Quote-ForSh {
     param([string]$Value)
     return "'{0}'" -f ($Value -replace "'", "'""'""'")
@@ -102,13 +115,17 @@ New-Item -ItemType Directory -Path $TmpDir | Out-Null
 
 try {
     Copy-Item (Join-Path $RepoRoot "deploy/docker-compose.images.yml") (Join-Path $TmpDir "docker-compose.yml")
+    Copy-Item (Join-Path $RepoRoot "nginx/docker-compose.yml") (Join-Path $TmpDir "docker-compose.nginx.yml")
     Copy-Item (Join-Path $RepoRoot ".env.ru.example") (Join-Path $TmpDir ".env.ru.example")
     Copy-Item (Join-Path $RepoRoot ".env.en.example") (Join-Path $TmpDir ".env.en.example")
     Copy-Item (Join-Path $RepoRoot ".env.ru.example") (Join-Path $TmpDir ".env")
+    New-Item -ItemType Directory -Path (Join-Path $TmpDir "nginx") | Out-Null
+    Copy-Item (Join-Path $RepoRoot "nginx/nginx.conf") (Join-Path $TmpDir "nginx/nginx.conf")
 
     Set-EnvValue (Join-Path $TmpDir ".env") "TLS_COMMON_NAME" $HostName
     Set-EnvValue (Join-Path $TmpDir ".env") "SERVER_HOST" $HostName
     Set-EnvValue (Join-Path $TmpDir ".env") "AWG_JUMP_IMAGE" $ImageJump
+    Replace-ComposeRoot (Join-Path $TmpDir "docker-compose.nginx.yml") $RemoteDir
 
     $remoteBootstrap = @'
 #!/usr/bin/env bash
@@ -162,6 +179,8 @@ fi
 
 mkdir -p "$REMOTE_DIR"
 mkdir -p "$REMOTE_DIR/data/certs" "$REMOTE_DIR/data/backups" "$REMOTE_DIR/data/geoip" "$REMOTE_DIR/data/wg_configs"
+mkdir -p "$REMOTE_DIR/nginx"
+mkdir -p /var/log/nginx
 
 if [[ ! -c /dev/net/tun ]]; then
     mkdir -p /dev/net
@@ -181,9 +200,11 @@ fi
     try {
         & tar -czf $bundlePath `
             docker-compose.yml `
+            docker-compose.nginx.yml `
             .env `
             .env.ru.example `
             .env.en.example `
+            nginx/nginx.conf `
             REMOTE_BOOTSTRAP.sh
         if ($LASTEXITCODE -ne 0) { throw "Failed to create deploy archive." }
     }
@@ -196,7 +217,7 @@ fi
     if ($LASTEXITCODE -ne 0) { throw "Failed to upload deploy archive." }
 
     Write-Host "Installing Docker and unpacking files on remote host"
-    $remoteCommand = "bash -lc ""set -euo pipefail; rm -rf /tmp/awg-jump-bootstrap && mkdir -p /tmp/awg-jump-bootstrap; tar -xzf /tmp/awg-jump-bootstrap.tgz -C /tmp/awg-jump-bootstrap; ${RemoteRootPrefix}bash /tmp/awg-jump-bootstrap/REMOTE_BOOTSTRAP.sh $quotedRemoteDir; ${RemoteRootPrefix}mkdir -p $quotedRemoteDir; ${RemoteRootPrefix}cp /tmp/awg-jump-bootstrap/docker-compose.yml $quotedRemoteDir/docker-compose.yml; ${RemoteRootPrefix}cp /tmp/awg-jump-bootstrap/.env $quotedRemoteDir/.env; ${RemoteRootPrefix}cp /tmp/awg-jump-bootstrap/.env.ru.example $quotedRemoteDir/.env.ru.example; ${RemoteRootPrefix}cp /tmp/awg-jump-bootstrap/.env.en.example $quotedRemoteDir/.env.en.example; rm -rf /tmp/awg-jump-bootstrap /tmp/awg-jump-bootstrap.tgz"""
+    $remoteCommand = "bash -lc ""set -euo pipefail; rm -rf /tmp/awg-jump-bootstrap && mkdir -p /tmp/awg-jump-bootstrap; tar -xzf /tmp/awg-jump-bootstrap.tgz -C /tmp/awg-jump-bootstrap; ${RemoteRootPrefix}bash /tmp/awg-jump-bootstrap/REMOTE_BOOTSTRAP.sh $quotedRemoteDir; ${RemoteRootPrefix}mkdir -p $quotedRemoteDir $quotedRemoteDir/nginx; ${RemoteRootPrefix}cp /tmp/awg-jump-bootstrap/docker-compose.yml $quotedRemoteDir/docker-compose.yml; ${RemoteRootPrefix}cp /tmp/awg-jump-bootstrap/docker-compose.nginx.yml $quotedRemoteDir/docker-compose.nginx.yml; ${RemoteRootPrefix}cp /tmp/awg-jump-bootstrap/.env $quotedRemoteDir/.env; ${RemoteRootPrefix}cp /tmp/awg-jump-bootstrap/.env.ru.example $quotedRemoteDir/.env.ru.example; ${RemoteRootPrefix}cp /tmp/awg-jump-bootstrap/.env.en.example $quotedRemoteDir/.env.en.example; ${RemoteRootPrefix}cp /tmp/awg-jump-bootstrap/nginx/nginx.conf $quotedRemoteDir/nginx/nginx.conf; rm -rf /tmp/awg-jump-bootstrap /tmp/awg-jump-bootstrap.tgz"""
     & ssh -p $SshPort $target $remoteCommand
     if ($LASTEXITCODE -ne 0) { throw "Remote bootstrap failed." }
 
@@ -207,17 +228,19 @@ fi
     Write-Host ""
     Write-Host "Files created:"
     Write-Host "  $RemoteDir/docker-compose.yml"
+    Write-Host "  $RemoteDir/docker-compose.nginx.yml"
     Write-Host "  $RemoteDir/.env"
     Write-Host "  $RemoteDir/.env.ru.example"
     Write-Host "  $RemoteDir/.env.en.example"
+    Write-Host "  $RemoteDir/nginx/nginx.conf"
     Write-Host ""
     Write-Host "Next steps on the node:"
     Write-Host "  1. Edit $RemoteDir/.env and set at least ADMIN_PASSWORD and SECRET_KEY."
     Write-Host "  2. Verify AWG_JUMP_IMAGE in $RemoteDir/.env."
     Write-Host "  3. Start the stack:"
     Write-Host "     cd $RemoteDir"
-    Write-Host "     docker compose -f docker-compose.yml pull"
-    Write-Host "     docker compose -f docker-compose.yml up -d"
+    Write-Host "     docker compose -f docker-compose.yml -f docker-compose.nginx.yml pull"
+    Write-Host "     docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d"
 }
 finally {
     if (Test-Path $TmpDir) {

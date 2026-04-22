@@ -431,6 +431,22 @@ UI умеет запускать SSH bootstrap первой upstream-ноды:
 
 SSH-пароль используется только для текущего запуска bootstrap и не сохраняется в БД.
 
+На целевую машину bootstrap раскладывает:
+
+- `docker-compose.yml`
+- `docker-compose.nginx.yml`
+- `nginx/nginx.conf`
+- `.env`
+- `.env.ru.example`
+- `.env.en.example`
+
+Старт стека на ноде выполняется так:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml pull
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d
+```
+
 ## API
 
 У gateway два уровня API:

@@ -1,8 +1,9 @@
 #!/bin/sh
-# Генерация self-signed TLS сертификата.
-# Скрипт переиспользуется awg-jump и legacy nginx-контуром.
+# Генерация self-signed TLS сертификата для nginx.
+# Запускается один раз при первом старте контейнера.
+# Если сертификат уже существует — пропускаем генерацию.
 
-CERT_DIR="${CERT_DIR:-/data/certs}"
+CERT_DIR=/etc/nginx/certs
 
 if [ -f "$CERT_DIR/server.crt" ]; then
     echo "[generate-cert] Certificate already exists, skipping generation."
@@ -11,9 +12,10 @@ fi
 
 mkdir -p "$CERT_DIR"
 
+# Установить openssl если отсутствует (nginx:alpine его не включает)
 if ! command -v openssl >/dev/null 2>&1; then
-    echo "[generate-cert] ERROR: openssl is required but not installed."
-    exit 1
+    echo "[generate-cert] Installing openssl..."
+    apk add --no-cache openssl
 fi
 
 CN="${TLS_COMMON_NAME:-localhost}"

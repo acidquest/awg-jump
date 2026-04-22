@@ -179,17 +179,15 @@ def _inject_public_links(config_text: str, *, public_host: str, public_port: int
     lines = normalize_config_text(config_text).splitlines()
     output: list[str] = []
     in_general_links = False
-    injected = False
     links_seen = False
+    has_public_host = False
+    has_public_port = False
 
-    def append_link_lines() -> None:
-        nonlocal injected
-        if injected:
-            return
-        if public_host:
+    def append_missing_link_lines() -> None:
+        if not has_public_host and public_host:
             output.append(f'public_host = "{public_host}"')
-        output.append(f"public_port = {public_port}")
-        injected = True
+        if not has_public_port:
+            output.append(f"public_port = {public_port}")
 
     for line in lines:
         stripped = line.strip()
@@ -200,17 +198,19 @@ def _inject_public_links(config_text: str, *, public_host: str, public_port: int
             output.append(line)
             continue
         if in_general_links:
-            if re.match(r"^public_host\s*=", stripped) or re.match(r"^public_port\s*=", stripped):
-                continue
+            if re.match(r"^public_host\s*=", stripped):
+                has_public_host = True
+            elif re.match(r"^public_port\s*=", stripped):
+                has_public_port = True
             if is_section_header:
-                append_link_lines()
+                append_missing_link_lines()
                 in_general_links = False
                 output.append(line)
                 continue
         output.append(line)
 
     if in_general_links:
-        append_link_lines()
+        append_missing_link_lines()
 
     if not links_seen:
         if output and output[-1].strip():
@@ -221,7 +221,7 @@ def _inject_public_links(config_text: str, *, public_host: str, public_port: int
                 'show = "*"',
             ]
         )
-        append_link_lines()
+        append_missing_link_lines()
 
     return "\n".join(output).rstrip() + "\n"
 

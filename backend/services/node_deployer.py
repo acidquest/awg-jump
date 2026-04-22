@@ -15,6 +15,7 @@ from typing import Optional
 
 import asyncssh
 from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import settings
@@ -74,6 +75,11 @@ async def _allocate_awg_address(session: AsyncSession) -> str:
             return f"{addr}/32"
 
     raise RuntimeError("No available addresses in NODE_VPN_SUBNET")
+
+
+def _with_prefix(address: str, prefixlen: int) -> str:
+    """Normalizes an IPv4 interface address to the requested prefix length."""
+    return str(ipaddress.IPv4Interface(address).ip) + f"/{prefixlen}"
 
 
 def _make_node_server_config(
@@ -137,7 +143,7 @@ def _make_env_content(private_key: str, awg_address: str, awg_port: int) -> str:
         [
             f"AWG_LISTEN_PORT={awg_port}",
             f"AWG_PRIVATE_KEY={private_key}",
-            f"AWG_ADDRESS={awg_address}",
+            f"AWG_ADDRESS={_with_prefix(awg_address, 24)}",
         ]
     ) + "\n"
 
@@ -180,7 +186,12 @@ def _measure_ping_latency(target: str) -> tuple[bool, Optional[float]]:
 
 
 async def _get_node(node_id: int, session: AsyncSession) -> UpstreamNode:
-    node = await session.get(UpstreamNode, node_id)
+    result = await session.execute(
+        select(UpstreamNode)
+        .options(selectinload(UpstreamNode.shared_peers))
+        .where(UpstreamNode.id == node_id)
+    )
+    node = result.scalar_one_or_none()
     if node is None:
         raise RuntimeError(f"Node {node_id} not found")
     return node

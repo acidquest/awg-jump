@@ -432,6 +432,22 @@ Bootstrap parameters:
 
 The SSH password is only used for the current bootstrap run and is not persisted in the database.
 
+The bootstrap places these files on the target host:
+
+- `docker-compose.yml`
+- `docker-compose.nginx.yml`
+- `nginx/nginx.conf`
+- `.env`
+- `.env.ru.example`
+- `.env.en.example`
+
+Start the stack on the node with:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml pull
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d
+```
+
 ## API
 
 The gateway exposes two API layers:

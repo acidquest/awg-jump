@@ -1555,7 +1555,7 @@ function FirstNodeBootstrapModal({
                   <strong>{t('nextSteps')}</strong><br />
                   {t('bootstrapNextStep1a')} <span className="text-mono">{form.remote_dir}/.env</span>. {t('bootstrapNextStep1b')}
                   <br />
-                  {t('bootstrapNextStep2a')} <span className="text-mono">{form.remote_dir}</span>: <span className="text-mono">docker compose -f docker-compose.yml pull && docker compose -f docker-compose.yml up -d</span>
+                  {t('bootstrapNextStep2a')} <span className="text-mono">{form.remote_dir}</span>: <span className="text-mono">docker compose -f docker-compose.yml -f docker-compose.nginx.yml pull && docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d</span>
                 </div>
                 <div className="modal-actions">
                   <button className="btn btn-secondary" onClick={() => navigator.clipboard.writeText(logOutput)}>{t('copyLog')}</button>

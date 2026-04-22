@@ -408,6 +408,7 @@ async def delete_node(
     settings_row = await db.get(GatewaySettings, 1)
     if settings_row.active_entry_node_id == node.id:
         settings_row.active_entry_node_id = None
+        settings_row.active_entry_node = None
         failover_state = get_failover_runtime_state()
         failover_state.unhealthy_since = None
         failover_state.last_error = None

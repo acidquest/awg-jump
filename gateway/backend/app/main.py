@@ -195,6 +195,7 @@ async def _restore_runtime_state(session: AsyncSession) -> None:
     active_node = await session.get(EntryNode, settings_row.active_entry_node_id)
     if active_node is None:
         settings_row.active_entry_node_id = None
+        settings_row.active_entry_node = None
         session.add(settings_row)
         tunnel_state = get_tunnel_runtime_state()
         tunnel_state.status = "stopped"

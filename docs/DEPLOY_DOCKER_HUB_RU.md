@@ -4,8 +4,8 @@
 
 1. Локально собрать и запушить образы в Docker Hub.
 2. На чистой Linux-нode поставить Docker.
-3. Положить на ноду `docker-compose.yml` и `.env`.
-4. На сервере сделать `docker compose pull && docker compose up -d`.
+3. Положить на ноду основной `docker-compose.yml`, `docker-compose.nginx.yml`, `nginx/nginx.conf` и `.env`.
+4. На сервере сделать `docker compose -f docker-compose.yml -f docker-compose.nginx.yml pull && docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d`.
 
 ## Какие образы публикуются
 
@@ -47,9 +47,11 @@ docker login
 Скрипт ставит Docker на удалённую машину, спрашивает директорию деплоя и раскладывает туда:
 
 - `docker-compose.yml`
+- `docker-compose.nginx.yml`
 - `.env`
 - `.env.ru.example`
 - `.env.en.example`
+- `nginx/nginx.conf`
 
 Этот bootstrap предназначен для основной ноды с `awg-jump`.
 Upstream-ноды через него не разворачиваются.
@@ -103,15 +105,15 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_first_node.ps1
 
 ```bash
 cd /opt/awg-jump
-docker compose -f docker-compose.yml pull
-docker compose -f docker-compose.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml pull
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d
 ```
 
 Проверка:
 
 ```bash
-docker compose -f docker-compose.yml ps
-docker compose -f docker-compose.yml logs --tail=100
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml ps
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml logs --tail=100
 ```
 
 ## 4. Обновление без пересборки на сервере
@@ -122,6 +124,6 @@ docker compose -f docker-compose.yml logs --tail=100
 2. выполни:
 
 ```bash
-docker compose -f docker-compose.yml pull
-docker compose -f docker-compose.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml pull
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d
 ```
