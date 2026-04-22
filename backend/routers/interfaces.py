@@ -48,15 +48,28 @@ class InterfaceOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class InterfaceDetail(InterfaceOut):
+    private_key: str
+
+
 class InterfaceUpdate(BaseModel):
     listen_port: Optional[int] = None
     address: Optional[str] = None
     dns: Optional[str] = None
     endpoint: Optional[str] = None
+    private_key: Optional[str] = None
     preshared_key: Optional[str] = None
     allowed_ips: Optional[str] = None
     persistent_keepalive: Optional[int] = None
     enabled: Optional[bool] = None
+
+
+class InterfacePrivateKeyIn(BaseModel):
+    private_key: str
+
+
+def _iface_to_detail(iface: Interface) -> InterfaceDetail:
+    return InterfaceDetail(**_iface_to_out(iface).model_dump(), private_key=iface.private_key or "")
 
 
 def _iface_to_out(iface: Interface) -> InterfaceOut:
@@ -110,16 +123,16 @@ async def list_interfaces(
     return [_iface_to_out(i) for i in result.scalars().all() if i.name in awg_svc.visible_interface_names()]
 
 
-@router.get("/{iface_id}", response_model=InterfaceOut)
+@router.get("/{iface_id}", response_model=InterfaceDetail)
 async def get_interface(
     iface_id: int,
     session: AsyncSession = Depends(get_db),
     _user: str = Depends(get_current_user),
-) -> InterfaceOut:
+) -> InterfaceDetail:
     iface = await _get_iface_or_404(iface_id, session)
     if iface.name not in awg_svc.visible_interface_names():
         raise HTTPException(status_code=404, detail="Interface not found")
-    return _iface_to_out(iface)
+    return _iface_to_detail(iface)
 
 
 @router.put("/{iface_id}", response_model=InterfaceOut)
@@ -132,12 +145,48 @@ async def update_interface(
     iface = await _get_iface_or_404(iface_id, session)
     if iface.name not in awg_svc.visible_interface_names():
         raise HTTPException(status_code=404, detail="Interface not found")
+    update_fields = body.model_fields_set
+    if "private_key" in update_fields and body.private_key:
+        try:
+            iface.private_key = body.private_key
+            protocol = (
+                iface.protocol
+                if isinstance(iface.protocol, InterfaceProtocol)
+                else InterfaceProtocol(iface.protocol or "awg")
+            )
+            iface.public_key = awg_svc.derive_public_key(body.private_key, protocol=protocol)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Invalid private key") from exc
     for field, value in body.model_dump(exclude_none=True).items():
+        if field == "private_key":
+            continue
         setattr(iface, field, value)
     iface.updated_at = datetime.now(timezone.utc)
     session.add(iface)
     await session.flush()
     return _iface_to_out(iface)
+
+
+@router.post("/{iface_id}/derive-public-key")
+async def derive_interface_public_key(
+    iface_id: int,
+    body: InterfacePrivateKeyIn,
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+) -> dict[str, str]:
+    iface = await _get_iface_or_404(iface_id, session)
+    if iface.name not in awg_svc.visible_interface_names():
+        raise HTTPException(status_code=404, detail="Interface not found")
+    protocol = (
+        iface.protocol
+        if isinstance(iface.protocol, InterfaceProtocol)
+        else InterfaceProtocol(iface.protocol or "awg")
+    )
+    try:
+        public_key = awg_svc.derive_public_key(body.private_key, protocol=protocol)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid private key") from exc
+    return {"public_key": public_key, "protocol": protocol.value}
 
 
 @router.post("/{iface_id}/apply", response_model=InterfaceOut)

@@ -3,6 +3,7 @@ export interface Interface {
   name: string
   mode: 'server' | 'client'
   protocol: 'awg' | 'wg'
+  private_key?: string
   public_key: string
   listen_port: number | null
   address: string

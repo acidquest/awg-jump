@@ -41,10 +41,13 @@ export const getLogs = (service = 'uvicorn', lines = 200) =>
 
 // ── Interfaces ────────────────────────────────────────────────────────────
 export const getInterfaces = () => api.get('/interfaces')
+export const getInterface = (id: number) => api.get(`/interfaces/${id}`)
 export const updateInterface = (id: number, data: Record<string, unknown>) =>
   api.put(`/interfaces/${id}`, data)
 export const applyInterface = (id: number) => api.post(`/interfaces/${id}/apply`)
 export const stopInterface = (id: number) => api.post(`/interfaces/${id}/stop`)
+export const deriveInterfacePublicKey = (id: number, data: Record<string, unknown>) =>
+  api.post(`/interfaces/${id}/derive-public-key`, data)
 export const regenObfuscation = (id: number) =>
   api.post(`/interfaces/${id}/regenerate-obfuscation`)
 

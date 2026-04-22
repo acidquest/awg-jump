@@ -1,6 +1,14 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getInterfaces, updateInterface, applyInterface, stopInterface, regenObfuscation } from '../api'
+import {
+  deriveInterfacePublicKey,
+  getInterface,
+  getInterfaces,
+  regenObfuscation,
+  stopInterface,
+  applyInterface,
+  updateInterface,
+} from '../api'
 import { Interface } from '../types'
 import StatusBadge from '../components/StatusBadge'
 import Modal from '../components/Modal'
@@ -207,16 +215,74 @@ function ObfParam({ label, value }: { label: string; value: number | null | unde
 }
 
 function EditModal({ iface, onClose, onSaved }: { iface: Interface; onClose: () => void; onSaved: () => void }) {
+  const { data: detail, isLoading } = useQuery<Interface>({
+    queryKey: ['interface', iface.id],
+    queryFn: () => getInterface(iface.id).then((r) => r.data),
+  })
   const [form, setForm] = useState({
-    listen_port: iface.listen_port ?? '',
-    address: iface.address,
-    dns: iface.dns ?? '',
-    endpoint: iface.endpoint ?? '',
-    allowed_ips: iface.allowed_ips ?? '',
-    persistent_keepalive: iface.persistent_keepalive ?? '',
-    enabled: iface.enabled,
+    listen_port: '',
+    address: '',
+    dns: '',
+    endpoint: '',
+    allowed_ips: '',
+    persistent_keepalive: '',
+    private_key: '',
+    public_key: '',
+    enabled: false,
   })
   const [error, setError] = useState('')
+  const [keyError, setKeyError] = useState('')
+  const [keyBusy, setKeyBusy] = useState(false)
+  const deriveSeq = useRef(0)
+
+  useEffect(() => {
+    if (!detail) return
+    setForm({
+      listen_port: detail.listen_port != null ? String(detail.listen_port) : '',
+      address: detail.address,
+      dns: detail.dns ?? '',
+      endpoint: detail.endpoint ?? '',
+      allowed_ips: detail.allowed_ips ?? '',
+      persistent_keepalive: detail.persistent_keepalive != null ? String(detail.persistent_keepalive) : '',
+      private_key: detail.private_key ?? '',
+      public_key: detail.public_key ?? '',
+      enabled: detail.enabled,
+    })
+  }, [detail])
+
+  useEffect(() => {
+    if (!detail) return
+    const privateKey = form.private_key.trim()
+    const currentSeq = ++deriveSeq.current
+    if (!privateKey) {
+      setForm((p) => ({ ...p, public_key: '' }))
+      setKeyBusy(false)
+      setKeyError('')
+      return
+    }
+    setKeyBusy(true)
+    setKeyError('')
+    const timer = window.setTimeout(() => {
+      deriveInterfacePublicKey(detail.id, { private_key: privateKey })
+        .then((res) => {
+          if (currentSeq !== deriveSeq.current) return
+          setForm((p) => ({ ...p, public_key: res.data.public_key }))
+        })
+        .catch((e: unknown) => {
+          if (currentSeq !== deriveSeq.current) return
+          const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to derive public key'
+          setKeyError(msg)
+        })
+        .finally(() => {
+          if (currentSeq === deriveSeq.current) {
+            setKeyBusy(false)
+          }
+        })
+    }, 300)
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [detail, form.private_key])
 
   const mut = useMutation({
     mutationFn: () => updateInterface(iface.id, {
@@ -226,6 +292,7 @@ function EditModal({ iface, onClose, onSaved }: { iface: Interface; onClose: () 
       endpoint: form.endpoint || undefined,
       allowed_ips: form.allowed_ips || undefined,
       persistent_keepalive: form.persistent_keepalive ? Number(form.persistent_keepalive) : undefined,
+      private_key: form.private_key.trim() || undefined,
       enabled: form.enabled,
     }),
     onSuccess: onSaved,
@@ -240,6 +307,9 @@ function EditModal({ iface, onClose, onSaved }: { iface: Interface; onClose: () 
 
   return (
     <Modal open title={`Edit ${iface.name}`} onClose={onClose} size="lg">
+      {isLoading && <div style={{ textAlign: 'center', padding: 24 }}><span className="spinner" /></div>}
+      {!isLoading && (
+        <>
       {error && <div className="error-box">{error}</div>}
       <div className="form-row form-row-2">
         {iface.mode === 'server' ? (
@@ -257,6 +327,18 @@ function EditModal({ iface, onClose, onSaved }: { iface: Interface; onClose: () 
           <label className="form-label">Address</label>
           <input className="form-input mono" value={form.address} onChange={f('address')} />
         </div>
+      </div>
+      <div className="info-box" style={{ fontSize: 12 }}>
+        Interface <span className="text-mono">{detail?.name ?? iface.name}</span> uses protocol <span className="text-mono">{detail?.protocol ?? iface.protocol}</span>.
+      </div>
+      {keyError && <div className="error-box">{keyError}</div>}
+      <div className="form-group">
+        <label className="form-label">Private key</label>
+        <input className="form-input mono" value={form.private_key} onChange={f('private_key')} placeholder="Base64 private key" />
+      </div>
+      <div className="form-group">
+        <label className="form-label">Public key</label>
+        <input className="form-input mono" value={keyBusy ? 'Updating...' : form.public_key} readOnly />
       </div>
       <div className="form-row form-row-2">
         <div className="form-group">
@@ -285,10 +367,12 @@ function EditModal({ iface, onClose, onSaved }: { iface: Interface; onClose: () 
       </div>
       <div className="modal-actions">
         <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-        <button className="btn btn-primary" onClick={() => mut.mutate()} disabled={mut.isPending}>
+        <button className="btn btn-primary" onClick={() => mut.mutate()} disabled={mut.isPending || keyBusy || !!keyError}>
           {mut.isPending ? <span className="spinner" /> : 'Save'}
         </button>
       </div>
+        </>
+      )}
     </Modal>
   )
 }

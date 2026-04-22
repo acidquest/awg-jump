@@ -75,6 +75,7 @@ COPY --from=python-builder /opt/venv /opt/venv
 COPY --from=frontend-builder /frontend/dist /app/gateway/frontend/dist
 COPY gateway/backend /app/gateway/backend
 COPY deploy /app/deploy
+COPY nginx /app/nginx
 COPY .env.ru.example /app/.env.ru.example
 COPY .env.en.example /app/.env.en.example
 
