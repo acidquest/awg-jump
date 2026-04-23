@@ -297,6 +297,7 @@ async def ensure_settings_row(session: AsyncSession) -> TelemtSettings:
             config_text=default_config,
             public_host=settings.server_host or "",
             restart_required=False,
+            service_autostart=False,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
         )
@@ -386,6 +387,14 @@ def control_service(action: str) -> dict[str, Any]:
     return payload
 
 
+def service_autostart_for_action(action: str) -> bool | None:
+    if action in {"start", "restart"}:
+        return True
+    if action == "stop":
+        return False
+    return None
+
+
 async def fetch_links() -> dict[str, dict[str, list[str]]]:
     if not get_service_status().get("running"):
         return {}
@@ -434,6 +443,7 @@ async def build_page_payload(session: AsyncSession) -> dict[str, Any]:
             "port": row.port,
             "public_host": row.public_host,
             "restart_required": row.restart_required,
+            "service_autostart": row.service_autostart,
             "docs_url": TELEMT_CONFIG_DOCS_URL,
         },
         "version": {

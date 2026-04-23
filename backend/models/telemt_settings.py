@@ -20,6 +20,7 @@ class TelemtSettings(Base):
     config_text = Column(Text, nullable=False, default="")
     public_host = Column(String(255), nullable=False, default="")
     restart_required = Column(Boolean, nullable=False, default=False)
+    service_autostart = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
         DateTime,

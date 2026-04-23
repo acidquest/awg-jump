@@ -24,10 +24,9 @@ from backend.database import AsyncSessionLocal
 from backend.models.interface import Interface
 from backend.models.upstream_node import DeployLog, DeployStatus, NodePeer, NodeStatus, UpstreamNode
 from backend.services.awg import _run_cmd, generate_keypair
+from backend.services.upstream_nodes import apply_node_to_awg1, inherit_client_settings_from_interface
 
 logger = logging.getLogger(__name__)
-
-_UPSTREAM_ALLOWED_IPS = settings.awg1_allowed_ips or "0.0.0.0/0"
 
 # ── SSE очереди деплоя: log_id → asyncio.Queue ───────────────────────────
 _deploy_queues: dict[int, asyncio.Queue] = {}
@@ -89,6 +88,7 @@ def _make_node_server_config(
     awg_address: str,
     awg_port: int,
     awg1_public_key: str,
+    client_address: str,
     awg1: Interface,
     shared_peers: list[NodePeer],
 ) -> str:
@@ -115,7 +115,7 @@ def _make_node_server_config(
         [
             "[Peer]",
             f"PublicKey = {awg1_public_key}",
-            f"AllowedIPs = {settings.awg1_address}",
+            f"AllowedIPs = {client_address}",
         ]
     )
     lines.append("")
@@ -345,6 +345,7 @@ class NodeDeployer:
                 awg_port = node.awg_port
                 host = node.host
                 awg1_public_key = awg1.public_key
+                inherit_client_settings_from_interface(node, awg1)
                 shared_peers = list(node.shared_peers)
 
                 node.status = NodeStatus.deploying
@@ -457,6 +458,7 @@ class NodeDeployer:
                     awg_address=awg_address,
                     awg_port=awg_port,
                     awg1_public_key=awg1_public_key,
+                    client_address=node.client_address or settings.awg1_address,
                     awg1=awg1_fresh or awg1,
                     shared_peers=shared_peers,
                 )
@@ -538,13 +540,10 @@ class NodeDeployer:
 
             # ── Шаг 14: добавить peer в awg1 ──────────────────────────────
             await emit("Adding node as awg1 peer...")
-            _run_cmd([
-                "awg", "set", "awg1",
-                "peer", node_public_key,
-                "endpoint", f"{host}:{awg_port}",
-                "allowed-ips", _UPSTREAM_ALLOWED_IPS,
-                "persistent-keepalive", "25",
-            ])
+            async with AsyncSessionLocal() as session:
+                node_obj = await _get_node(node_id, session)
+                await apply_node_to_awg1(session, node_obj)
+                await session.commit()
 
             # ── Шаг 15: активация (если первая нода) ──────────────────────
             if is_first:
@@ -633,10 +632,10 @@ class NodeDeployer:
                 awg_port = node.awg_port
                 awg_address = node.awg_address
                 node_private_key = node.private_key
-                node_public_key = node.public_key
                 shared_peers = list(node.shared_peers)
-
                 awg1 = await session.scalar(select(Interface).where(Interface.name == "awg1"))
+                if awg1:
+                    inherit_client_settings_from_interface(node, awg1)
 
             if not node_private_key:
                 raise RuntimeError("Node private key not found — deploy first")
@@ -683,6 +682,7 @@ class NodeDeployer:
                     awg_address=awg_address,
                     awg_port=awg_port,
                     awg1_public_key=awg1.public_key if awg1 else "",
+                    client_address=node.client_address or settings.awg1_address,
                     awg1=awg1,
                     shared_peers=shared_peers,
                 )
@@ -944,13 +944,10 @@ class NodeDeployer:
             "[failover] Switching to node %d (%s:%d)", new_id, new_host, new_port
         )
 
-        _run_cmd([
-            "awg", "set", "awg1",
-            "peer", new_pubkey,
-            "endpoint", f"{new_host}:{new_port}",
-            "allowed-ips", _UPSTREAM_ALLOWED_IPS,
-            "persistent-keepalive", "25",
-        ])
+        async with AsyncSessionLocal() as session:
+            next_node = await _get_node(new_id, session)
+            await apply_node_to_awg1(session, next_node)
+            await session.commit()
 
         from backend.services.routing import update_upstream_host_route, update_vpn_route
         update_vpn_route("awg1")

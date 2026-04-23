@@ -25,6 +25,7 @@ from backend.models.interface import Interface, InterfaceMode, InterfaceProtocol
 from backend.models.peer import Peer
 from backend.models.upstream_node import NodeStatus, UpstreamNode
 from backend.config import classic_wg_enabled, settings
+from backend.services.upstream_nodes import apply_node_to_awg1
 
 
 # ── Singleton — PID таблица userspace amneziawg-go ───────────────────────
@@ -631,8 +632,7 @@ async def load_interface(iface: Interface, session: AsyncSession) -> None:
             )
         )
         if active_node:
-            iface.endpoint = f"{active_node.host}:{active_node.awg_port}"
-            iface.allowed_ips = iface.allowed_ips or "0.0.0.0/0"
+            iface = await apply_node_to_awg1(session, active_node)
             peers = [
                 Peer(
                     interface_id=iface.id,
@@ -648,6 +648,7 @@ async def load_interface(iface: Interface, session: AsyncSession) -> None:
                 "[awg] Loaded active upstream node %d into awg1 config",
                 active_node.id,
             )
+            return
 
     await apply_interface(iface, peers)
 

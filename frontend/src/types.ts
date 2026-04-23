@@ -65,6 +65,21 @@ export interface Node {
   awg_address: string | null
   probe_ip: string | null
   public_key: string | null
+  client_address: string | null
+  client_dns: string | null
+  client_allowed_ips: string | null
+  client_keepalive: number | null
+  client_obf_jc: number | null
+  client_obf_jmin: number | null
+  client_obf_jmax: number | null
+  client_obf_s1: number | null
+  client_obf_s2: number | null
+  client_obf_s3: number | null
+  client_obf_s4: number | null
+  client_obf_h1: number | null
+  client_obf_h2: number | null
+  client_obf_h3: number | null
+  client_obf_h4: number | null
   status: NodeStatus
   udp_status?: string | null
   udp_detail?: string | null
@@ -117,8 +132,27 @@ export interface NodeStats {
   last_seen: string | null
   last_deploy: string | null
   provisioning_mode: 'managed' | 'manual'
+  client_address: string | null
+  client_dns: string | null
+  client_allowed_ips: string | null
+  client_keepalive: number | null
+  client_obf_jc: number | null
+  client_obf_jmin: number | null
+  client_obf_jmax: number | null
+  client_obf_s1: number | null
+  client_obf_s2: number | null
+  client_obf_s3: number | null
+  client_obf_s4: number | null
+  client_obf_h1: number | null
+  client_obf_h2: number | null
+  client_obf_h3: number | null
+  client_obf_h4: number | null
   shared_peers: NodePeer[]
   deploy_logs: DeployLog[]
+}
+
+export interface FailoverSettings {
+  enabled: boolean
 }
 
 export interface SystemSettings {
@@ -254,6 +288,7 @@ export interface TelemtSettings {
   port: number
   public_host: string
   restart_required: boolean
+  service_autostart: boolean
   docs_url: string
 }
 
@@ -282,6 +317,7 @@ export interface TelemtServiceStatus {
   action?: string
   ok?: boolean
   command_output?: string
+  service_autostart?: boolean
 }
 
 export interface TelemtPageData {

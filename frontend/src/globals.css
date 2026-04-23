@@ -352,6 +352,7 @@ select.form-input option { background: var(--bg-3); }
 }
 .form-row-2 { grid-template-columns: repeat(2, 1fr); }
 .form-row-3 { grid-template-columns: repeat(3, 1fr); }
+.form-row-4 { grid-template-columns: repeat(4, 1fr); }
 
 /* Status badges */
 .badge {

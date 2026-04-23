@@ -55,6 +55,8 @@ async def _ensure_sqlite_columns() -> None:
             telemt_columns = {row[1] for row in result.fetchall()}
             if "config_text" not in telemt_columns:
                 await conn.execute(text("ALTER TABLE telemt_settings ADD COLUMN config_text TEXT NOT NULL DEFAULT ''"))
+            if "service_autostart" not in telemt_columns:
+                await conn.execute(text("ALTER TABLE telemt_settings ADD COLUMN service_autostart BOOLEAN NOT NULL DEFAULT 0"))
 
         result = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='telemt_users'"))
         if result.first() is None:
@@ -113,6 +115,11 @@ async def _ensure_sqlite_columns() -> None:
         if result.first() is None:
             await conn.run_sync(lambda sync_conn: Base.metadata.tables["dns_manual_addresses"].create(sync_conn))
 
+        result = await conn.execute(text("PRAGMA table_info(routing_settings)"))
+        routing_columns = {row[1] for row in result.fetchall()}
+        if "failover_enabled" not in routing_columns:
+            await conn.execute(text("ALTER TABLE routing_settings ADD COLUMN failover_enabled BOOLEAN NOT NULL DEFAULT 1"))
+
         result = await conn.execute(text("PRAGMA table_info(peers)"))
         peer_columns = {row[1] for row in result.fetchall()}
         if "client_code" not in peer_columns:
@@ -130,12 +137,36 @@ async def _ensure_sqlite_columns() -> None:
             await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN provisioning_mode VARCHAR(16) NOT NULL DEFAULT 'managed'"))
         if "raw_conf" not in node_columns:
             await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN raw_conf TEXT"))
+        if "client_address" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_address VARCHAR(64)"))
         if "client_dns" not in node_columns:
             await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_dns VARCHAR(256)"))
         if "client_allowed_ips" not in node_columns:
             await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_allowed_ips VARCHAR(256)"))
         if "client_keepalive" not in node_columns:
             await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_keepalive INTEGER"))
+        if "client_obf_jc" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_obf_jc INTEGER"))
+        if "client_obf_jmin" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_obf_jmin INTEGER"))
+        if "client_obf_jmax" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_obf_jmax INTEGER"))
+        if "client_obf_s1" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_obf_s1 INTEGER"))
+        if "client_obf_s2" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_obf_s2 INTEGER"))
+        if "client_obf_s3" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_obf_s3 INTEGER"))
+        if "client_obf_s4" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_obf_s4 INTEGER"))
+        if "client_obf_h1" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_obf_h1 INTEGER"))
+        if "client_obf_h2" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_obf_h2 INTEGER"))
+        if "client_obf_h3" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_obf_h3 INTEGER"))
+        if "client_obf_h4" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_obf_h4 INTEGER"))
         if "probe_ip" not in node_columns:
             await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN probe_ip VARCHAR(64)"))
 
@@ -156,6 +187,28 @@ async def _ensure_sqlite_columns() -> None:
                     WHEN protocol IS NULL OR protocol = '' THEN 'awg'
                     ELSE protocol
                 END
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                UPDATE upstream_nodes
+                SET client_address = COALESCE(NULLIF(client_address, ''), (SELECT address FROM interfaces WHERE name = 'awg1' LIMIT 1)),
+                    client_dns = COALESCE(client_dns, (SELECT dns FROM interfaces WHERE name = 'awg1' LIMIT 1)),
+                    client_allowed_ips = COALESCE(NULLIF(client_allowed_ips, ''), (SELECT allowed_ips FROM interfaces WHERE name = 'awg1' LIMIT 1)),
+                    client_keepalive = COALESCE(client_keepalive, (SELECT persistent_keepalive FROM interfaces WHERE name = 'awg1' LIMIT 1)),
+                    client_obf_jc = COALESCE(client_obf_jc, (SELECT obf_jc FROM interfaces WHERE name = 'awg1' LIMIT 1)),
+                    client_obf_jmin = COALESCE(client_obf_jmin, (SELECT obf_jmin FROM interfaces WHERE name = 'awg1' LIMIT 1)),
+                    client_obf_jmax = COALESCE(client_obf_jmax, (SELECT obf_jmax FROM interfaces WHERE name = 'awg1' LIMIT 1)),
+                    client_obf_s1 = COALESCE(client_obf_s1, (SELECT obf_s1 FROM interfaces WHERE name = 'awg1' LIMIT 1)),
+                    client_obf_s2 = COALESCE(client_obf_s2, (SELECT obf_s2 FROM interfaces WHERE name = 'awg1' LIMIT 1)),
+                    client_obf_s3 = COALESCE(client_obf_s3, (SELECT obf_s3 FROM interfaces WHERE name = 'awg1' LIMIT 1)),
+                    client_obf_s4 = COALESCE(client_obf_s4, (SELECT obf_s4 FROM interfaces WHERE name = 'awg1' LIMIT 1)),
+                    client_obf_h1 = COALESCE(client_obf_h1, (SELECT obf_h1 FROM interfaces WHERE name = 'awg1' LIMIT 1)),
+                    client_obf_h2 = COALESCE(client_obf_h2, (SELECT obf_h2 FROM interfaces WHERE name = 'awg1' LIMIT 1)),
+                    client_obf_h3 = COALESCE(client_obf_h3, (SELECT obf_h3 FROM interfaces WHERE name = 'awg1' LIMIT 1)),
+                    client_obf_h4 = COALESCE(client_obf_h4, (SELECT obf_h4 FROM interfaces WHERE name = 'awg1' LIMIT 1))
                 """
             )
         )
@@ -280,7 +333,7 @@ async def _init_geoip_and_routing() -> None:
 async def _init_telemt() -> None:
     telemt_svc.ensure_runtime_dirs()
     async with AsyncSessionLocal() as session:
-        await telemt_svc.ensure_settings_row(session)
+        row = await telemt_svc.ensure_settings_row(session)
         await telemt_svc.refresh_generated_config(session)
         await session.commit()
 
@@ -290,6 +343,11 @@ async def _init_telemt() -> None:
             telemt_svc.control_service("stop")
         except Exception as exc:
             logger.warning("Failed to stop TeleMT while feature disabled: %s", exc)
+    elif telemt_svc.runtime_enabled() and row.service_autostart and not status.get("running"):
+        try:
+            telemt_svc.control_service("start")
+        except Exception as exc:
+            logger.warning("Failed to auto-start TeleMT after reboot: %s", exc)
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────

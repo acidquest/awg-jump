@@ -104,6 +104,7 @@ async def update_telemt_settings(
             "port": row.port,
             "public_host": row.public_host,
             "restart_required": row.restart_required,
+            "service_autostart": row.service_autostart,
             "docs_url": telemt_svc.TELEMT_CONFIG_DOCS_URL,
         },
     }
@@ -185,4 +186,12 @@ async def telemt_service_action(
         result = telemt_svc.control_service(action)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    desired_state = telemt_svc.service_autostart_for_action(action)
+    if desired_state is not None and result.get("ok"):
+        row = await telemt_svc.ensure_settings_row(session)
+        row.service_autostart = desired_state
+        row.updated_at = datetime.now(timezone.utc)
+        session.add(row)
+        result["service_autostart"] = desired_state
     return result

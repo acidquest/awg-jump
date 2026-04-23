@@ -120,6 +120,7 @@ async def _node_health_check() -> None:
     """
     from sqlalchemy import select
     from backend.database import AsyncSessionLocal
+    from backend.models.routing_settings import RoutingSettings
     from backend.models.upstream_node import NodeStatus, UpstreamNode
     from backend.services.node_deployer import deployer
 
@@ -127,6 +128,8 @@ async def _node_health_check() -> None:
 
     try:
         async with AsyncSessionLocal() as session:
+            settings_row = await session.get(RoutingSettings, 1)
+            failover_enabled = True if settings_row is None else settings_row.failover_enabled
             result = await session.execute(
                 select(UpstreamNode).where(
                     UpstreamNode.status.in_([
@@ -145,6 +148,9 @@ async def _node_health_check() -> None:
                 if health["alive"]:
                     _health_fail_counts[node_id] = 0
                 else:
+                    if not failover_enabled:
+                        _health_fail_counts[node_id] = 0
+                        continue
                     _health_fail_counts[node_id] = _health_fail_counts.get(node_id, 0) + 1
                     count = _health_fail_counts[node_id]
                     logger.warning(

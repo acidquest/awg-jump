@@ -24,6 +24,7 @@ export default function Interfaces() {
     queryKey: ['interfaces'],
     queryFn: () => getInterfaces().then((r) => r.data),
   })
+  const visibleIfaces = ifaces.filter((iface) => iface.name !== 'awg1')
 
   const withBusy = async (id: number, label: string, fn: () => Promise<unknown>) => {
     setBusy((b) => ({ ...b, [id]: label }))
@@ -44,7 +45,7 @@ export default function Interfaces() {
         </div>
       </div>
 
-      {ifaces.map((iface) => (
+      {visibleIfaces.map((iface) => (
         <div key={iface.id} className="card" style={{ marginBottom: 16 }}>
           <div className="card-header">
             <div className="flex items-center gap-3">

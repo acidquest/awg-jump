@@ -3,9 +3,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getNodes, createNode, deployNode, redeployNode,
   activateNode, resetNode, checkNode, deleteNode, getNodeStats, updateNode,
-  createNodePeer, deleteNodePeer, getNodePeerConfig, updateNodePeer
+  createNodePeer, deleteNodePeer, getNodePeerConfig, updateNodePeer,
+  getNodeFailoverSettings, updateNodeFailoverSettings,
 } from '../api'
-import { Node, NodePeer, NodeStats, DeployLog } from '../types'
+import { FailoverSettings, Node, NodePeer, NodeStats, DeployLog } from '../types'
 import StatusBadge from '../components/StatusBadge'
 import Modal from '../components/Modal'
 import { openSSE } from '../sse'
@@ -29,6 +30,11 @@ function fmtLatency(latencyMs: number | null | undefined, status?: string | null
   return '—'
 }
 
+function nullableNumber(value: string) {
+  const trimmed = value.trim()
+  return trimmed === '' ? null : Number(trimmed)
+}
+
 type DeployStep = {
   ts: string
   msg: string
@@ -45,6 +51,7 @@ export default function Nodes() {
   const [logModal, setLogModal] = useState<DeployLog | null>(null)
   const [peerModalNode, setPeerModalNode] = useState<Node | null>(null)
   const [latencyNode, setLatencyNode] = useState<Node | null>(null)
+  const [failoverError, setFailoverError] = useState('')
 
   const { data: nodes = [], isLoading } = useQuery<Node[]>({
     queryKey: ['nodes'],
@@ -57,6 +64,12 @@ export default function Nodes() {
     queryFn: () => getNodeStats(selectedNode!.id).then((r) => r.data),
     enabled: !!selectedNode,
     refetchInterval: 15_000,
+  })
+
+  const { data: failover } = useQuery<FailoverSettings>({
+    queryKey: ['node-failover'],
+    queryFn: () => getNodeFailoverSettings().then((r) => r.data),
+    refetchInterval: 30_000,
   })
 
   const activateMut = useMutation({
@@ -82,6 +95,17 @@ export default function Nodes() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['nodes'] }),
   })
 
+  const failoverMut = useMutation({
+    mutationFn: (enabled: boolean) => updateNodeFailoverSettings(enabled),
+    onSuccess: () => {
+      setFailoverError('')
+      qc.invalidateQueries({ queryKey: ['node-failover'] })
+    },
+    onError: (e: unknown) => {
+      setFailoverError((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to update failover mode')
+    },
+  })
+
   if (isLoading) return <div style={{ padding: 40, textAlign: 'center' }}><span className="spinner" /></div>
 
   return (
@@ -99,6 +123,32 @@ export default function Nodes() {
             + Deploy node
           </button>
         </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-header" style={{ marginBottom: 10 }}>
+          <div>
+            <div className="card-title">Failover Mode</div>
+            <div className="text-muted text-sm" style={{ marginTop: 6 }}>
+              Health checks continue to update node status. Automatic switching of the active node happens only when failover is enabled.
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div className="text-mono text-sm" style={{ color: 'var(--text)' }}>
+              {failover?.enabled ? 'Enabled' : 'Disabled'}
+            </div>
+            <label className="toggle" title="Toggle automatic failover">
+              <input
+                type="checkbox"
+                checked={Boolean(failover?.enabled)}
+                onChange={(e) => failoverMut.mutate(e.target.checked)}
+                disabled={failoverMut.isPending || !failover}
+              />
+              <span className="toggle-slider" />
+            </label>
+          </div>
+        </div>
+        {failoverError ? <div className="error-box">{failoverError}</div> : null}
       </div>
 
       {/* Nodes table */}
@@ -243,6 +293,15 @@ export default function Nodes() {
             </div>
           </div>
 
+          <NodeAwg1Settings
+            node={selectedNode}
+            onSaved={(updated) => {
+              setSelectedNode(updated)
+              qc.invalidateQueries({ queryKey: ['nodes'] })
+              qc.invalidateQueries({ queryKey: ['node-stats', updated.id] })
+            }}
+          />
+
           {stats.provisioning_mode === 'managed' ? (
             <>
               <div className="card-title" style={{ marginBottom: 10 }}>Shared peers</div>
@@ -377,6 +436,164 @@ export default function Nodes() {
         </Modal>
       )}
     </>
+  )
+}
+
+function NodeAwg1Settings({ node, onSaved }: { node: Node; onSaved: (node: Node) => void }) {
+  const [form, setForm] = useState({
+    client_address: node.client_address ?? '',
+    client_dns: node.client_dns ?? '',
+    client_allowed_ips: node.client_allowed_ips ?? '',
+    client_keepalive: node.client_keepalive != null ? String(node.client_keepalive) : '',
+    client_obf_jc: node.client_obf_jc != null ? String(node.client_obf_jc) : '',
+    client_obf_jmin: node.client_obf_jmin != null ? String(node.client_obf_jmin) : '',
+    client_obf_jmax: node.client_obf_jmax != null ? String(node.client_obf_jmax) : '',
+    client_obf_s1: node.client_obf_s1 != null ? String(node.client_obf_s1) : '',
+    client_obf_s2: node.client_obf_s2 != null ? String(node.client_obf_s2) : '',
+    client_obf_s3: node.client_obf_s3 != null ? String(node.client_obf_s3) : '',
+    client_obf_s4: node.client_obf_s4 != null ? String(node.client_obf_s4) : '',
+    client_obf_h1: node.client_obf_h1 != null ? String(node.client_obf_h1) : '',
+    client_obf_h2: node.client_obf_h2 != null ? String(node.client_obf_h2) : '',
+    client_obf_h3: node.client_obf_h3 != null ? String(node.client_obf_h3) : '',
+    client_obf_h4: node.client_obf_h4 != null ? String(node.client_obf_h4) : '',
+  })
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    setForm({
+      client_address: node.client_address ?? '',
+      client_dns: node.client_dns ?? '',
+      client_allowed_ips: node.client_allowed_ips ?? '',
+      client_keepalive: node.client_keepalive != null ? String(node.client_keepalive) : '',
+      client_obf_jc: node.client_obf_jc != null ? String(node.client_obf_jc) : '',
+      client_obf_jmin: node.client_obf_jmin != null ? String(node.client_obf_jmin) : '',
+      client_obf_jmax: node.client_obf_jmax != null ? String(node.client_obf_jmax) : '',
+      client_obf_s1: node.client_obf_s1 != null ? String(node.client_obf_s1) : '',
+      client_obf_s2: node.client_obf_s2 != null ? String(node.client_obf_s2) : '',
+      client_obf_s3: node.client_obf_s3 != null ? String(node.client_obf_s3) : '',
+      client_obf_s4: node.client_obf_s4 != null ? String(node.client_obf_s4) : '',
+      client_obf_h1: node.client_obf_h1 != null ? String(node.client_obf_h1) : '',
+      client_obf_h2: node.client_obf_h2 != null ? String(node.client_obf_h2) : '',
+      client_obf_h3: node.client_obf_h3 != null ? String(node.client_obf_h3) : '',
+      client_obf_h4: node.client_obf_h4 != null ? String(node.client_obf_h4) : '',
+    })
+    setError('')
+  }, [node])
+
+  const mut = useMutation({
+    mutationFn: () => updateNode(node.id, {
+      client_address: form.client_address.trim() || null,
+      client_dns: form.client_dns.trim() || null,
+      client_allowed_ips: form.client_allowed_ips.trim() || null,
+      client_keepalive: nullableNumber(form.client_keepalive),
+      client_obf_jc: nullableNumber(form.client_obf_jc),
+      client_obf_jmin: nullableNumber(form.client_obf_jmin),
+      client_obf_jmax: nullableNumber(form.client_obf_jmax),
+      client_obf_s1: nullableNumber(form.client_obf_s1),
+      client_obf_s2: nullableNumber(form.client_obf_s2),
+      client_obf_s3: nullableNumber(form.client_obf_s3),
+      client_obf_s4: nullableNumber(form.client_obf_s4),
+      client_obf_h1: nullableNumber(form.client_obf_h1),
+      client_obf_h2: nullableNumber(form.client_obf_h2),
+      client_obf_h3: nullableNumber(form.client_obf_h3),
+      client_obf_h4: nullableNumber(form.client_obf_h4),
+    }),
+    onSuccess: (response) => {
+      setError('')
+      onSaved(response.data as Node)
+    },
+    onError: (e: unknown) => {
+      setError((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to update awg1 settings')
+    },
+  })
+
+  const f = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm((prev) => ({ ...prev, [key]: e.target.value }))
+
+  return (
+    <div className="card" style={{ marginBottom: 18 }}>
+      <div className="card-header">
+        <div className="card-title">awg1 Interface Settings</div>
+        <button className="btn btn-primary btn-sm" onClick={() => mut.mutate()} disabled={mut.isPending}>
+          {mut.isPending ? <span className="spinner" /> : 'Save'}
+        </button>
+      </div>
+      {error && <div className="error-box" style={{ marginBottom: 12 }}>{error}</div>}
+      <div className="form-row form-row-2">
+        <div className="form-group">
+          <label className="form-label">Address</label>
+          <input className="form-input mono" value={form.client_address} onChange={f('client_address')} placeholder="10.20.0.2/32" />
+        </div>
+        <div className="form-group">
+          <label className="form-label">DNS</label>
+          <input className="form-input mono" value={form.client_dns} onChange={f('client_dns')} placeholder="1.1.1.1,8.8.8.8" />
+        </div>
+      </div>
+      <div className="form-row form-row-2">
+        <div className="form-group">
+          <label className="form-label">Allowed IPs</label>
+          <input className="form-input mono" value={form.client_allowed_ips} onChange={f('client_allowed_ips')} placeholder="0.0.0.0/0" />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Persistent keepalive</label>
+          <input className="form-input mono" value={form.client_keepalive} onChange={f('client_keepalive')} placeholder="25" />
+        </div>
+      </div>
+      <div className="card-title" style={{ marginBottom: 10 }}>Obfuscation</div>
+      <div className="form-row form-row-3">
+        <div className="form-group">
+          <label className="form-label">Jc</label>
+          <input className="form-input mono" value={form.client_obf_jc} onChange={f('client_obf_jc')} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Jmin</label>
+          <input className="form-input mono" value={form.client_obf_jmin} onChange={f('client_obf_jmin')} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Jmax</label>
+          <input className="form-input mono" value={form.client_obf_jmax} onChange={f('client_obf_jmax')} />
+        </div>
+      </div>
+      <div className="form-row form-row-4">
+        <div className="form-group">
+          <label className="form-label">S1</label>
+          <input className="form-input mono" value={form.client_obf_s1} onChange={f('client_obf_s1')} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">S2</label>
+          <input className="form-input mono" value={form.client_obf_s2} onChange={f('client_obf_s2')} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">S3</label>
+          <input className="form-input mono" value={form.client_obf_s3} onChange={f('client_obf_s3')} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">S4</label>
+          <input className="form-input mono" value={form.client_obf_s4} onChange={f('client_obf_s4')} />
+        </div>
+      </div>
+      <div className="form-row form-row-4">
+        <div className="form-group">
+          <label className="form-label">H1</label>
+          <input className="form-input mono" value={form.client_obf_h1} onChange={f('client_obf_h1')} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">H2</label>
+          <input className="form-input mono" value={form.client_obf_h2} onChange={f('client_obf_h2')} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">H3</label>
+          <input className="form-input mono" value={form.client_obf_h3} onChange={f('client_obf_h3')} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">H4</label>
+          <input className="form-input mono" value={form.client_obf_h4} onChange={f('client_obf_h4')} />
+        </div>
+      </div>
+      <div className="info-box" style={{ fontSize: 12, marginTop: 12 }}>
+        These settings belong to the selected exit node. When this node becomes active, they are applied to interface awg1. If the node is already active, saving reapplies awg1 immediately.
+      </div>
+    </div>
   )
 }
 

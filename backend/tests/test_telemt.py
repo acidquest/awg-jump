@@ -44,6 +44,7 @@ async def test_get_telemt_page(client: AsyncClient, auth_headers: dict, monkeypa
     data = resp.json()
     assert data["feature_enabled"] is True
     assert data["service"]["running"] is True
+    assert data["settings"]["service_autostart"] is False
     assert data["users"][0]["username"] == "alice"
     assert data["users"][0]["address"].startswith("tg://proxy?")
 
@@ -211,3 +212,37 @@ async def test_telemt_service_action(client: AsyncClient, auth_headers: dict, mo
     data = resp.json()
     assert data["ok"] is True
     assert data["action"] == "restart"
+    assert data["service_autostart"] is True
+
+    page_resp = await client.get("/api/telemt", headers=auth_headers)
+    assert page_resp.status_code == 200, page_resp.text
+    assert page_resp.json()["settings"]["service_autostart"] is True
+
+
+async def test_telemt_stop_disables_autostart(client: AsyncClient, auth_headers: dict, monkeypatch) -> None:
+    monkeypatch.setattr(telemt_svc, "runtime_enabled", lambda: True)
+    monkeypatch.setattr(
+        telemt_svc,
+        "control_service",
+        lambda action: {
+            "enabled": True,
+            "running": False,
+            "status": "stopped",
+            "action": action,
+            "ok": True,
+            "command_output": f"{action} ok",
+        },
+    )
+    monkeypatch.setattr(telemt_svc, "get_service_status", lambda: {"enabled": True, "running": False, "status": "stopped"})
+
+    start_resp = await client.post("/api/telemt/service/start", headers=auth_headers)
+    assert start_resp.status_code == 200, start_resp.text
+    assert start_resp.json()["service_autostart"] is True
+
+    stop_resp = await client.post("/api/telemt/service/stop", headers=auth_headers)
+    assert stop_resp.status_code == 200, stop_resp.text
+    assert stop_resp.json()["service_autostart"] is False
+
+    page_resp = await client.get("/api/telemt", headers=auth_headers)
+    assert page_resp.status_code == 200, page_resp.text
+    assert page_resp.json()["settings"]["service_autostart"] is False

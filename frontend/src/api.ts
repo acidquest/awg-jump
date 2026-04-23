@@ -90,6 +90,8 @@ export const redeployNode = (id: number, data: Record<string, unknown>) =>
 export const activateNode = (id: number) => api.post(`/nodes/${id}/activate`)
 export const resetNode = (id: number) => api.post(`/nodes/${id}/reset`)
 export const checkNode = (id: number) => api.post(`/nodes/${id}/check`)
+export const getNodeFailoverSettings = () => api.get('/nodes/failover')
+export const updateNodeFailoverSettings = (enabled: boolean) => api.put('/nodes/failover', { enabled })
 export const getNodeStats = (id: number) => api.get(`/nodes/${id}/stats`)
 export const getNodePeers = (id: number) => api.get(`/nodes/${id}/peers`)
 export const createNodePeer = (id: number, data: Record<string, unknown>) => api.post(`/nodes/${id}/peers`, data)

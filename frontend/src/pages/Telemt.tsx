@@ -150,6 +150,9 @@ export default function TelemtPage() {
         <div className="info-box" style={{ marginTop: 12, fontSize: 12 }}>
           {data.service.message || 'Use the service controls to start, restart, or stop TeleMT.'}
         </div>
+        <div className="info-box" style={{ marginTop: 12, fontSize: 12 }}>
+          Auto-start after container restart: <span className="text-mono">{data.settings.service_autostart ? 'enabled' : 'disabled'}</span>
+        </div>
         {data.settings.restart_required && (
           <div className="error-box" style={{ marginTop: 12 }}>
             Config changed `server.port`. Restart the container to update Docker port publish.
@@ -216,16 +219,6 @@ export default function TelemtPage() {
             <a href={data.settings.docs_url} target="_blank" rel="noreferrer" className="text-mono" style={{ fontSize: 12 }}>
               https://github.com/telemt/telemt/tree/main/docs/Config_params
             </a>
-          </div>
-        </div>
-      </div>
-
-      <div className="section">
-        <div className="section-title">Links</div>
-        <div className="card">
-          <div className="info-box" style={{ fontSize: 12 }}>
-            Public host: <span className="text-mono">{data.settings.public_host || 'SERVER_HOST is empty'}</span><br />
-            User connection addresses are fetched from the local TeleMT API after the service starts.
           </div>
         </div>
       </div>

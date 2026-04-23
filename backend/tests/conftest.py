@@ -94,6 +94,7 @@ async def _create_test_db() -> None:
         session.add(RoutingSettings(
             id=1,
             invert_geoip=False,
+            failover_enabled=True,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
         ))

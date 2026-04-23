@@ -24,6 +24,7 @@ services:
     networks:
       - awg-net
     ports:
+      - "${TELEMT_PORT:-443}:${TELEMT_PORT:-443}/tcp"
       - "${AWG0_LISTEN_PORT:-51820}:${AWG0_LISTEN_PORT:-51820}/udp"
       - "${WG0_LISTEN_PORT:-51821}:${WG0_LISTEN_PORT:-51821}/udp"
       - "${WEB_PORT:-8080}:${WEB_PORT:-8080}/tcp"

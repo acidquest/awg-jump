@@ -2,8 +2,12 @@ from datetime import datetime, timezone
 
 import pytest
 
+from sqlalchemy import select
+
+from backend.models.interface import Interface
 from backend.models.upstream_node import NodePeer, NodeStatus, ProvisioningMode, UpstreamNode
 from backend.services.node_deployer import _get_node, _make_env_content, _make_node_server_config, deployer
+from backend.services.upstream_nodes import apply_node_to_awg1
 from backend.tests.conftest import TestSessionLocal
 
 
@@ -55,6 +59,84 @@ def test_make_env_content_uses_24_mask_for_node_interface() -> None:
 
     assert "AWG_ADDRESS=10.20.0.3/24" in env_content
     assert "AWG_ADDRESS=10.20.0.3/32" not in env_content
+
+
+@pytest.mark.asyncio
+async def test_apply_node_to_awg1_updates_interface_address_and_obfuscation(db_session, monkeypatch) -> None:
+    result = await db_session.execute(select(Interface).where(Interface.name == "awg1"))
+    awg1 = result.scalar_one()
+
+    node = UpstreamNode(
+        name="managed-node",
+        host="203.0.113.30",
+        ssh_port=22,
+        awg_port=51821,
+        provisioning_mode=ProvisioningMode.managed,
+        awg_address="10.20.0.3/32",
+        public_key="node-public-key",
+        client_address="10.20.0.22/32",
+        client_allowed_ips="0.0.0.0/0",
+        client_keepalive=33,
+        client_obf_jc=9,
+        client_obf_jmin=50,
+        client_obf_jmax=95,
+        client_obf_s1=201,
+        client_obf_s2=202,
+        client_obf_s3=203,
+        client_obf_s4=204,
+        client_obf_h1=123456781,
+        client_obf_h2=123456782,
+        client_obf_h3=123456783,
+        client_obf_h4=123456784,
+        status=NodeStatus.online,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(node)
+    await db_session.flush()
+
+    captured: dict[str, object] = {}
+
+    async def fake_apply_interface(iface, peers):
+        captured["iface"] = iface
+        captured["peers"] = peers
+
+    monkeypatch.setattr("backend.services.upstream_nodes.awg_svc.apply_interface", fake_apply_interface)
+
+    await apply_node_to_awg1(db_session, node)
+
+    assert awg1.address == "10.20.0.22/32"
+    assert awg1.endpoint == "203.0.113.30:51821"
+    assert awg1.persistent_keepalive == 33
+    assert awg1.obf_s1 == 201
+    assert awg1.obf_h4 == 123456784
+    assert len(captured["peers"]) == 1
+
+
+def test_make_node_server_config_uses_node_client_address_for_jump_peer() -> None:
+    awg1 = Interface(
+        name="awg1",
+        obf_s1=10,
+        obf_s2=20,
+        obf_s3=30,
+        obf_s4=40,
+        obf_h1=1001,
+        obf_h2=1002,
+        obf_h3=1003,
+        obf_h4=1004,
+    )
+
+    config = _make_node_server_config(
+        private_key="node-private-key",
+        awg_address="10.20.0.3/32",
+        awg_port=51821,
+        awg1_public_key="jump-public-key",
+        client_address="10.20.0.22/32",
+        awg1=awg1,
+        shared_peers=[],
+    )
+
+    assert "AllowedIPs = 10.20.0.22/32" in config
 
 
 @pytest.mark.asyncio

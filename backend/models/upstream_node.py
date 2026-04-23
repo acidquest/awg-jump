@@ -49,9 +49,21 @@ class UpstreamNode(Base):
     private_key = Column(String(64), nullable=True)   # AWG private key (хранится для redeploy)
     preshared_key = Column(String(64), nullable=True)
     raw_conf = Column(Text, nullable=True)
+    client_address = Column(String(64), nullable=True)
     client_dns = Column(String(256), nullable=True)
     client_allowed_ips = Column(String(256), nullable=True)
     client_keepalive = Column(Integer, nullable=True)
+    client_obf_jc = Column(Integer, nullable=True)
+    client_obf_jmin = Column(Integer, nullable=True)
+    client_obf_jmax = Column(Integer, nullable=True)
+    client_obf_s1 = Column(Integer, nullable=True)
+    client_obf_s2 = Column(Integer, nullable=True)
+    client_obf_s3 = Column(Integer, nullable=True)
+    client_obf_s4 = Column(Integer, nullable=True)
+    client_obf_h1 = Column(Integer, nullable=True)
+    client_obf_h2 = Column(Integer, nullable=True)
+    client_obf_h3 = Column(Integer, nullable=True)
+    client_obf_h4 = Column(Integer, nullable=True)
 
     # Статус
     status = Column(

@@ -6,7 +6,6 @@ Nodes router — управление upstream нодами.
 import asyncio
 import json
 import logging
-import subprocess
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -17,10 +16,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.config import settings
 from backend.database import AsyncSessionLocal, get_db
-from backend.models.interface import Interface
-from backend.models.peer import Peer
+from backend.models.routing_settings import RoutingSettings
 from backend.models.upstream_node import DeployLog, DeployStatus, NodePeer, NodeStatus, ProvisioningMode, UpstreamNode
 from backend.routers.auth import get_current_user
 from backend.services.conf_parser import parse_peer_conf, render_peer_conf
@@ -31,10 +28,15 @@ from backend.services.node_deployer import (
     get_deploy_queue,
 )
 import backend.services.awg as awg_svc
+from backend.services.upstream_nodes import (
+    apply_node_to_awg1,
+    assign_client_settings_from_parsed,
+    get_awg1_or_raise,
+    inherit_client_settings_from_interface,
+)
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 logger = logging.getLogger(__name__)
-_UPSTREAM_ALLOWED_IPS = settings.awg1_allowed_ips or "0.0.0.0/0"
 
 
 # ── Схемы ─────────────────────────────────────────────────────────────────
@@ -49,6 +51,21 @@ class NodeOut(BaseModel):
     awg_address: Optional[str]
     probe_ip: Optional[str]
     public_key: Optional[str]
+    client_address: Optional[str]
+    client_dns: Optional[str]
+    client_allowed_ips: Optional[str]
+    client_keepalive: Optional[int]
+    client_obf_jc: Optional[int]
+    client_obf_jmin: Optional[int]
+    client_obf_jmax: Optional[int]
+    client_obf_s1: Optional[int]
+    client_obf_s2: Optional[int]
+    client_obf_s3: Optional[int]
+    client_obf_s4: Optional[int]
+    client_obf_h1: Optional[int]
+    client_obf_h2: Optional[int]
+    client_obf_h3: Optional[int]
+    client_obf_h4: Optional[int]
     status: str
     udp_status: Optional[str] = None
     udp_detail: Optional[str] = None
@@ -118,6 +135,21 @@ class NodeUpdate(BaseModel):
     probe_ip: Optional[str] = None
     priority: Optional[int] = None
     raw_conf: Optional[str] = None
+    client_address: Optional[str] = None
+    client_dns: Optional[str] = None
+    client_allowed_ips: Optional[str] = None
+    client_keepalive: Optional[int] = None
+    client_obf_jc: Optional[int] = None
+    client_obf_jmin: Optional[int] = None
+    client_obf_jmax: Optional[int] = None
+    client_obf_s1: Optional[int] = None
+    client_obf_s2: Optional[int] = None
+    client_obf_s3: Optional[int] = None
+    client_obf_s4: Optional[int] = None
+    client_obf_h1: Optional[int] = None
+    client_obf_h2: Optional[int] = None
+    client_obf_h3: Optional[int] = None
+    client_obf_h4: Optional[int] = None
 
 
 class DeployRequest(BaseModel):
@@ -156,6 +188,14 @@ class NodePeerUpdate(BaseModel):
     enabled: Optional[bool] = None
 
 
+class FailoverSettingsOut(BaseModel):
+    enabled: bool
+
+
+class FailoverSettingsUpdate(BaseModel):
+    enabled: bool
+
+
 # ── Вспомогательные функции ───────────────────────────────────────────────
 
 def _node_to_out(node: UpstreamNode) -> NodeOut:
@@ -169,6 +209,21 @@ def _node_to_out(node: UpstreamNode) -> NodeOut:
         awg_address=node.awg_address,
         probe_ip=node.probe_ip,
         public_key=node.public_key,
+        client_address=node.client_address,
+        client_dns=node.client_dns,
+        client_allowed_ips=node.client_allowed_ips,
+        client_keepalive=node.client_keepalive,
+        client_obf_jc=node.client_obf_jc,
+        client_obf_jmin=node.client_obf_jmin,
+        client_obf_jmax=node.client_obf_jmax,
+        client_obf_s1=node.client_obf_s1,
+        client_obf_s2=node.client_obf_s2,
+        client_obf_s3=node.client_obf_s3,
+        client_obf_s4=node.client_obf_s4,
+        client_obf_h1=node.client_obf_h1,
+        client_obf_h2=node.client_obf_h2,
+        client_obf_h3=node.client_obf_h3,
+        client_obf_h4=node.client_obf_h4,
         status=node.status.value if hasattr(node.status, "value") else node.status,
         udp_status=None,
         udp_detail=None,
@@ -208,12 +263,19 @@ async def _get_node_or_404(node_id: int, session: AsyncSession) -> UpstreamNode:
     return node
 
 
-async def _get_awg1_or_500(session: AsyncSession) -> Interface:
-    result = await session.execute(select(Interface).where(Interface.name == "awg1"))
-    iface = result.scalar_one_or_none()
-    if iface is None:
-        raise HTTPException(status_code=500, detail="awg1 interface not found")
-    return iface
+async def _get_or_create_routing_settings(session: AsyncSession) -> RoutingSettings:
+    settings_row = await session.get(RoutingSettings, 1)
+    if settings_row is None:
+        settings_row = RoutingSettings(
+            id=1,
+            invert_geoip=False,
+            failover_enabled=True,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        session.add(settings_row)
+        await session.flush()
+    return settings_row
 
 
 def _node_peer_to_out(peer: NodePeer) -> NodePeerOut:
@@ -229,59 +291,6 @@ def _node_peer_to_out(peer: NodePeer) -> NodePeerOut:
         enabled=peer.enabled,
         created_at=peer.created_at,
     )
-
-
-def _derive_public_key(private_key: str) -> str:
-    proc = subprocess.run(
-        ["awg", "pubkey"],
-        input=private_key.encode(),
-        capture_output=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.decode(errors="replace") or "awg pubkey failed")
-    return proc.stdout.decode().strip()
-
-
-async def _apply_manual_node_to_awg1(session: AsyncSession, node: UpstreamNode) -> None:
-    awg1 = await _get_awg1_or_500(session)
-    awg1.private_key = node.private_key
-    awg1.public_key = _derive_public_key(node.private_key or "")
-    awg1.endpoint = f"{node.host}:{node.awg_port}"
-    awg1.allowed_ips = node.client_allowed_ips or settings.awg1_allowed_ips
-    awg1.persistent_keepalive = node.client_keepalive or settings.awg1_persistent_keepalive
-
-    parsed = parse_peer_conf(node.raw_conf or "", name=node.name)
-    for key, attr in {
-        "JC": "obf_jc",
-        "JMIN": "obf_jmin",
-        "JMAX": "obf_jmax",
-        "S1": "obf_s1",
-        "S2": "obf_s2",
-        "S3": "obf_s3",
-        "S4": "obf_s4",
-        "H1": "obf_h1",
-        "H2": "obf_h2",
-        "H3": "obf_h3",
-        "H4": "obf_h4",
-    }.items():
-        if key in parsed.obfuscation:
-            setattr(awg1, attr, parsed.obfuscation[key])
-
-    session.add(awg1)
-    await session.flush()
-
-    synthetic_peer = Peer(
-        interface_id=awg1.id,
-        name=node.name,
-        public_key=node.public_key or "",
-        preshared_key=node.preshared_key,
-        allowed_ips=node.client_allowed_ips or settings.awg1_allowed_ips,
-        persistent_keepalive=node.client_keepalive or settings.awg1_persistent_keepalive,
-        enabled=True,
-    )
-    await awg_svc.apply_interface(awg1, [synthetic_peer])
-
 
 async def _create_deploy_log(node_id: int) -> int:
     """Создаёт запись DeployLog и возвращает её id."""
@@ -342,12 +351,36 @@ async def list_nodes(
     return items
 
 
+@router.get("/failover", response_model=FailoverSettingsOut)
+async def get_failover_settings(
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+) -> FailoverSettingsOut:
+    settings_row = await _get_or_create_routing_settings(session)
+    return FailoverSettingsOut(enabled=settings_row.failover_enabled)
+
+
+@router.put("/failover", response_model=FailoverSettingsOut)
+async def update_failover_settings(
+    body: FailoverSettingsUpdate,
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+) -> FailoverSettingsOut:
+    settings_row = await _get_or_create_routing_settings(session)
+    settings_row.failover_enabled = body.enabled
+    settings_row.updated_at = datetime.now(timezone.utc)
+    session.add(settings_row)
+    await session.flush()
+    return FailoverSettingsOut(enabled=settings_row.failover_enabled)
+
+
 @router.post("", response_model=NodeOut, status_code=201)
 async def create_node(
     body: NodeCreate,
     session: AsyncSession = Depends(get_db),
     _user: str = Depends(get_current_user),
 ) -> NodeOut:
+    awg1 = await get_awg1_or_raise(session)
     try:
         provisioning_mode = ProvisioningMode(body.provisioning_mode)
     except ValueError as exc:
@@ -373,15 +406,16 @@ async def create_node(
         private_key=parsed.private_key if parsed else None,
         preshared_key=parsed.preshared_key if parsed else None,
         raw_conf=parsed.raw_conf if parsed else body.conf_text,
-        client_dns=",".join(parsed.dns_servers) if parsed else None,
-        client_allowed_ips=",".join(parsed.allowed_ips) if parsed else None,
-        client_keepalive=parsed.persistent_keepalive if parsed else None,
         priority=body.priority,
         status=NodeStatus.online if parsed else NodeStatus.pending,
         is_active=False,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
     )
+    if parsed:
+        assign_client_settings_from_parsed(node, parsed)
+    else:
+        inherit_client_settings_from_interface(node, awg1)
     session.add(node)
     await session.flush()
     await session.refresh(node)
@@ -517,9 +551,7 @@ async def update_node(
         node.private_key = parsed.private_key
         node.preshared_key = parsed.preshared_key
         node.raw_conf = parsed.raw_conf
-        node.client_dns = ",".join(parsed.dns_servers)
-        node.client_allowed_ips = ",".join(parsed.allowed_ips)
-        node.client_keepalive = parsed.persistent_keepalive
+        assign_client_settings_from_parsed(node, parsed)
     for field, value in body.model_dump(exclude_none=True).items():
         if field == "raw_conf":
             continue
@@ -529,6 +561,8 @@ async def update_node(
     node.updated_at = datetime.now(timezone.utc)
     session.add(node)
     await session.flush()
+    if node.is_active and node.public_key:
+        await apply_node_to_awg1(session, node)
     return _node_to_out(node)
 
 
@@ -579,34 +613,13 @@ async def reset_node(
     Используется для восстановления ноды после offline без повторного деплоя.
     """
     node = await _get_node_or_404(node_id, session)
-    if node.provisioning_mode == ProvisioningMode.manual:
-        await _apply_manual_node_to_awg1(session, node)
-        node.status = NodeStatus.online
-        node.updated_at = datetime.now(timezone.utc)
-        session.add(node)
-        await session.flush()
-        return _node_to_out(node)
-
-    if not node.public_key or not node.awg_address:
+    if not node.public_key:
         raise HTTPException(
             status_code=400,
             detail="Node has no AWG keypair — deploy first",
         )
 
-    from backend.services.awg import _run_cmd
-
-    # Пере-добавить peer в awg1 (может не существовать если awg1 не был запущен при деплое)
-    rc, out = _run_cmd([
-        "awg", "set", "awg1",
-        "peer", node.public_key,
-        "endpoint", f"{node.host}:{node.awg_port}",
-        "allowed-ips", _UPSTREAM_ALLOWED_IPS,
-        "persistent-keepalive", "25",
-    ])
-    if rc != 0:
-        logger.warning("[reset_node] awg set awg1 peer rc=%d: %s", rc, out)
-
-    # Сбросить статус
+    await apply_node_to_awg1(session, node)
     node.status = NodeStatus.online
     node.updated_at = datetime.now(timezone.utc)
     session.add(node)
@@ -616,7 +629,7 @@ async def reset_node(
     from backend.services.node_deployer import _health_fail_counts
     _health_fail_counts.pop(node_id, None)
 
-    if node.is_active:
+    if node.is_active and node.awg_address:
         from backend.services.routing import update_upstream_host_route, update_vpn_route
         update_vpn_route("awg1")
         update_upstream_host_route(node.awg_address)
@@ -651,27 +664,12 @@ async def activate_node(
     session.add(node)
     await session.flush()
 
-    # Переключить awg1 endpoint
-    if node.provisioning_mode == ProvisioningMode.manual and node.raw_conf:
-        await _apply_manual_node_to_awg1(session, node)
+    if node.public_key:
+        await apply_node_to_awg1(session, node)
         from backend.services.routing import update_upstream_host_route, update_vpn_route
         update_vpn_route("awg1")
         if node.awg_address:
             update_upstream_host_route(node.awg_address)
-    elif node.public_key and node.awg_address:
-        from backend.services.awg import _run_cmd
-        rc, out = _run_cmd([
-            "awg", "set", "awg1",
-            "peer", node.public_key,
-            "endpoint", f"{node.host}:{node.awg_port}",
-            "allowed-ips", _UPSTREAM_ALLOWED_IPS,
-            "persistent-keepalive", "25",
-        ])
-        if rc != 0:
-            logger.warning("[activate_node] awg set awg1 peer failed: %s", out)
-        from backend.services.routing import update_upstream_host_route, update_vpn_route
-        update_vpn_route("awg1")
-        update_upstream_host_route(node.awg_address)
 
     return _node_to_out(node)
 
@@ -715,6 +713,21 @@ async def get_node_stats(
         "last_seen": node.last_seen,
         "last_deploy": node.last_deploy,
         "provisioning_mode": node.provisioning_mode.value if hasattr(node.provisioning_mode, "value") else node.provisioning_mode,
+        "client_address": node.client_address,
+        "client_dns": node.client_dns,
+        "client_allowed_ips": node.client_allowed_ips,
+        "client_keepalive": node.client_keepalive,
+        "client_obf_jc": node.client_obf_jc,
+        "client_obf_jmin": node.client_obf_jmin,
+        "client_obf_jmax": node.client_obf_jmax,
+        "client_obf_s1": node.client_obf_s1,
+        "client_obf_s2": node.client_obf_s2,
+        "client_obf_s3": node.client_obf_s3,
+        "client_obf_s4": node.client_obf_s4,
+        "client_obf_h1": node.client_obf_h1,
+        "client_obf_h2": node.client_obf_h2,
+        "client_obf_h3": node.client_obf_h3,
+        "client_obf_h4": node.client_obf_h4,
         "shared_peers": [_node_peer_to_out(peer).model_dump() for peer in node.shared_peers],
         "deploy_logs": [log.model_dump() for log in logs],
     }
@@ -816,7 +829,7 @@ async def export_node_peer_config(
     if node.provisioning_mode != ProvisioningMode.managed:
         raise HTTPException(status_code=400, detail="Only managed nodes support shared peers")
     peer = await _get_node_peer_or_404(node_id, peer_id, session)
-    awg1 = await _get_awg1_or_500(session)
+    awg1 = await get_awg1_or_raise(session)
     config = render_peer_conf(
         private_key=peer.private_key,
         tunnel_address=peer.tunnel_address,
@@ -824,14 +837,14 @@ async def export_node_peer_config(
         obfuscation={
             key: value
             for key, value in {
-                "S1": awg1.obf_s1,
-                "S2": awg1.obf_s2,
-                "S3": awg1.obf_s3,
-                "S4": awg1.obf_s4,
-                "H1": awg1.obf_h1,
-                "H2": awg1.obf_h2,
-                "H3": awg1.obf_h3,
-                "H4": awg1.obf_h4,
+                "S1": node.client_obf_s1 if node.client_obf_s1 is not None else awg1.obf_s1,
+                "S2": node.client_obf_s2 if node.client_obf_s2 is not None else awg1.obf_s2,
+                "S3": node.client_obf_s3 if node.client_obf_s3 is not None else awg1.obf_s3,
+                "S4": node.client_obf_s4 if node.client_obf_s4 is not None else awg1.obf_s4,
+                "H1": node.client_obf_h1 if node.client_obf_h1 is not None else awg1.obf_h1,
+                "H2": node.client_obf_h2 if node.client_obf_h2 is not None else awg1.obf_h2,
+                "H3": node.client_obf_h3 if node.client_obf_h3 is not None else awg1.obf_h3,
+                "H4": node.client_obf_h4 if node.client_obf_h4 is not None else awg1.obf_h4,
             }.items()
             if value is not None
         },
