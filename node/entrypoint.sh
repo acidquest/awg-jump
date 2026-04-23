@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 echo "[awg-node] Starting AmneziaWG node..."
 
@@ -15,6 +15,29 @@ update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || tr
 : "${AWG_PRIVATE_KEY:?AWG_PRIVATE_KEY is required}"
 : "${AWG_ADDRESS:?AWG_ADDRESS is required}"
 AWG_CONFIG_PATH="${AWG_CONFIG_PATH:-/etc/awg-node/awg0.conf}"
+CONFIG_FILE=""
+DEFAULT_IFACE=""
+
+cleanup() {
+    if [ -n "${CONFIG_FILE:-}" ] && [ -f "${CONFIG_FILE:-}" ]; then
+        rm -f "$CONFIG_FILE"
+    fi
+
+    if [ -n "${DEFAULT_IFACE:-}" ]; then
+        iptables -t nat -C POSTROUTING -o "${DEFAULT_IFACE}" -j MASQUERADE 2>/dev/null && \
+        iptables -t nat -D POSTROUTING -o "${DEFAULT_IFACE}" -j MASQUERADE || true
+        iptables -C FORWARD -i awg0 -o "${DEFAULT_IFACE}" -j ACCEPT 2>/dev/null && \
+        iptables -D FORWARD -i awg0 -o "${DEFAULT_IFACE}" -j ACCEPT || true
+        iptables -C FORWARD -i "${DEFAULT_IFACE}" -o awg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null && \
+        iptables -D FORWARD -i "${DEFAULT_IFACE}" -o awg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT || true
+        iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -i awg0 -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null && \
+        iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -i awg0 -j TCPMSS --clamp-mss-to-pmtu || true
+    fi
+
+    ip link show awg0 >/dev/null 2>&1 && ip link delete awg0 >/dev/null 2>&1 || true
+}
+
+trap cleanup EXIT INT TERM
 
 # Определить режим: kernel module или userspace amneziawg-go
 # Проверяем строго amneziawg — стандартный wireguard не поддерживает обфускацию
@@ -29,6 +52,11 @@ else
 fi
 
 AWG_PID=0
+
+if ip link show awg0 >/dev/null 2>&1; then
+    echo "[awg-node] Removing stale awg0 before startup..."
+    ip link delete awg0 || { echo "[awg-node] ERROR: failed to delete stale awg0"; exit 1; }
+fi
 
 if [ "$USE_KERNEL" = "1" ]; then
     # ── Kernel mode: создать интерфейс через ip link ──────────────────────
@@ -114,9 +142,9 @@ fi
 # Применить конфиг (awg поддерживает обфускацию-параметры: S1/S2/H1/H2 и т.д.)
 echo "[awg-node] Applying AmneziaWG config..."
 awg setconf awg0 "$CONFIG_FILE"
-rm -f "$CONFIG_FILE"
 
 # Настроить сетевой интерфейс
+ip addr flush dev awg0
 ip addr add "${AWG_ADDRESS}" dev awg0
 ip link set awg0 up
 ip link set dev awg0 mtu 1300
@@ -149,6 +177,7 @@ if [ -z "$DEFAULT_IFACE" ]; then
     echo "[awg-node] WARNING: could not detect default interface, using eth0"
 fi
 echo "[awg-node] NAT MASQUERADE on ${DEFAULT_IFACE}"
+iptables -t nat -C POSTROUTING -o "${DEFAULT_IFACE}" -j MASQUERADE 2>/dev/null || \
 iptables -t nat -A POSTROUTING -o "${DEFAULT_IFACE}" -j MASQUERADE
 
 # Разрешить форвардинг трафика между awg0 и uplink.
@@ -161,6 +190,9 @@ iptables -C FORWARD -i "${DEFAULT_IFACE}" -o awg0 -m conntrack --ctstate RELATED
 iptables -A FORWARD -i "${DEFAULT_IFACE}" -o awg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -i awg0 -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
 iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -i awg0 -j TCPMSS --clamp-mss-to-pmtu
+
+rm -f "$CONFIG_FILE"
+CONFIG_FILE=""
 
 echo "[awg-node] Node is ready. Listening on UDP port ${AWG_LISTEN_PORT}"
 

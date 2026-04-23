@@ -3,7 +3,8 @@ from datetime import datetime, timezone
 import pytest
 
 from backend.models.upstream_node import NodePeer, NodeStatus, ProvisioningMode, UpstreamNode
-from backend.services.node_deployer import _get_node, _make_env_content, _make_node_server_config
+from backend.services.node_deployer import _get_node, _make_env_content, _make_node_server_config, deployer
+from backend.tests.conftest import TestSessionLocal
 
 
 @pytest.mark.asyncio
@@ -54,3 +55,84 @@ def test_make_env_content_uses_24_mask_for_node_interface() -> None:
 
     assert "AWG_ADDRESS=10.20.0.3/24" in env_content
     assert "AWG_ADDRESS=10.20.0.3/32" not in env_content
+
+
+@pytest.mark.asyncio
+async def test_check_health_for_active_node_uses_explicit_probe_ip(monkeypatch) -> None:
+    async with TestSessionLocal() as session:
+        node = UpstreamNode(
+            name="active-node",
+            host="203.0.113.10",
+            ssh_port=22,
+            awg_port=51821,
+            provisioning_mode=ProvisioningMode.managed,
+            awg_address="10.20.0.3/32",
+            probe_ip="10.20.0.1",
+            private_key="node-private-key",
+            public_key="node-public-key",
+            status=NodeStatus.online,
+            is_active=True,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        session.add(node)
+        await session.commit()
+        node_id = node.id
+
+    monkeypatch.setattr("backend.services.node_deployer.AsyncSessionLocal", TestSessionLocal)
+    monkeypatch.setattr("backend.services.node_deployer._measure_ping_latency", lambda target: (target == "10.20.0.1", 12.5))
+    monkeypatch.setattr(
+        "backend.services.node_deployer._run_cmd",
+        lambda args: (0, "node-public-key\tpsk\t203.0.113.10:51821\t0.0.0.0/0\t1\t100\t200\t25\n"),
+    )
+
+    result = await deployer.check_health(node_id)
+
+    assert result["alive"] is True
+    assert result["latency_ms"] == 12.5
+    assert result["probe_ip"] == "10.20.0.1"
+
+    async with TestSessionLocal() as session:
+        refreshed = await session.get(UpstreamNode, node_id)
+        assert refreshed is not None
+        assert refreshed.latency_ms == 12.5
+        assert refreshed.rx_bytes == 100
+        assert refreshed.tx_bytes == 200
+
+
+@pytest.mark.asyncio
+async def test_check_health_for_inactive_node_uses_udp_only(monkeypatch) -> None:
+    async with TestSessionLocal() as session:
+        node = UpstreamNode(
+            name="inactive-node",
+            host="203.0.113.20",
+            ssh_port=22,
+            awg_port=51821,
+            provisioning_mode=ProvisioningMode.managed,
+            awg_address="10.20.0.4/32",
+            private_key="node-private-key",
+            public_key="node-public-key-2",
+            status=NodeStatus.degraded,
+            is_active=False,
+            latency_ms=55.0,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        session.add(node)
+        await session.commit()
+        node_id = node.id
+
+    monkeypatch.setattr("backend.services.node_deployer.AsyncSessionLocal", TestSessionLocal)
+    monkeypatch.setattr("backend.services.node_deployer._probe_udp_port", lambda host, port: (True, "no ICMP error received"))
+
+    result = await deployer.check_health(node_id)
+
+    assert result["alive"] is True
+    assert result["udp_status"] == "online"
+    assert result["latency_ms"] is None
+
+    async with TestSessionLocal() as session:
+        refreshed = await session.get(UpstreamNode, node_id)
+        assert refreshed is not None
+        assert refreshed.status == NodeStatus.online
+        assert refreshed.latency_ms is None

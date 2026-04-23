@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -62,6 +62,57 @@ class InterfaceUpdate(BaseModel):
     allowed_ips: Optional[str] = None
     persistent_keepalive: Optional[int] = None
     enabled: Optional[bool] = None
+    obf_jc: Optional[int] = None
+    obf_jmin: Optional[int] = None
+    obf_jmax: Optional[int] = None
+    obf_s1: Optional[int] = None
+    obf_s2: Optional[int] = None
+    obf_s3: Optional[int] = None
+    obf_s4: Optional[int] = None
+    obf_h1: Optional[int] = None
+    obf_h2: Optional[int] = None
+    obf_h3: Optional[int] = None
+    obf_h4: Optional[int] = None
+
+    @field_validator("obf_jc")
+    @classmethod
+    def validate_obf_jc(cls, value: Optional[int]) -> Optional[int]:
+        if value is not None and not 1 <= value <= 128:
+            raise ValueError("Jc must be between 1 and 128")
+        return value
+
+    @field_validator("obf_jmin", "obf_jmax")
+    @classmethod
+    def validate_obf_junk_size(cls, value: Optional[int]) -> Optional[int]:
+        if value is not None and not 1 <= value < 1280:
+            raise ValueError("Jmin and Jmax must be between 1 and 1279")
+        return value
+
+    @field_validator("obf_s1", "obf_s2", "obf_s3", "obf_s4")
+    @classmethod
+    def validate_obf_padding(cls, value: Optional[int]) -> Optional[int]:
+        if value is not None and not 0 <= value <= 1280:
+            raise ValueError("S1-S4 must be between 0 and 1280")
+        return value
+
+    @field_validator("obf_h1", "obf_h2", "obf_h3", "obf_h4")
+    @classmethod
+    def validate_obf_header(cls, value: Optional[int]) -> Optional[int]:
+        if value is not None and not 0 <= value <= 0xFFFFFFFF:
+            raise ValueError("H1-H4 must be valid uint32 values")
+        return value
+
+    @model_validator(mode="after")
+    def validate_obf_ranges(self) -> "InterfaceUpdate":
+        if self.obf_jmin is not None and self.obf_jmax is not None and self.obf_jmin > self.obf_jmax:
+            raise ValueError("Jmin must be less than or equal to Jmax")
+        headers = [value for value in (self.obf_h1, self.obf_h2, self.obf_h3, self.obf_h4) if value is not None]
+        reserved = {0, 1, 2, 3, 4}
+        if any(value in reserved for value in headers):
+            raise ValueError("H1-H4 must not be 0, 1, 2, 3 or 4")
+        if len(headers) != len(set(headers)):
+            raise ValueError("H1-H4 must be unique")
+        return self
 
 
 class InterfacePrivateKeyIn(BaseModel):
@@ -146,6 +197,21 @@ async def update_interface(
     if iface.name not in awg_svc.visible_interface_names():
         raise HTTPException(status_code=404, detail="Interface not found")
     update_fields = body.model_fields_set
+    obf_fields = {
+        "obf_jc",
+        "obf_jmin",
+        "obf_jmax",
+        "obf_s1",
+        "obf_s2",
+        "obf_s3",
+        "obf_s4",
+        "obf_h1",
+        "obf_h2",
+        "obf_h3",
+        "obf_h4",
+    }
+    if obf_fields & update_fields and iface.protocol == InterfaceProtocol.wg:
+        raise HTTPException(status_code=400, detail="Obfuscation is available only for AWG interfaces")
     if "private_key" in update_fields and body.private_key:
         try:
             iface.private_key = body.private_key
@@ -161,6 +227,8 @@ async def update_interface(
         if field == "private_key":
             continue
         setattr(iface, field, value)
+    if obf_fields & update_fields:
+        iface.obf_generated_at = datetime.now(timezone.utc)
     iface.updated_at = datetime.now(timezone.utc)
     session.add(iface)
     await session.flush()

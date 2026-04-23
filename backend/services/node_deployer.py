@@ -8,6 +8,7 @@ import io
 import ipaddress
 import json
 import logging
+import socket
 import time
 import tarfile
 from datetime import datetime, timezone
@@ -166,13 +167,6 @@ def _make_compose_content(awg_port: int) -> str:
     )
 
 
-def _get_latency_target(host: str, awg_address: Optional[str]) -> str:
-    """Prefer the internal AWG address for RTT checks; fall back to the external host."""
-    if awg_address:
-        return awg_address.split("/", 1)[0]
-    return host
-
-
 def _measure_ping_latency(target: str) -> tuple[bool, Optional[float]]:
     """Returns ICMP reachability and coarse RTT based on wall clock timing."""
     t0 = time.monotonic()
@@ -183,6 +177,59 @@ def _measure_ping_latency(target: str) -> tuple[bool, Optional[float]]:
     ])
     latency = (time.monotonic() - t0) * 1000
     return rc_ping == 0, latency if rc_ping == 0 else None
+
+
+def _probe_udp_port(host: str, port: int) -> tuple[bool, str]:
+    """
+    Best-effort UDP availability probe.
+
+    UDP does not provide a reliable connect handshake, so we treat the absence
+    of an immediate ICMP port-unreachable error as "online".
+    """
+    try:
+        addrinfo = socket.getaddrinfo(host, port, type=socket.SOCK_DGRAM)
+    except OSError as exc:
+        return False, f"dns_error: {exc}"
+
+    last_error = "udp probe failed"
+    for family, socktype, proto, _canonname, sockaddr in addrinfo:
+        sock = socket.socket(family, socktype, proto)
+        try:
+            sock.settimeout(float(settings.node_health_check_timeout))
+            try:
+                sock.setsockopt(
+                    socket.SOL_SOCKET,
+                    socket.SO_BINDTODEVICE,
+                    settings.physical_iface.encode() + b"\0",
+                )
+            except OSError as exc:
+                logger.warning(
+                    "[health] failed to bind UDP probe to iface=%s for %s:%s: %s",
+                    settings.physical_iface,
+                    host,
+                    port,
+                    exc,
+                )
+            sock.connect(sockaddr)
+            sock.send(b"\0")
+            try:
+                sock.recv(1)
+                return True, f"udp response received via {settings.physical_iface}"
+            except socket.timeout:
+                return True, f"no ICMP error received via {settings.physical_iface}"
+            except ConnectionRefusedError:
+                last_error = "connection refused"
+            except OSError as exc:
+                if exc.errno == 111:
+                    last_error = "connection refused"
+                else:
+                    last_error = str(exc)
+        except OSError as exc:
+            last_error = str(exc)
+        finally:
+            sock.close()
+
+    return False, last_error
 
 
 async def _get_node(node_id: int, session: AsyncSession) -> UpstreamNode:
@@ -225,8 +272,23 @@ async def _finish_log(log_id: int, status: DeployStatus) -> None:
 # ── NodeDeployer ──────────────────────────────────────────────────────────
 
 class NodeDeployer:
-    DEPLOY_TOTAL = 15
-    REDEPLOY_TOTAL = 6
+    DEPLOY_TOTAL = 16
+    REDEPLOY_TOTAL = 7
+
+    @staticmethod
+    async def _cleanup_remote_awg_node(conn: asyncssh.SSHClientConnection) -> None:
+        """
+        Best-effort cleanup before deploy/redeploy.
+
+        awg0 is created in host network namespace, so after a crashed container it
+        can remain on the host and break the next startup with "File exists".
+        """
+        await conn.run(
+            "docker-compose -f /opt/awg-node/docker-compose.yml down --remove-orphans",
+            check=False,
+        )
+        await conn.run("docker rm -f awg-node 2>/dev/null || true", check=False)
+        await conn.run("ip link show awg0 >/dev/null 2>&1 && ip link delete awg0 || true", check=False)
 
     # ── Deploy ────────────────────────────────────────────────────────────
 
@@ -430,6 +492,10 @@ class NodeDeployer:
                     "[ -c /dev/net/tun ] || (mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 666 /dev/net/tun)",
                     check=False,
                 )
+
+                # ── Шаг 11.5: зачистить предыдущий контейнер/интерфейс ──
+                await emit("Cleaning up previous awg-node state...")
+                await self._cleanup_remote_awg_node(conn)
 
                 # ── Шаг 12 (бывший 11): docker-compose up ────────────────
                 await emit("Starting awg-node container...")
@@ -645,6 +711,8 @@ class NodeDeployer:
                     "[ -c /dev/net/tun ] || (mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 666 /dev/net/tun)",
                     check=False,
                 )
+                await emit("Cleaning up previous awg-node state...")
+                await self._cleanup_remote_awg_node(conn)
                 await emit("Recreating container...")
                 res = await conn.run(
                     "docker-compose -f /opt/awg-node/docker-compose.yml up -d --force-recreate",
@@ -699,7 +767,7 @@ class NodeDeployer:
         async with AsyncSessionLocal() as session:
             node = await _get_node(node_id, session)
             host = node.host
-            awg_address = node.awg_address
+            probe_ip = node.probe_ip
             awg_port = node.awg_port
             is_active = node.is_active
             public_key = node.public_key
@@ -717,11 +785,12 @@ class NodeDeployer:
                  ).total_seconds() < _GRACE_PERIOD_SEC
         )
 
-        latency_target = _get_latency_target(host, awg_address)
-        ping_alive, ping_latency = _measure_ping_latency(latency_target)
-        result["latency_ms"] = ping_latency
-
         if is_active and public_key:
+            ping_alive = False
+            ping_latency = None
+            if probe_ip:
+                ping_alive, ping_latency = _measure_ping_latency(probe_ip)
+                result["latency_ms"] = ping_latency
             rc, output = _run_cmd(["awg", "show", "awg1", "dump"])
             if rc == 0:
                 now_ts = int(time.time())
@@ -741,6 +810,7 @@ class NodeDeployer:
                     # В grace period считаем живой даже без handshake.
                     # ICMP RTT сохраняем отдельно как latency_ms.
                     result["alive"] = age < 180 or ping_alive or in_grace
+                    result["probe_ip"] = probe_ip
                     result["handshake_age_sec"] = age
                     result["rx_bytes"] = rx
                     result["tx_bytes"] = tx
@@ -767,6 +837,7 @@ class NodeDeployer:
                         node_id,
                     )
                     result["alive"] = ping_alive or in_grace
+                    result["probe_ip"] = probe_ip
                     async with AsyncSessionLocal() as session:
                         node_obj = await _get_node(node_id, session)
                         node_obj.latency_ms = ping_latency
@@ -783,6 +854,7 @@ class NodeDeployer:
                 # awg show не работает — может awg1 упал
                 logger.warning("[health] awg show awg1 dump failed (rc=%d)", rc)
                 result["alive"] = ping_alive or in_grace
+                result["probe_ip"] = probe_ip
                 async with AsyncSessionLocal() as session:
                     node_obj = await _get_node(node_id, session)
                     node_obj.latency_ms = ping_latency
@@ -796,22 +868,21 @@ class NodeDeployer:
                     node_obj.updated_at = datetime.now(timezone.utc)
                     await session.commit()
         else:
-            result["alive"] = ping_alive or in_grace
+            udp_alive, udp_detail = _probe_udp_port(host, awg_port)
+            result["alive"] = udp_alive
+            result["udp_status"] = "online" if udp_alive else "offline"
+            result["udp_detail"] = udp_detail
 
-            if result["alive"]:
-                async with AsyncSessionLocal() as session:
-                    node_obj = await _get_node(node_id, session)
-                    node_obj.latency_ms = ping_latency
+            async with AsyncSessionLocal() as session:
+                node_obj = await _get_node(node_id, session)
+                node_obj.latency_ms = None
+                node_obj.updated_at = datetime.now(timezone.utc)
+                if udp_alive:
                     node_obj.last_seen = datetime.now(timezone.utc)
-                    node_obj.updated_at = datetime.now(timezone.utc)
-                    await session.commit()
-            else:
-                async with AsyncSessionLocal() as session:
-                    node_obj = await _get_node(node_id, session)
-                    node_obj.latency_ms = None
+                    node_obj.status = NodeStatus.online
+                else:
                     node_obj.status = NodeStatus.offline
-                    node_obj.updated_at = datetime.now(timezone.utc)
-                    await session.commit()
+                await session.commit()
 
         return result
 

@@ -44,6 +44,7 @@ class UpstreamNode(Base):
 
     # AWG параметры ноды
     awg_address = Column(String(64), nullable=True)   # 10.20.0.x/32, заполняется при деплое
+    probe_ip = Column(String(64), nullable=True)
     public_key = Column(String(64), nullable=True)    # AWG pubkey, заполняется при деплое
     private_key = Column(String(64), nullable=True)   # AWG private key (хранится для redeploy)
     preshared_key = Column(String(64), nullable=True)

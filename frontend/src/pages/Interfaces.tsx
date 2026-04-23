@@ -229,6 +229,17 @@ function EditModal({ iface, onClose, onSaved }: { iface: Interface; onClose: () 
     private_key: '',
     public_key: '',
     enabled: false,
+    obf_jc: '',
+    obf_jmin: '',
+    obf_jmax: '',
+    obf_s1: '',
+    obf_s2: '',
+    obf_s3: '',
+    obf_s4: '',
+    obf_h1: '',
+    obf_h2: '',
+    obf_h3: '',
+    obf_h4: '',
   })
   const [error, setError] = useState('')
   const [keyError, setKeyError] = useState('')
@@ -247,6 +258,17 @@ function EditModal({ iface, onClose, onSaved }: { iface: Interface; onClose: () 
       private_key: detail.private_key ?? '',
       public_key: detail.public_key ?? '',
       enabled: detail.enabled,
+      obf_jc: detail.obf_jc != null ? String(detail.obf_jc) : '',
+      obf_jmin: detail.obf_jmin != null ? String(detail.obf_jmin) : '',
+      obf_jmax: detail.obf_jmax != null ? String(detail.obf_jmax) : '',
+      obf_s1: detail.obf_s1 != null ? String(detail.obf_s1) : '',
+      obf_s2: detail.obf_s2 != null ? String(detail.obf_s2) : '',
+      obf_s3: detail.obf_s3 != null ? String(detail.obf_s3) : '',
+      obf_s4: detail.obf_s4 != null ? String(detail.obf_s4) : '',
+      obf_h1: detail.obf_h1 != null ? String(detail.obf_h1) : '',
+      obf_h2: detail.obf_h2 != null ? String(detail.obf_h2) : '',
+      obf_h3: detail.obf_h3 != null ? String(detail.obf_h3) : '',
+      obf_h4: detail.obf_h4 != null ? String(detail.obf_h4) : '',
     })
   }, [detail])
 
@@ -294,6 +316,17 @@ function EditModal({ iface, onClose, onSaved }: { iface: Interface; onClose: () 
       persistent_keepalive: form.persistent_keepalive ? Number(form.persistent_keepalive) : undefined,
       private_key: form.private_key.trim() || undefined,
       enabled: form.enabled,
+      obf_jc: form.obf_jc ? Number(form.obf_jc) : undefined,
+      obf_jmin: form.obf_jmin ? Number(form.obf_jmin) : undefined,
+      obf_jmax: form.obf_jmax ? Number(form.obf_jmax) : undefined,
+      obf_s1: form.obf_s1 ? Number(form.obf_s1) : undefined,
+      obf_s2: form.obf_s2 ? Number(form.obf_s2) : undefined,
+      obf_s3: form.obf_s3 ? Number(form.obf_s3) : undefined,
+      obf_s4: form.obf_s4 ? Number(form.obf_s4) : undefined,
+      obf_h1: form.obf_h1 ? Number(form.obf_h1) : undefined,
+      obf_h2: form.obf_h2 ? Number(form.obf_h2) : undefined,
+      obf_h3: form.obf_h3 ? Number(form.obf_h3) : undefined,
+      obf_h4: form.obf_h4 ? Number(form.obf_h4) : undefined,
     }),
     onSuccess: onSaved,
     onError: (e: unknown) => {
@@ -355,6 +388,40 @@ function EditModal({ iface, onClose, onSaved }: { iface: Interface; onClose: () 
           <label className="form-label">Allowed IPs</label>
           <input className="form-input mono" value={form.allowed_ips} onChange={f('allowed_ips')} placeholder="0.0.0.0/0" />
         </div>
+      )}
+      {iface.protocol === 'awg' && (
+        <>
+          <div className="info-box" style={{ fontSize: 12 }}>
+            Obfuscation parameters must match on both ends of the AWG tunnel. For server interfaces, `Jc`, `Jmin` and `Jmax`
+            are used in generated client configs.
+          </div>
+          <div className="form-group">
+            <label className="form-label">Obfuscation: junk packets</label>
+            <div className="form-row form-row-3">
+              <input className="form-input mono" value={form.obf_jc} onChange={f('obf_jc')} placeholder="Jc" />
+              <input className="form-input mono" value={form.obf_jmin} onChange={f('obf_jmin')} placeholder="Jmin" />
+              <input className="form-input mono" value={form.obf_jmax} onChange={f('obf_jmax')} placeholder="Jmax" />
+            </div>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Obfuscation: padding</label>
+            <div className="form-row form-row-2">
+              <input className="form-input mono" value={form.obf_s1} onChange={f('obf_s1')} placeholder="S1" />
+              <input className="form-input mono" value={form.obf_s2} onChange={f('obf_s2')} placeholder="S2" />
+              <input className="form-input mono" value={form.obf_s3} onChange={f('obf_s3')} placeholder="S3" />
+              <input className="form-input mono" value={form.obf_s4} onChange={f('obf_s4')} placeholder="S4" />
+            </div>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Obfuscation: headers</label>
+            <div className="form-row form-row-2">
+              <input className="form-input mono" value={form.obf_h1} onChange={f('obf_h1')} placeholder="H1" />
+              <input className="form-input mono" value={form.obf_h2} onChange={f('obf_h2')} placeholder="H2" />
+              <input className="form-input mono" value={form.obf_h3} onChange={f('obf_h3')} placeholder="H3" />
+              <input className="form-input mono" value={form.obf_h4} onChange={f('obf_h4')} placeholder="H4" />
+            </div>
+          </div>
+        </>
       )}
       <div className="form-group">
         <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>

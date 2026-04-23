@@ -136,6 +136,8 @@ async def _ensure_sqlite_columns() -> None:
             await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_allowed_ips VARCHAR(256)"))
         if "client_keepalive" not in node_columns:
             await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_keepalive INTEGER"))
+        if "probe_ip" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN probe_ip VARCHAR(64)"))
 
         result = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='node_peers'"))
         if result.first() is None:

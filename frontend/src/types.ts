@@ -63,8 +63,11 @@ export interface Node {
   awg_port: number
   provisioning_mode: 'managed' | 'manual'
   awg_address: string | null
+  probe_ip: string | null
   public_key: string | null
   status: NodeStatus
+  udp_status?: string | null
+  udp_detail?: string | null
   is_active: boolean
   priority: number
   last_seen: string | null

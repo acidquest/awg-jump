@@ -47,8 +47,11 @@ class NodeOut(BaseModel):
     awg_port: int
     provisioning_mode: str
     awg_address: Optional[str]
+    probe_ip: Optional[str]
     public_key: Optional[str]
     status: str
+    udp_status: Optional[str] = None
+    udp_detail: Optional[str] = None
     is_active: bool
     priority: int
     last_seen: Optional[datetime]
@@ -100,6 +103,7 @@ class NodeCreate(BaseModel):
     ssh_port: int = 22
     awg_port: int = 51821
     awg_address: Optional[str] = None  # если None — выделяется автоматически при деплое
+    probe_ip: Optional[str] = None
     priority: int = 100
     provisioning_mode: str = ProvisioningMode.managed.value
     conf_text: Optional[str] = None
@@ -111,6 +115,7 @@ class NodeUpdate(BaseModel):
     ssh_port: Optional[int] = None
     awg_port: Optional[int] = None
     awg_address: Optional[str] = None
+    probe_ip: Optional[str] = None
     priority: Optional[int] = None
     raw_conf: Optional[str] = None
 
@@ -162,8 +167,11 @@ def _node_to_out(node: UpstreamNode) -> NodeOut:
         awg_port=node.awg_port,
         provisioning_mode=node.provisioning_mode.value if hasattr(node.provisioning_mode, "value") else node.provisioning_mode,
         awg_address=node.awg_address,
+        probe_ip=node.probe_ip,
         public_key=node.public_key,
         status=node.status.value if hasattr(node.status, "value") else node.status,
+        udp_status=None,
+        udp_detail=None,
         is_active=node.is_active,
         priority=node.priority,
         last_seen=node.last_seen,
@@ -320,7 +328,18 @@ async def list_nodes(
     result = await session.execute(
         select(UpstreamNode).order_by(UpstreamNode.priority, UpstreamNode.id)
     )
-    return [_node_to_out(n) for n in result.scalars().all()]
+    items: list[NodeOut] = []
+    for node in result.scalars().all():
+        if not node.is_active:
+            health = await deployer.check_health(node.id)
+            await session.refresh(node)
+            out = _node_to_out(node)
+            out.udp_status = health.get("udp_status")
+            out.udp_detail = health.get("udp_detail")
+        else:
+            out = _node_to_out(node)
+        items.append(out)
+    return items
 
 
 @router.post("", response_model=NodeOut, status_code=201)
@@ -349,6 +368,7 @@ async def create_node(
         awg_port=parsed.endpoint_port if parsed else body.awg_port,
         provisioning_mode=provisioning_mode,
         awg_address=parsed.tunnel_address if parsed else body.awg_address,
+        probe_ip=body.probe_ip,
         public_key=parsed.public_key if parsed else None,
         private_key=parsed.private_key if parsed else None,
         preshared_key=parsed.preshared_key if parsed else None,
@@ -504,6 +524,8 @@ async def update_node(
         if field == "raw_conf":
             continue
         setattr(node, field, value)
+    if "probe_ip" in body.model_fields_set:
+        node.probe_ip = body.probe_ip
     node.updated_at = datetime.now(timezone.utc)
     session.add(node)
     await session.flush()
