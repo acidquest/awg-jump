@@ -347,6 +347,110 @@ def _run_supervisorctl(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _run_iptables(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["iptables", *args],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _telemt_mark_rules() -> list[list[str]]:
+    return [
+        [
+            "-t",
+            "mangle",
+            "-p",
+            "tcp",
+            "-m",
+            "tcp",
+            "--dport",
+            "8888",
+            "-m",
+            "set",
+            "--match-set",
+            "geoip_local",
+            "dst",
+            "-j",
+            "MARK",
+            "--set-xmark",
+            "0x1/0xffffffff",
+        ],
+        [
+            "-t",
+            "mangle",
+            "-p",
+            "tcp",
+            "-m",
+            "tcp",
+            "--dport",
+            "8888",
+            "-m",
+            "set",
+            "!",
+            "--match-set",
+            "geoip_local",
+            "dst",
+            "-j",
+            "MARK",
+            "--set-xmark",
+            "0x2/0xffffffff",
+        ],
+        [
+            "-t",
+            "mangle",
+            "-p",
+            "tcp",
+            "-m",
+            "tcp",
+            "--dport",
+            "443",
+            "-m",
+            "set",
+            "--match-set",
+            "geoip_local",
+            "dst",
+            "-j",
+            "MARK",
+            "--set-xmark",
+            "0x1/0xffffffff",
+        ],
+        [
+            "-t",
+            "mangle",
+            "-p",
+            "tcp",
+            "-m",
+            "tcp",
+            "--dport",
+            "443",
+            "-m",
+            "set",
+            "!",
+            "--match-set",
+            "geoip_local",
+            "dst",
+            "-j",
+            "MARK",
+            "--set-xmark",
+            "0x2/0xffffffff",
+        ],
+    ]
+
+
+def _sync_telemt_output_marks(action: str) -> None:
+    if action == "start":
+        operation = "-A"
+    elif action == "stop":
+        operation = "-D"
+    else:
+        return
+
+    for rule in _telemt_mark_rules():
+        _run_iptables(*rule[:2], operation, "OUTPUT", *rule[2:])
+
+
 def get_service_status() -> dict[str, Any]:
     if not runtime_enabled():
         return {
@@ -376,6 +480,8 @@ def control_service(action: str) -> dict[str, Any]:
     if action not in {"start", "stop", "restart"}:
         raise ValueError(f"Unsupported action: {action}")
     result = _run_supervisorctl(action, SUPERVISOR_PROGRAM)
+    if result.returncode == 0:
+        _sync_telemt_output_marks(action)
     payload = get_service_status()
     payload.update(
         {

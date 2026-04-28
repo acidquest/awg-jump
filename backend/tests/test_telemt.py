@@ -1,4 +1,5 @@
 from pathlib import Path
+from subprocess import CompletedProcess
 
 from httpx import AsyncClient
 
@@ -246,3 +247,70 @@ async def test_telemt_stop_disables_autostart(client: AsyncClient, auth_headers:
     page_resp = await client.get("/api/telemt", headers=auth_headers)
     assert page_resp.status_code == 200, page_resp.text
     assert page_resp.json()["settings"]["service_autostart"] is False
+
+
+def test_control_service_start_updates_iptables(monkeypatch) -> None:
+    commands: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(
+        telemt_svc,
+        "_run_supervisorctl",
+        lambda *args: CompletedProcess(args=list(args), returncode=0, stdout="start ok", stderr=""),
+    )
+    monkeypatch.setattr(
+        telemt_svc,
+        "_run_iptables",
+        lambda *args: commands.append(args) or CompletedProcess(args=list(args), returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(telemt_svc, "get_service_status", lambda: {"enabled": True, "running": True, "status": "running"})
+
+    result = telemt_svc.control_service("start")
+
+    assert result["ok"] is True
+    assert len(commands) == 4
+    assert all(command[:4] == ("-t", "mangle", "-A", "OUTPUT") for command in commands)
+    assert [command[9] for command in commands] == ["8888", "8888", "443", "443"]
+
+
+def test_control_service_stop_updates_iptables(monkeypatch) -> None:
+    commands: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(
+        telemt_svc,
+        "_run_supervisorctl",
+        lambda *args: CompletedProcess(args=list(args), returncode=0, stdout="stop ok", stderr=""),
+    )
+    monkeypatch.setattr(
+        telemt_svc,
+        "_run_iptables",
+        lambda *args: commands.append(args) or CompletedProcess(args=list(args), returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(telemt_svc, "get_service_status", lambda: {"enabled": True, "running": False, "status": "stopped"})
+
+    result = telemt_svc.control_service("stop")
+
+    assert result["ok"] is True
+    assert len(commands) == 4
+    assert all(command[:4] == ("-t", "mangle", "-D", "OUTPUT") for command in commands)
+    assert [command[9] for command in commands] == ["8888", "8888", "443", "443"]
+
+
+def test_control_service_restart_does_not_update_iptables(monkeypatch) -> None:
+    commands: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(
+        telemt_svc,
+        "_run_supervisorctl",
+        lambda *args: CompletedProcess(args=list(args), returncode=0, stdout="restart ok", stderr=""),
+    )
+    monkeypatch.setattr(
+        telemt_svc,
+        "_run_iptables",
+        lambda *args: commands.append(args) or CompletedProcess(args=list(args), returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(telemt_svc, "get_service_status", lambda: {"enabled": True, "running": True, "status": "running"})
+
+    result = telemt_svc.control_service("restart")
+
+    assert result["ok"] is True
+    assert commands == []

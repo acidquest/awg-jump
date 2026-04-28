@@ -67,7 +67,7 @@ RUN curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CL
 # ============================================================
 FROM rust:1-bookworm AS telemt-builder
 
-ARG TELEMT_VERSION=3.4.5
+ARG TELEMT_VERSION=3.4.8
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
