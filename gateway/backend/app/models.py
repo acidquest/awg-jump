@@ -109,6 +109,19 @@ class EntryNode(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class EntryNodeSwitchLog(Base):
+    __tablename__ = "entry_node_switch_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    from_node_id: Mapped[int | None] = mapped_column(ForeignKey("entry_nodes.id", ondelete="SET NULL"), nullable=True)
+    from_node_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    to_node_id: Mapped[int | None] = mapped_column(ForeignKey("entry_nodes.id", ondelete="SET NULL"), nullable=True)
+    to_node_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    switch_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
 class FirstNodeBootstrapStatus(str, Enum):
     running = "running"
     success = "success"
@@ -348,6 +361,7 @@ MAIN_DB_TABLES = (
     AdminUser.__table__,
     GatewaySettings.__table__,
     EntryNode.__table__,
+    EntryNodeSwitchLog.__table__,
     FirstNodeBootstrapLog.__table__,
     RoutingPolicy.__table__,
     DnsUpstream.__table__,

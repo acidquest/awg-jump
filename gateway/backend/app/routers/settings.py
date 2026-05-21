@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import commit_with_lock, get_db
 from app.models import AdminUser, EntryNode, GatewaySettings, RoutingPolicy, RuntimeMode, TrafficSourceMode
 from app.security import generate_api_access_key, get_current_user
-from app.services.backend_restart import normalize_backend_restart_interval_days, normalize_backend_restart_time
+from app.services.backend_restart import normalize_backend_restart_interval_days, normalize_backend_restart_time, request_backend_restart
 from app.services.dns_runtime import restart_dnsmasq
 from app.services.backup import normalize_backup_schedule_time
 from app.services.external_ip import refresh_external_ip_info, serialize_external_ip_info, validate_service_pair
@@ -166,6 +168,20 @@ async def update_settings(
             return {"status": "error", "error": str(exc), "plan": plan}
     external_ip_info = await refresh_external_ip_info(settings_row, policy, force=True)
     return {"status": "updated", "plan": plan, "external_ip_info": external_ip_info}
+
+
+@router.post("/backend-restart")
+async def restart_backend_now(
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(get_current_user),
+) -> dict:
+    settings_row = await db.get(GatewaySettings, 1)
+    settings_row.backend_restart_last_requested_at = datetime.now().astimezone().replace(tzinfo=None)
+    db.add(settings_row)
+    await commit_with_lock(db)
+    background_tasks.add_task(request_backend_restart)
+    return {"status": "restart_requested"}
 
 
 @router.put("/api-access")

@@ -52,6 +52,17 @@ type FirstNodeBootstrapLog = {
   created_at: string
 }
 
+type EntryNodeSwitchLog = {
+  id: number
+  from_node_id: number | null
+  from_node_name: string | null
+  to_node_id: number | null
+  to_node_name: string
+  reason: string
+  switch_type: 'manual' | 'failover' | string
+  created_at: string
+}
+
 type SystemStatus = {
   runtime_available: boolean
   gateway_enabled: boolean
@@ -1066,6 +1077,7 @@ function NodesPage() {
     last_error: null,
     last_event_at: null,
   })
+  const { data: switchLogs, reload: reloadSwitchLogs } = useLoader<EntryNodeSwitchLog[]>('/nodes/switch-logs', [])
   const { data: bootstrapLogs, reload: reloadBootstrapLogs } = useLoader<FirstNodeBootstrapLog[]>('/nodes/bootstrap-first/logs', [])
   const [message, setMessage] = useState('')
   const [editNode, setEditNode] = useState<NodeItem | null>(null)
@@ -1074,10 +1086,15 @@ function NodesPage() {
   const [showBootstrapModal, setShowBootstrapModal] = useState(false)
   const [selectedBootstrapLog, setSelectedBootstrapLog] = useState<FirstNodeBootstrapLog | null>(null)
 
+  useBackgroundReload(reload, 10000)
+  useBackgroundReload(reloadFailover, 10000)
+  useBackgroundReload(reloadSwitchLogs, 10000)
+
   async function activate(nodeId: number) {
     await api.post(`/nodes/${nodeId}/activate`)
     setMessage(t('tunnelRebuilt'))
     await reload()
+    await reloadSwitchLogs()
   }
 
   async function startTunnel() {
@@ -1189,6 +1206,35 @@ function NodesPage() {
                   <td>{node.is_active ? <span className="badge badge-online">{t('active')}</span> : '—'}</td>
                 </tr>
               )})}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-title" style={{ marginBottom: 14 }}>{t('nodeSwitchHistory')}</div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>{t('switchedAt')}</th>
+                <th>{t('fromNode')}</th>
+                <th>{t('toNode')}</th>
+                <th>{t('reason')}</th>
+                <th>{t('switchType')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {switchLogs.length === 0 ? (
+                <tr><td colSpan={5} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>{t('noNodeSwitchLogs')}</td></tr>
+              ) : switchLogs.map((log) => (
+                <tr key={log.id}>
+                  <td className="text-mono">{fmtDateTime(log.created_at)}</td>
+                  <td>{log.from_node_name || '—'}</td>
+                  <td>{log.to_node_name}</td>
+                  <td>{log.reason || '—'}</td>
+                  <td>{log.switch_type === 'failover' ? t('switchTypeFailover') : t('switchTypeManual')}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
@@ -3296,6 +3342,7 @@ function SettingsPage() {
   const [message, setMessage] = useState('')
   const [factoryResetOpen, setFactoryResetOpen] = useState(false)
   const [factoryResetConfirm, setFactoryResetConfirm] = useState('')
+  const [backendRestartConfirmOpen, setBackendRestartConfirmOpen] = useState(false)
 
   useEffect(() => {
     setLocalExternalIpServiceUrl(data.external_ip_info.local.service_url || '')
@@ -3497,6 +3544,16 @@ function SettingsPage() {
     }
   }
 
+  async function restartBackendNow() {
+    try {
+      await api.post('/settings/backend-restart')
+      setBackendRestartConfirmOpen(false)
+      setMessage(t('backendRestartRequested'))
+    } catch (err: any) {
+      setMessage(err?.response?.data?.detail || err.message || 'Request failed')
+    }
+  }
+
   return (
     <>
       <div className="page-header">
@@ -3683,15 +3740,22 @@ function SettingsPage() {
               </div>
             </div>
             <div className="form-group">
-              <label className="form-label">{t('backendRestartAutomation')}</label>
-              <label className="toggle" title={t('backendRestartAutomation')}>
-                <input
-                  type="checkbox"
-                  checked={Boolean(data.backend_restart_enabled)}
-                  onChange={(event) => setData({ ...data, backend_restart_enabled: event.target.checked })}
-                />
-                <span className="toggle-slider" />
-              </label>
+              <div className="flex items-center gap-2" style={{ justifyContent: 'space-between' }}>
+                <label className="form-label" style={{ marginBottom: 0 }}>{t('backendRestartAutomation')}</label>
+                <div className="flex items-center gap-2">
+                  <label className="toggle" title={t('backendRestartAutomation')}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(data.backend_restart_enabled)}
+                      onChange={(event) => setData({ ...data, backend_restart_enabled: event.target.checked })}
+                    />
+                    <span className="toggle-slider" />
+                  </label>
+                  <button className="btn btn-secondary btn-sm" type="button" onClick={() => setBackendRestartConfirmOpen(true)}>
+                    {t('restartNow')}
+                  </button>
+                </div>
+              </div>
               <div className="text-muted text-sm" style={{ marginTop: 8 }}>{t('backendRestartAutomationDescription')}</div>
             </div>
             <div className="form-row form-row-2">
@@ -3719,6 +3783,15 @@ function SettingsPage() {
             </div>
             <button className="btn btn-primary" type="submit">{t('save')}</button>
           </form>
+          {backendRestartConfirmOpen ? (
+            <GatewayDeleteConfirmModal
+              title={t('backendRestartNowTitle')}
+              message={t('backendRestartNowConfirm')}
+              confirmLabel={t('restartNow')}
+              onClose={() => setBackendRestartConfirmOpen(false)}
+              onConfirm={restartBackendNow}
+            />
+          ) : null}
         </div>
         <div className="card">
           <div className="card-title" style={{ marginBottom: 14 }}>{t('changePassword')}</div>

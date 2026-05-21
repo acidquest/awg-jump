@@ -86,9 +86,11 @@ async def test_status_coordinator_preserves_monotonic_traffic():
 
 
 @pytest.mark.asyncio
-async def test_devices_coordinator_raises_on_failure_even_with_cached_data():
+async def test_devices_coordinator_returns_cached_devices_as_inactive_on_failure():
     client = AsyncMock()
-    client.async_get_devices.return_value = {"devices": [{"identity_key": "mac:aa"}]}
+    client.async_get_devices.return_value = {
+        "devices": [{"identity_key": "mac:aa", "is_present": True, "is_active": True, "presence_state": "active"}]
+    }
 
     with patch("homeassistant.helpers.frame.report_usage"):
         coordinator = AwgGatewayDevicesUpdateCoordinator(
@@ -103,8 +105,13 @@ async def test_devices_coordinator_raises_on_failure_even_with_cached_data():
 
     client.async_get_devices.side_effect = AwgGatewayCannotConnectError()
 
-    with pytest.raises(UpdateFailed):
-        await coordinator._async_update_data()
+    second = await coordinator._async_update_data()
+
+    assert second.devices[0]["identity_key"] == "mac:aa"
+    assert second.devices[0]["is_present"] is False
+    assert second.devices[0]["is_active"] is False
+    assert second.devices[0]["presence_state"] == "inactive"
+    assert second.devices_payload["stale_due_to_error"] is True
 
 
 @pytest.mark.asyncio

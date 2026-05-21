@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AuditEvent, EntryNode, GatewaySettings, RoutingPolicy, TunnelStatus
+from app.models import AuditEvent, EntryNode, EntryNodeSwitchLog, GatewaySettings, RoutingPolicy, TunnelStatus
 from app.services.external_ip import refresh_external_ip_info
 from app.services.routing import apply_routing_plan
 from app.services.runtime import probe_node_latency_details, resolve_tunnel_probe_target, start_tunnel
@@ -92,8 +92,13 @@ async def assign_active_node(
     reset_latency: bool = True,
     event_type: str = "entry_node.activated",
     event_payload: dict | None = None,
+    switch_type: str = "manual",
+    reason: str = "",
 ) -> None:
     nodes = await normalize_node_order(db)
+    previous_node = next((item for item in nodes if item.id == settings_row.active_entry_node_id), None)
+    if previous_node is None:
+        previous_node = next((item for item in nodes if item.is_active), None)
     for item in nodes:
         item.is_active = False
         db.add(item)
@@ -141,6 +146,16 @@ async def assign_active_node(
         if event_payload:
             payload.update(event_payload)
         db.add(AuditEvent(event_type=event_type, payload=payload))
+        db.add(
+            EntryNodeSwitchLog(
+                from_node_id=previous_node.id if previous_node else None,
+                from_node_name=previous_node.name if previous_node else None,
+                to_node_id=node.id,
+                to_node_name=node.name,
+                reason=reason,
+                switch_type=switch_type,
+            )
+        )
     await db.flush()
 
 
@@ -229,6 +244,8 @@ async def failover_to_next_available(
             reset_latency=False,
             event_type="entry_node.failover_activated",
             event_payload={"reason": reason},
+            switch_type="failover",
+            reason=reason,
         )
         policy = await db.get(RoutingPolicy, 1)
         if policy is not None:

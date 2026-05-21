@@ -166,7 +166,7 @@ def _presence_from_neighbor(neighbor: NeighborInfo | None) -> tuple[bool, str | 
 
 def _flow_has_fresh_traffic(previous_bytes: int | None, current_bytes: int) -> bool:
     if previous_bytes is None:
-        return True
+        return False
     return current_bytes != previous_bytes
 
 
@@ -437,6 +437,22 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
             flow_state = await session.get(TrackedDeviceFlowState, item.flow_key)
         previous_bytes = flow_state.last_bytes if flow_state is not None else None
         if not _flow_has_fresh_traffic(previous_bytes, item.bytes_total):
+            if flow_state is None:
+                flow_state = TrackedDeviceFlowState(
+                    flow_key=item.flow_key,
+                    device_id=None,
+                    source_ip=item.source_ip,
+                    route_target=item.route_target,
+                    last_bytes=item.bytes_total,
+                    last_seen_at=now,
+                )
+            else:
+                flow_state.source_ip = item.source_ip
+                flow_state.route_target = item.route_target
+                flow_state.last_bytes = item.bytes_total
+                flow_state.last_seen_at = now
+            pending_flow_states[item.flow_key] = flow_state
+            session.add(flow_state)
             continue
 
         neighbor = neighbors.get(item.source_ip)

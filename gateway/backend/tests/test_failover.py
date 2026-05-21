@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import pytest
 
-from app.models import AuditEvent, EntryNode, GatewaySettings, RoutingPolicy, TunnelStatus
+from app.models import AuditEvent, EntryNode, EntryNodeSwitchLog, GatewaySettings, RoutingPolicy, TunnelStatus
 from app.services import failover
 from app.services.runtime_state import get_node_runtime_state, set_failover_runtime_state, set_tunnel_runtime_state
 
@@ -52,6 +52,7 @@ class FakeSession:
         self.settings = settings or GatewaySettings(id=1)
         self.policy = policy or RoutingPolicy(id=1)
         self.audit_events: list[AuditEvent] = []
+        self.switch_logs: list[EntryNodeSwitchLog] = []
 
     async def execute(self, _statement):
         return FakeExecuteResult(sorted(self.nodes, key=lambda node: (node.position, node.id)))
@@ -76,6 +77,8 @@ class FakeSession:
                 self.nodes.append(obj)
         elif isinstance(obj, AuditEvent):
             self.audit_events.append(obj)
+        elif isinstance(obj, EntryNodeSwitchLog):
+            self.switch_logs.append(obj)
         elif isinstance(obj, GatewaySettings):
             self.settings = obj
         elif isinstance(obj, RoutingPolicy):
@@ -101,6 +104,29 @@ async def test_assign_active_node_moves_node_to_first() -> None:
     assert ordered[0].position == 0
     assert settings_row.active_entry_node_id == node_c.id
     assert settings_row.active_entry_node is node_c
+
+
+@pytest.mark.asyncio
+async def test_assign_active_node_records_switch_log() -> None:
+    node_a = _make_node(1, "NodeA", 0, is_active=True)
+    node_b = _make_node(2, "NodeB", 1)
+    settings_row = GatewaySettings(id=1, active_entry_node_id=node_a.id, active_entry_node=node_a)
+    db = FakeSession(nodes=[node_a, node_b], settings=settings_row)
+
+    await failover.assign_active_node(
+        db,
+        settings_row,
+        node_b,
+        record_event=True,
+        switch_type="failover",
+        reason="probe failed",
+    )
+
+    assert len(db.switch_logs) == 1
+    assert db.switch_logs[0].from_node_name == "NodeA"
+    assert db.switch_logs[0].to_node_name == "NodeB"
+    assert db.switch_logs[0].switch_type == "failover"
+    assert db.switch_logs[0].reason == "probe failed"
 
 
 @pytest.mark.asyncio

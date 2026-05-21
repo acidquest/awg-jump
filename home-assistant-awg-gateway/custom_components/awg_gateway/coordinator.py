@@ -174,6 +174,7 @@ class AwgGatewayDevicesUpdateCoordinator(_AwgGatewayBaseCoordinator[AwgGatewayDe
         )
 
     async def _async_update_data(self) -> AwgGatewayDevicesData:
+        previous = self.data
         try:
             devices_payload = await self.client.async_get_devices(self.device_scope)
         except (
@@ -182,7 +183,14 @@ class AwgGatewayDevicesUpdateCoordinator(_AwgGatewayBaseCoordinator[AwgGatewayDe
             AwgGatewayInvalidAuthError,
             AwgGatewayUnexpectedResponseError,
         ) as err:
-            raise UpdateFailed(str(err)) from err
+            if previous is None:
+                raise UpdateFailed(str(err)) from err
+            LOGGER.warning("Using cached AWG Gateway devices as inactive due to update error: %s", err)
+            inactive_devices = [self._mark_device_inactive(device) for device in previous.devices]
+            cached_payload = dict(previous.devices_payload)
+            cached_payload["devices"] = inactive_devices
+            cached_payload["stale_due_to_error"] = True
+            return AwgGatewayDevicesData(devices=inactive_devices, devices_payload=cached_payload)
 
         if not isinstance(devices_payload, dict):
             raise UpdateFailed("Devices payload is invalid")
@@ -195,3 +203,11 @@ class AwgGatewayDevicesUpdateCoordinator(_AwgGatewayBaseCoordinator[AwgGatewayDe
             devices=devices,
             devices_payload=devices_payload,
         )
+
+    @staticmethod
+    def _mark_device_inactive(device: dict[str, Any]) -> dict[str, Any]:
+        inactive = dict(device)
+        inactive["is_active"] = False
+        inactive["is_present"] = False
+        inactive["presence_state"] = "inactive"
+        return inactive

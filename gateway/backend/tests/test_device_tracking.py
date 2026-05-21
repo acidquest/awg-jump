@@ -48,7 +48,7 @@ def test_flow_has_fresh_traffic_requires_byte_counter_change_for_existing_flow()
     assert device_tracking._flow_has_fresh_traffic(1200, 1200) is False
     assert device_tracking._flow_has_fresh_traffic(1200, 1400) is True
     assert device_tracking._flow_has_fresh_traffic(1200, 200) is True
-    assert device_tracking._flow_has_fresh_traffic(None, 0) is True
+    assert device_tracking._flow_has_fresh_traffic(None, 0) is False
 
 
 def test_flow_delta_handles_new_growing_and_reset_counters() -> None:

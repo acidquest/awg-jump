@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import AdminUser, AuditEvent, EntryNode, FirstNodeBootstrapLog, FirstNodeBootstrapStatus, GatewaySettings, RoutingPolicy
+from app.models import AdminUser, AuditEvent, EntryNode, EntryNodeSwitchLog, FirstNodeBootstrapLog, FirstNodeBootstrapStatus, GatewaySettings, RoutingPolicy
 from app.security import get_current_user
 from app.services.conf_parser import parse_peer_conf, render_peer_conf, split_endpoint
 from app.services.first_node_bootstrap import bootstrap_first_node, cleanup_bootstrap_queue, get_bootstrap_queue
@@ -108,6 +108,19 @@ def _serialize_bootstrap_log(log: FirstNodeBootstrapLog) -> dict:
     }
 
 
+def _serialize_switch_log(log: EntryNodeSwitchLog) -> dict:
+    return {
+        "id": log.id,
+        "from_node_id": log.from_node_id,
+        "from_node_name": log.from_node_name,
+        "to_node_id": log.to_node_id,
+        "to_node_name": log.to_node_name,
+        "reason": log.reason,
+        "switch_type": log.switch_type,
+        "created_at": log.created_at.isoformat(),
+    }
+
+
 def _to_payload(
     node: EntryNode,
     *,
@@ -183,9 +196,12 @@ async def list_nodes(
     db: AsyncSession = Depends(get_db),
     user: AdminUser = Depends(get_current_user),
 ) -> list[dict]:
+    settings_row = await db.get(GatewaySettings, 1)
     nodes = await list_nodes_in_order(db)
+    active_node_id = settings_row.active_entry_node_id if settings_row else None
     payloads: list[dict] = []
     for node in nodes:
+        node.is_active = node.id == active_node_id
         if node.is_active:
             if should_refresh_node_latency(node.id, ttl_seconds=20):
                 _refresh_latency_for_active_tunnel(node)
@@ -214,6 +230,17 @@ async def list_nodes(
                 )
             )
     return payloads
+
+
+@router.get("/switch-logs")
+async def list_entry_node_switch_logs(
+    db: AsyncSession = Depends(get_db),
+    user: AdminUser = Depends(get_current_user),
+) -> list[dict]:
+    logs = (
+        await db.execute(select(EntryNodeSwitchLog).order_by(EntryNodeSwitchLog.id.desc()).limit(50))
+    ).scalars().all()
+    return [_serialize_switch_log(log) for log in logs]
 
 
 @router.get("/bootstrap-first/logs")
@@ -517,7 +544,17 @@ async def activate_node(
     tunnel_state = get_tunnel_runtime_state()
     tunnel_state.status = live_status
     tunnel_state.last_error = live_error
-    await assign_active_node(db, settings_row, node, record_event=True)
+    previous_node = await db.get(EntryNode, settings_row.active_entry_node_id) if settings_row.active_entry_node_id else None
+    await assign_active_node(
+        db,
+        settings_row,
+        node,
+        record_event=True,
+        switch_type="manual",
+        reason=f"Administrator selected {node.name}"
+        if previous_node is None
+        else f"Administrator switched from {previous_node.name} to {node.name}",
+    )
     if not settings_row.gateway_enabled:
         policy = await db.get(RoutingPolicy, 1)
         await refresh_external_ip_info(settings_row, policy, force=True)
