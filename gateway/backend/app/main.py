@@ -25,6 +25,7 @@ from app.database import (
 )
 from app.models import BackupRecord, EntryNode, GatewaySettings, MAIN_DB_TABLES, METRICS_DB_TABLES, RoutingPolicy
 from app.routers import access, auth, backup, devices, dns, nodes, routing, settings as settings_router, system
+from app.services.backend_restart import backend_restart_is_due, request_backend_restart
 from app.services.backup import build_backup_filename, create_backup_file, prune_backup_files
 from app.services.dns_runtime import restart_dnsmasq, stop_dnsmasq
 from app.services.device_tracking import DEVICE_TRACKING_INTERVAL_SECONDS, collect_device_inventory
@@ -58,6 +59,7 @@ FAILOVER_LOOP_START_DELAY_SECONDS = 17
 DEVICE_TRACKING_LOOP_START_DELAY_SECONDS = 23
 BACKUP_LOOP_START_DELAY_SECONDS = 29
 STATUS_REPORT_LOOP_START_DELAY_SECONDS = 7
+BACKEND_RESTART_LOOP_START_DELAY_SECONDS = 37
 
 
 def _is_sqlite_lock_error(exc: Exception) -> bool:
@@ -118,6 +120,22 @@ async def _ensure_current_baseline_columns() -> None:
             await conn.exec_driver_sql(
                 "ALTER TABLE gateway_settings ADD COLUMN backup_retention_count INTEGER NOT NULL DEFAULT 14"
             )
+        if "backend_restart_enabled" not in columns:
+            await conn.exec_driver_sql(
+                "ALTER TABLE gateway_settings ADD COLUMN backend_restart_enabled BOOLEAN NOT NULL DEFAULT 0"
+            )
+        if "backend_restart_interval_days" not in columns:
+            await conn.exec_driver_sql(
+                "ALTER TABLE gateway_settings ADD COLUMN backend_restart_interval_days INTEGER NOT NULL DEFAULT 7"
+            )
+        if "backend_restart_time" not in columns:
+            await conn.exec_driver_sql(
+                "ALTER TABLE gateway_settings ADD COLUMN backend_restart_time VARCHAR(5) NOT NULL DEFAULT '04:00'"
+            )
+        if "backend_restart_last_requested_at" not in columns:
+            await conn.exec_driver_sql(
+                "ALTER TABLE gateway_settings ADD COLUMN backend_restart_last_requested_at DATETIME"
+            )
     async with AsyncSessionLocal() as session:
         prepare_session(session)
         settings_row = await session.get(GatewaySettings, 1)
@@ -174,6 +192,36 @@ async def _backup_loop(stop_event: asyncio.Event) -> None:
             await prune_backup_files(session, retention_count=settings_row.backup_retention_count)
 
         await _run_db_cycle_with_retry("gateway-backup", AsyncSessionLocal, action)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=60)
+        except asyncio.TimeoutError:
+            continue
+
+
+async def _backend_restart_loop(stop_event: asyncio.Event) -> None:
+    if await _initial_loop_delay(stop_event, BACKEND_RESTART_LOOP_START_DELAY_SECONDS):
+        return
+    while not stop_event.is_set():
+        should_restart = False
+
+        async def action(session: AsyncSession) -> None:
+            nonlocal should_restart
+            settings_row = await session.get(GatewaySettings, 1)
+            if settings_row is None:
+                return
+            now = datetime.now().astimezone()
+            if not backend_restart_is_due(settings_row, now=now):
+                return
+            settings_row.backend_restart_last_requested_at = now.replace(tzinfo=None)
+            session.add(settings_row)
+            should_restart = True
+
+        await _run_db_cycle_with_retry("gateway-backend-restart", AsyncSessionLocal, action)
+        if should_restart:
+            logger.info("[gateway-backend-restart] scheduled backend restart requested")
+            await asyncio.sleep(1)
+            request_backend_restart()
+            return
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=60)
         except asyncio.TimeoutError:
@@ -357,6 +405,7 @@ async def lifespan(app: FastAPI):
     device_tracking_stop = asyncio.Event()
     backup_stop = asyncio.Event()
     status_report_stop = asyncio.Event()
+    backend_restart_stop = asyncio.Event()
     metrics_task: asyncio.Task | None = None
     traffic_metrics_task: asyncio.Task | None = None
     external_ip_task: asyncio.Task | None = None
@@ -364,6 +413,7 @@ async def lifespan(app: FastAPI):
     device_tracking_task: asyncio.Task | None = None
     backup_task: asyncio.Task | None = None
     status_report_task: asyncio.Task | None = None
+    backend_restart_task: asyncio.Task | None = None
     ensure_directories()
     async with engine.begin() as conn:
         await conn.run_sync(lambda sync_conn: [table.create(sync_conn, checkfirst=True) for table in MAIN_DB_TABLES])
@@ -413,6 +463,7 @@ async def lifespan(app: FastAPI):
     device_tracking_task = asyncio.create_task(_device_tracking_loop(device_tracking_stop))
     backup_task = asyncio.create_task(_backup_loop(backup_stop))
     status_report_task = asyncio.create_task(_status_report_loop(status_report_stop))
+    backend_restart_task = asyncio.create_task(_backend_restart_loop(backend_restart_stop))
     yield
     metrics_stop.set()
     traffic_metrics_stop.set()
@@ -421,6 +472,7 @@ async def lifespan(app: FastAPI):
     device_tracking_stop.set()
     backup_stop.set()
     status_report_stop.set()
+    backend_restart_stop.set()
     if metrics_task is not None:
         await metrics_task
     if traffic_metrics_task is not None:
@@ -435,6 +487,8 @@ async def lifespan(app: FastAPI):
         await backup_task
     if status_report_task is not None:
         await status_report_task
+    if backend_restart_task is not None:
+        await backend_restart_task
     async with AsyncSessionLocal() as session:
         prepare_session(session)
         gateway_settings = await session.get(GatewaySettings, 1)

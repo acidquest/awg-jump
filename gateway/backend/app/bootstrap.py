@@ -46,6 +46,9 @@ async def ensure_bootstrap_state(db: AsyncSession) -> None:
                 backup_enabled=True,
                 backup_schedule_time="03:00",
                 backup_retention_count=14,
+                backend_restart_enabled=False,
+                backend_restart_interval_days=7,
+                backend_restart_time="04:00",
                 external_ip_local_service_url=local_service_url,
                 external_ip_vpn_service_url=vpn_service_url,
             )

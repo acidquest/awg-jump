@@ -161,6 +161,10 @@ type GatewaySettingsData = {
   backup_enabled: boolean
   backup_schedule_time: string
   backup_retention_count: number
+  backend_restart_enabled: boolean
+  backend_restart_interval_days: number
+  backend_restart_time: string
+  backend_restart_last_requested_at?: string | null
   failover_enabled: boolean
   kernel_available: boolean
   kernel_message: string | null
@@ -3261,6 +3265,10 @@ function SettingsPage() {
     backup_enabled: true,
     backup_schedule_time: '03:00',
     backup_retention_count: 14,
+    backend_restart_enabled: false,
+    backend_restart_interval_days: 7,
+    backend_restart_time: '04:00',
+    backend_restart_last_requested_at: null,
     failover_enabled: false,
     kernel_available: false,
     kernel_message: null,
@@ -3306,6 +3314,9 @@ function SettingsPage() {
       backup_enabled: data.backup_enabled,
       backup_schedule_time: data.backup_schedule_time,
       backup_retention_count: data.backup_retention_count,
+      backend_restart_enabled: data.backend_restart_enabled,
+      backend_restart_interval_days: data.backend_restart_interval_days,
+      backend_restart_time: data.backend_restart_time,
       external_ip_local_service_url: localExternalIpServiceUrl,
       external_ip_vpn_service_url: vpnExternalIpServiceUrl,
       ...overrides,
@@ -3668,6 +3679,41 @@ function SettingsPage() {
                   max={365}
                   value={data.backup_retention_count}
                   onChange={(event) => setData({ ...data, backup_retention_count: Number(event.target.value || 14) })}
+                />
+              </div>
+            </div>
+            <div className="form-group">
+              <label className="form-label">{t('backendRestartAutomation')}</label>
+              <label className="toggle" title={t('backendRestartAutomation')}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(data.backend_restart_enabled)}
+                  onChange={(event) => setData({ ...data, backend_restart_enabled: event.target.checked })}
+                />
+                <span className="toggle-slider" />
+              </label>
+              <div className="text-muted text-sm" style={{ marginTop: 8 }}>{t('backendRestartAutomationDescription')}</div>
+            </div>
+            <div className="form-row form-row-2">
+              <div className="form-group">
+                <label className="form-label">{t('backendRestartInterval')}</label>
+                <input
+                  className="form-input mono"
+                  type="number"
+                  min={1}
+                  max={31}
+                  value={data.backend_restart_interval_days}
+                  onChange={(event) => setData({ ...data, backend_restart_interval_days: Number(event.target.value || 7) })}
+                />
+                <div className="text-muted text-sm" style={{ marginTop: 8 }}>{t('backendRestartIntervalDescription')}</div>
+              </div>
+              <div className="form-group">
+                <label className="form-label">{t('backendRestartTime')}</label>
+                <input
+                  className="form-input mono"
+                  type="time"
+                  value={data.backend_restart_time}
+                  onChange={(event) => setData({ ...data, backend_restart_time: event.target.value || '04:00' })}
                 />
               </div>
             </div>

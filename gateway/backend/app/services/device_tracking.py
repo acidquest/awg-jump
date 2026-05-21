@@ -192,15 +192,16 @@ def _evaluate_device_presence(
     now: datetime,
     activity_timeout_seconds: int,
 ) -> tuple[bool, bool, bool, str | None]:
-    timeout_cutoff = now - timedelta(seconds=activity_timeout_seconds)
+    active_cutoff = now - timedelta(seconds=min(activity_timeout_seconds, DEVICE_TRACKING_INTERVAL_SECONDS))
     last_traffic_at = _as_utc_naive(device.last_traffic_at)
-    is_active = last_traffic_at is not None and last_traffic_at >= timeout_cutoff
-    is_present = is_active
-    confirmed_present = is_active
+    has_recent_traffic = last_traffic_at is not None and last_traffic_at >= active_cutoff
+    is_active = has_recent_traffic
+    is_present = has_recent_traffic
+    confirmed_present = has_recent_traffic
     mac_address: str | None = None
 
     if not device.current_ip:
-        return bool(is_active), bool(is_present), bool(confirmed_present), mac_address
+        return False, False, False, mac_address
 
     arp_present, mac_address = _presence_from_neighbor(neighbor)
     if neighbor is not None:
@@ -208,19 +209,17 @@ def _evaluate_device_presence(
             is_present = True
             confirmed_present = True
         else:
-            stale_since = _latest_timestamp(device.last_present_at, device.last_traffic_at, device.last_seen_at)
-            stale_grace_active = stale_since is not None and stale_since >= timeout_cutoff
-            if stale_grace_active:
-                is_present = True
-            else:
+            if not has_recent_traffic:
                 ping_ok = _ping(device.current_ip)
                 is_present = ping_ok
                 confirmed_present = ping_ok
-    elif not is_active:
-        ping_ok = _ping(device.current_ip)
-        is_present = ping_ok
-        confirmed_present = ping_ok
+    else:
+        if not has_recent_traffic:
+            ping_ok = _ping(device.current_ip)
+            is_present = ping_ok
+            confirmed_present = ping_ok
 
+    is_active = bool(has_recent_traffic and is_present)
     return bool(is_active), bool(is_present), bool(confirmed_present), mac_address
 
 

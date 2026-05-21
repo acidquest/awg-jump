@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import commit_with_lock, get_db
 from app.models import AdminUser, EntryNode, GatewaySettings, RoutingPolicy, RuntimeMode, TrafficSourceMode
 from app.security import generate_api_access_key, get_current_user
+from app.services.backend_restart import normalize_backend_restart_interval_days, normalize_backend_restart_time
 from app.services.dns_runtime import restart_dnsmasq
 from app.services.backup import normalize_backup_schedule_time
 from app.services.external_ip import refresh_external_ip_info, serialize_external_ip_info, validate_service_pair
@@ -31,6 +32,9 @@ class GatewaySettingsUpdate(BaseModel):
     backup_enabled: bool = True
     backup_schedule_time: str = "03:00"
     backup_retention_count: int = 14
+    backend_restart_enabled: bool = False
+    backend_restart_interval_days: int = 7
+    backend_restart_time: str = "04:00"
     external_ip_local_service_url: str
     external_ip_vpn_service_url: str
 
@@ -81,6 +85,12 @@ async def get_settings(
         "backup_enabled": settings_row.backup_enabled,
         "backup_schedule_time": settings_row.backup_schedule_time,
         "backup_retention_count": settings_row.backup_retention_count,
+        "backend_restart_enabled": settings_row.backend_restart_enabled,
+        "backend_restart_interval_days": settings_row.backend_restart_interval_days,
+        "backend_restart_time": settings_row.backend_restart_time,
+        "backend_restart_last_requested_at": settings_row.backend_restart_last_requested_at.isoformat()
+        if settings_row.backend_restart_last_requested_at
+        else None,
         "failover_enabled": settings_row.failover_enabled,
         "kernel_available": kernel_available,
         "kernel_message": kernel_message,
@@ -112,6 +122,10 @@ async def update_settings(
         )
         normalized_source_cidrs = normalize_allowed_source_cidrs(payload.allowed_client_cidrs)
         normalized_backup_schedule_time = normalize_backup_schedule_time(payload.backup_schedule_time)
+        normalized_backend_restart_interval_days = normalize_backend_restart_interval_days(
+            payload.backend_restart_interval_days
+        )
+        normalized_backend_restart_time = normalize_backend_restart_time(payload.backend_restart_time)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     settings_row = await db.get(GatewaySettings, 1)
@@ -127,6 +141,9 @@ async def update_settings(
     settings_row.backup_enabled = payload.backup_enabled
     settings_row.backup_schedule_time = normalized_backup_schedule_time
     settings_row.backup_retention_count = payload.backup_retention_count
+    settings_row.backend_restart_enabled = payload.backend_restart_enabled
+    settings_row.backend_restart_interval_days = normalized_backend_restart_interval_days
+    settings_row.backend_restart_time = normalized_backend_restart_time
     settings_row.external_ip_local_service_url = local_service_url
     settings_row.external_ip_vpn_service_url = vpn_service_url
     db.add(settings_row)
