@@ -21,6 +21,7 @@ DEVICE_TRACKING_INTERVAL_SECONDS = 30
 PING_TIMEOUT_SECONDS = 1
 FLOW_RETENTION_MULTIPLIER = 4
 NEIGHBOR_REACHABLE_STATES = {"REACHABLE", "PERMANENT"}
+NEIGHBOR_UNUSABLE_STATES = {"FAILED", "INCOMPLETE"}
 LOOPBACK_NETWORK = ipaddress.ip_network("127.0.0.0/8")
 
 
@@ -164,9 +165,18 @@ def _presence_from_neighbor(neighbor: NeighborInfo | None) -> tuple[bool, str | 
     return False, neighbor.mac_address
 
 
+def _confirm_neighbor_presence(neighbor: NeighborInfo) -> bool:
+    present, _mac_address = _presence_from_neighbor(neighbor)
+    if present:
+        return True
+    if not neighbor.mac_address or neighbor.state in NEIGHBOR_UNUSABLE_STATES:
+        return False
+    return _ping(neighbor.ip_address)
+
+
 def _flow_has_fresh_traffic(previous_bytes: int | None, current_bytes: int) -> bool:
     if previous_bytes is None:
-        return False
+        return current_bytes > 0
     return current_bytes != previous_bytes
 
 
@@ -429,9 +439,11 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
         [item for item in await _load_conntrack_observations() if _ip_in_selectors(item.source_ip, selectors)]
     )
     pending_flow_states: dict[str, TrackedDeviceFlowState] = {}
+    observed_source_ips: set[str] = set()
     device_route_overrides_dirty = False
 
     for item in observations:
+        observed_source_ips.add(item.source_ip)
         flow_state = pending_flow_states.get(item.flow_key)
         if flow_state is None:
             flow_state = await session.get(TrackedDeviceFlowState, item.flow_key)
@@ -498,6 +510,34 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
         pending_flow_states[item.flow_key] = flow_state
         device.total_bytes += max(delta, 0)
         session.add(flow_state)
+        session.add(device)
+
+    for neighbor in neighbors.values():
+        if neighbor.ip_address in observed_source_ips or not _ip_in_selectors(neighbor.ip_address, selectors):
+            continue
+        if not _confirm_neighbor_presence(neighbor):
+            continue
+
+        normalized_mac = _normalize_mac(neighbor.mac_address)
+        existing_device = await _load_device_by_mac(session, normalized_mac)
+        if existing_device is None:
+            existing_device = await _load_device_by_ip(session, neighbor.ip_address)
+        previous_ip = existing_device.current_ip if existing_device is not None else None
+        device = await _resolve_device(
+            session,
+            ip_address=neighbor.ip_address,
+            mac_address=neighbor.mac_address,
+            now=now,
+        )
+        _coerce_device_defaults(device)
+        if device.forced_route_target != "none" and previous_ip != device.current_ip:
+            device_route_overrides_dirty = True
+        if not device.hostname:
+            device.hostname = _resolve_hostname(neighbor.ip_address)
+        device.is_active = False
+        device.is_present = True
+        device.last_presence_check_at = now
+        device.last_present_at = now
         session.add(device)
 
     cutoff = now - timedelta(seconds=max(settings_row.device_activity_timeout_seconds * FLOW_RETENTION_MULTIPLIER, 600))

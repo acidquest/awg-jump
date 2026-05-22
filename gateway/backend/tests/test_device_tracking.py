@@ -44,10 +44,25 @@ def test_presence_from_neighbor_ignores_stale_entries() -> None:
     assert mac == "aa:bb"
 
 
+def test_confirm_neighbor_presence_uses_ping_for_stale_neighbor(monkeypatch) -> None:
+    neighbor = device_tracking.NeighborInfo(ip_address="192.168.1.10", mac_address="aa:bb", state="STALE")
+    monkeypatch.setattr(device_tracking, "_ping", lambda ip_address: ip_address == "192.168.1.10")
+
+    assert device_tracking._confirm_neighbor_presence(neighbor) is True
+
+
+def test_confirm_neighbor_presence_ignores_failed_neighbor(monkeypatch) -> None:
+    neighbor = device_tracking.NeighborInfo(ip_address="192.168.1.10", mac_address=None, state="FAILED")
+    monkeypatch.setattr(device_tracking, "_ping", lambda _ip: True)
+
+    assert device_tracking._confirm_neighbor_presence(neighbor) is False
+
+
 def test_flow_has_fresh_traffic_requires_byte_counter_change_for_existing_flow() -> None:
     assert device_tracking._flow_has_fresh_traffic(1200, 1200) is False
     assert device_tracking._flow_has_fresh_traffic(1200, 1400) is True
     assert device_tracking._flow_has_fresh_traffic(1200, 200) is True
+    assert device_tracking._flow_has_fresh_traffic(None, 1200) is True
     assert device_tracking._flow_has_fresh_traffic(None, 0) is False
 
 
