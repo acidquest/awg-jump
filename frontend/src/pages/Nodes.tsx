@@ -24,12 +24,6 @@ function fmtDate(s: string | null) {
   return formatDateTimeLocal(s)
 }
 
-function fmtLatency(latencyMs: number | null | undefined, status?: string | null) {
-  if (latencyMs != null) return `${latencyMs.toFixed(0)} ms`
-  if (status && ['pending', 'online', 'degraded'].includes(status)) return 'probing...'
-  return '—'
-}
-
 function nullableNumber(value: string) {
   const trimmed = value.trim()
   return trimmed === '' ? null : Number(trimmed)
@@ -50,7 +44,6 @@ export default function Nodes() {
   const [redeployNode_, setRedeployNode] = useState<Node | null>(null)
   const [logModal, setLogModal] = useState<DeployLog | null>(null)
   const [peerModalNode, setPeerModalNode] = useState<Node | null>(null)
-  const [latencyNode, setLatencyNode] = useState<Node | null>(null)
   const [failoverError, setFailoverError] = useState('')
 
   const { data: nodes = [], isLoading } = useQuery<Node[]>({
@@ -171,7 +164,6 @@ export default function Nodes() {
                 <th>Mode</th>
                 <th>Host</th>
                 <th>Status</th>
-                <th>Latency</th>
                 <th>RX / TX</th>
                 <th>Last seen</th>
                 <th>Actions</th>
@@ -180,7 +172,7 @@ export default function Nodes() {
             <tbody>
               {nodes.length === 0 ? (
                 <tr>
-	                  <td colSpan={9} className="text-muted" style={{ textAlign: 'center', padding: 32 }}>
+	                  <td colSpan={8} className="text-muted" style={{ textAlign: 'center', padding: 32 }}>
                     No nodes deployed yet
                   </td>
                 </tr>
@@ -219,20 +211,6 @@ export default function Nodes() {
                   <td>
                     <StatusBadge status={n.status} />
                   </td>
-                  <td
-                    className="text-mono"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setLatencyNode(n)
-                    }}
-                    title="Click to configure latency probe target"
-                    style={{ cursor: 'pointer' }}
-                  >
-                    {fmtLatency(n.latency_ms, n.status)}
-                    <div className="text-muted" style={{ fontSize: 11, marginTop: 4 }}>
-                      {n.probe_ip || (n.is_active ? 'probe IP is not set' : 'used when node is active')}
-                    </div>
-                  </td>
                   <td className="text-mono" style={{ fontSize: 12 }}>
                     {fmtBytes(n.rx_bytes)} / {fmtBytes(n.tx_bytes)}
                   </td>
@@ -246,7 +224,7 @@ export default function Nodes() {
 	                        title="Set as active"
 	                      >Activate</button>
 	                      <button
-	                        className={n.is_geoip ? 'btn btn-secondary btn-sm' : 'btn btn-ghost btn-sm'}
+	                        className={n.is_geoip ? 'btn btn-danger btn-sm' : 'btn btn-secondary btn-sm'}
 	                        onClick={() => geoipMut.mutate({ id: n.id, enabled: !n.is_geoip })}
 	                        disabled={n.is_active || geoipMut.isPending || !n.public_key || !['online', 'degraded'].includes(n.status)}
 	                        title={n.is_geoip ? 'Disable GeoIP routing through this node' : 'Route GeoIP traffic through this node'}
@@ -295,13 +273,7 @@ export default function Nodes() {
             <button className="btn btn-ghost btn-sm" onClick={() => setSelectedNode(null)}>✕</button>
           </div>
 
-          <div className="card-grid card-grid-3" style={{ marginBottom: 16 }}>
-            <div className="card">
-              <div className="stat-value text-mono" style={{ fontSize: 18 }}>
-                {fmtLatency(stats.latency_ms, stats.status)}
-              </div>
-              <div className="stat-label">latency</div>
-            </div>
+          <div className="card-grid card-grid-2" style={{ marginBottom: 16 }}>
             <div className="card">
               <div className="stat-value text-mono" style={{ fontSize: 18 }}>{fmtBytes(stats.rx_bytes)}</div>
               <div className="stat-label">received</div>
@@ -424,20 +396,6 @@ export default function Nodes() {
           onDone={() => {
             setPeerModalNode(null)
             qc.invalidateQueries({ queryKey: ['node-stats', peerModalNode.id] })
-          }}
-        />
-      )}
-
-      {latencyNode && (
-        <LatencyProbeModal
-          node={latencyNode}
-          onClose={() => setLatencyNode(null)}
-          onDone={() => {
-            setLatencyNode(null)
-            qc.invalidateQueries({ queryKey: ['nodes'] })
-            if (selectedNode?.id === latencyNode.id) {
-              qc.invalidateQueries({ queryKey: ['node-stats', latencyNode.id] })
-            }
           }}
         />
       )}
@@ -932,40 +890,6 @@ function AddNodeModal({ onClose, onDone }: { onClose: () => void; onDone: () => 
         <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
         <button className="btn btn-primary" onClick={() => mut.mutate()} disabled={mut.isPending || !form.name || !form.conf_text}>
           {mut.isPending ? <span className="spinner" /> : 'Add node'}
-        </button>
-      </div>
-    </Modal>
-  )
-}
-
-function LatencyProbeModal({ node, onClose, onDone }: { node: Node; onClose: () => void; onDone: () => void }) {
-  const [probeIp, setProbeIp] = useState(node.probe_ip ?? '')
-  const [error, setError] = useState('')
-  const mut = useMutation({
-    mutationFn: () => updateNode(node.id, { probe_ip: probeIp.trim() || null }),
-    onSuccess: onDone,
-    onError: (e: unknown) => setError((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to update probe IP'),
-  })
-
-  return (
-    <Modal open title={`Latency probe — ${node.name}`} onClose={onClose}>
-      {error && <div className="error-box">{error}</div>}
-      <div className="form-group">
-        <label className="form-label">Probe IP</label>
-        <input
-          className="form-input mono"
-          value={probeIp}
-          onChange={(e) => setProbeIp(e.target.value)}
-          placeholder="10.20.0.1"
-        />
-      </div>
-      <div className="info-box" style={{ fontSize: 12 }}>
-        This address is pinged only when the node is active. Inactive nodes are checked by AWG UDP port availability and do not measure latency.
-      </div>
-      <div className="modal-actions">
-        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-        <button className="btn btn-primary" onClick={() => mut.mutate()} disabled={mut.isPending}>
-          {mut.isPending ? <span className="spinner" /> : 'Save'}
         </button>
       </div>
     </Modal>

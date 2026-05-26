@@ -161,7 +161,7 @@ def test_make_node_server_config_uses_node_client_address_for_jump_peer() -> Non
 
 
 @pytest.mark.asyncio
-async def test_check_health_for_active_node_uses_explicit_probe_ip(monkeypatch) -> None:
+async def test_check_health_for_active_node_uses_awg_dump_without_latency_probe(monkeypatch) -> None:
     async with TestSessionLocal() as session:
         node = UpstreamNode(
             name="active-node",
@@ -170,7 +170,6 @@ async def test_check_health_for_active_node_uses_explicit_probe_ip(monkeypatch) 
             awg_port=51821,
             provisioning_mode=ProvisioningMode.managed,
             awg_address="10.20.0.3/32",
-            probe_ip="10.20.0.1",
             private_key="node-private-key",
             public_key="node-public-key",
             status=NodeStatus.online,
@@ -183,7 +182,6 @@ async def test_check_health_for_active_node_uses_explicit_probe_ip(monkeypatch) 
         node_id = node.id
 
     monkeypatch.setattr("backend.services.node_deployer.AsyncSessionLocal", TestSessionLocal)
-    monkeypatch.setattr("backend.services.node_deployer._measure_ping_latency", lambda target: (target == "10.20.0.1", 12.5))
     monkeypatch.setattr(
         "backend.services.node_deployer._run_cmd",
         lambda args: (0, "node-public-key\tpsk\t203.0.113.10:51821\t0.0.0.0/0\t1\t100\t200\t25\n"),
@@ -192,15 +190,62 @@ async def test_check_health_for_active_node_uses_explicit_probe_ip(monkeypatch) 
     result = await deployer.check_health(node_id)
 
     assert result["alive"] is True
-    assert result["latency_ms"] == 12.5
-    assert result["probe_ip"] == "10.20.0.1"
+    assert result["latency_ms"] is None
 
     async with TestSessionLocal() as session:
         refreshed = await session.get(UpstreamNode, node_id)
         assert refreshed is not None
-        assert refreshed.latency_ms == 12.5
+        assert refreshed.latency_ms is None
         assert refreshed.rx_bytes == 100
         assert refreshed.tx_bytes == 200
+
+
+@pytest.mark.asyncio
+async def test_check_health_for_geoip_node_reads_awg2_counters(monkeypatch) -> None:
+    async with TestSessionLocal() as session:
+        node = UpstreamNode(
+            name="geoip-node",
+            host="203.0.113.30",
+            ssh_port=22,
+            awg_port=51821,
+            provisioning_mode=ProvisioningMode.managed,
+            awg_address="10.20.0.5/32",
+            private_key="node-private-key",
+            public_key="geoip-public-key",
+            status=NodeStatus.online,
+            is_active=False,
+            is_geoip=True,
+            latency_ms=44.0,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        session.add(node)
+        await session.commit()
+        node_id = node.id
+
+    seen_args: list[list[str]] = []
+
+    def fake_run_cmd(args):
+        seen_args.append(args)
+        return (0, "geoip-public-key\tpsk\t203.0.113.30:51821\t0.0.0.0/0\t1\t300\t400\t25\n")
+
+    monkeypatch.setattr("backend.services.node_deployer.AsyncSessionLocal", TestSessionLocal)
+    monkeypatch.setattr("backend.services.node_deployer._run_cmd", fake_run_cmd)
+
+    result = await deployer.check_health(node_id)
+
+    assert seen_args == [["awg", "show", "awg2", "dump"]]
+    assert result["alive"] is True
+    assert result["rx_bytes"] == 300
+    assert result["tx_bytes"] == 400
+    assert result["latency_ms"] is None
+
+    async with TestSessionLocal() as session:
+        refreshed = await session.get(UpstreamNode, node_id)
+        assert refreshed is not None
+        assert refreshed.latency_ms is None
+        assert refreshed.rx_bytes == 300
+        assert refreshed.tx_bytes == 400
 
 
 @pytest.mark.asyncio

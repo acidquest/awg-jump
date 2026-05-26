@@ -238,18 +238,6 @@ def _make_compose_content(awg_port: int) -> str:
     )
 
 
-def _measure_ping_latency(target: str) -> tuple[bool, Optional[float]]:
-    """Returns ICMP reachability and coarse RTT based on wall clock timing."""
-    t0 = time.monotonic()
-    rc_ping, _ = _run_cmd([
-        "ping", "-c", "1", "-W",
-        str(max(1, int(settings.node_health_check_timeout))),
-        target,
-    ])
-    latency = (time.monotonic() - t0) * 1000
-    return rc_ping == 0, latency if rc_ping == 0 else None
-
-
 def _probe_udp_port(host: str, port: int) -> tuple[bool, str]:
     """
     Best-effort UDP availability probe.
@@ -878,17 +866,18 @@ class NodeDeployer:
 
     async def check_health(self, node_id: int) -> dict:
         """
-        Активная нода: парсит awg show awg1 dump → last_handshake.
-        Неактивные: ICMP ping к host.
+        Активная нода: парсит awg show awg1 dump → last_handshake/RX/TX.
+        GeoIP-нода: парсит awg show awg2 dump → last_handshake/RX/TX.
+        Остальные неактивные ноды проверяются по доступности UDP-порта.
         Учитывает grace period после деплоя — нода считается живой в течение 5 минут после
         последнего деплоя даже без handshake (туннель только устанавливается).
         """
         async with AsyncSessionLocal() as session:
             node = await _get_node(node_id, session)
             host = node.host
-            probe_ip = node.probe_ip
             awg_port = node.awg_port
             is_active = node.is_active
+            is_geoip = node.is_geoip
             public_key = node.public_key
             last_deploy = node.last_deploy
 
@@ -904,13 +893,10 @@ class NodeDeployer:
                  ).total_seconds() < _GRACE_PERIOD_SEC
         )
 
-        if is_active and public_key:
-            ping_alive = False
-            ping_latency = None
-            if probe_ip:
-                ping_alive, ping_latency = _measure_ping_latency(probe_ip)
-                result["latency_ms"] = ping_latency
-            rc, output = _run_cmd(["awg", "show", "awg1", "dump"])
+        dump_interface = "awg1" if is_active and public_key else "awg2" if is_geoip and public_key else None
+
+        if dump_interface:
+            rc, output = _run_cmd(["awg", "show", dump_interface, "dump"])
             if rc == 0:
                 now_ts = int(time.time())
                 matched_peer = False
@@ -926,10 +912,7 @@ class NodeDeployer:
                     tx = int(parts[6]) if parts[6].isdigit() else 0
                     age = (now_ts - handshake) if handshake > 0 else 9999
 
-                    # В grace period считаем живой даже без handshake.
-                    # ICMP RTT сохраняем отдельно как latency_ms.
-                    result["alive"] = age < 180 or ping_alive or in_grace
-                    result["probe_ip"] = probe_ip
+                    result["alive"] = age < 180 or in_grace
                     result["handshake_age_sec"] = age
                     result["rx_bytes"] = rx
                     result["tx_bytes"] = tx
@@ -938,9 +921,9 @@ class NodeDeployer:
                         node_obj = await _get_node(node_id, session)
                         node_obj.rx_bytes = rx
                         node_obj.tx_bytes = tx
-                        node_obj.latency_ms = ping_latency
+                        node_obj.latency_ms = None
                         if result["alive"]:
-                            if age < 180 or ping_alive:
+                            if age < 180:
                                 node_obj.last_seen = datetime.now(timezone.utc)
                             if node_obj.status in (NodeStatus.degraded, NodeStatus.offline):
                                 node_obj.status = NodeStatus.online
@@ -952,17 +935,14 @@ class NodeDeployer:
 
                 if not matched_peer:
                     logger.warning(
-                        "[health] active node %d peer not found in awg1 dump; using ICMP result only",
-                        node_id,
+                        "[health] node %d peer not found in %s dump",
+                        node_id, dump_interface,
                     )
-                    result["alive"] = ping_alive or in_grace
-                    result["probe_ip"] = probe_ip
+                    result["alive"] = in_grace
                     async with AsyncSessionLocal() as session:
                         node_obj = await _get_node(node_id, session)
-                        node_obj.latency_ms = ping_latency
+                        node_obj.latency_ms = None
                         if result["alive"]:
-                            if ping_alive:
-                                node_obj.last_seen = datetime.now(timezone.utc)
                             if node_obj.status in (NodeStatus.degraded, NodeStatus.offline):
                                 node_obj.status = NodeStatus.online
                         else:
@@ -970,16 +950,12 @@ class NodeDeployer:
                         node_obj.updated_at = datetime.now(timezone.utc)
                         await session.commit()
             else:
-                # awg show не работает — может awg1 упал
-                logger.warning("[health] awg show awg1 dump failed (rc=%d)", rc)
-                result["alive"] = ping_alive or in_grace
-                result["probe_ip"] = probe_ip
+                logger.warning("[health] awg show %s dump failed (rc=%d)", dump_interface, rc)
+                result["alive"] = in_grace
                 async with AsyncSessionLocal() as session:
                     node_obj = await _get_node(node_id, session)
-                    node_obj.latency_ms = ping_latency
+                    node_obj.latency_ms = None
                     if result["alive"]:
-                        if ping_alive:
-                            node_obj.last_seen = datetime.now(timezone.utc)
                         if node_obj.status in (NodeStatus.degraded, NodeStatus.offline):
                             node_obj.status = NodeStatus.online
                     else:
