@@ -3,17 +3,21 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { AxiosError } from 'axios'
 
 import {
+  createGeoipExclusion,
   createGeoipSource,
+  deleteGeoipExclusion,
   deleteGeoipSource,
+  getGeoipExclusions,
   getGeoipSources,
   getGeoipStatus,
   triggerGeoipUpdate,
+  updateGeoipExclusion,
   updateGeoipSource,
 } from '../api'
 import Modal from '../components/Modal'
 import StatusBadge from '../components/StatusBadge'
 import { openSSE } from '../sse'
-import { GeoipSource, GeoipStatus } from '../types'
+import { GeoipExclusion, GeoipSource, GeoipStatus } from '../types'
 import { formatDateTimeLocal, parseUtcDate } from '../utils/time'
 
 const DEFAULT_GEOIP_SOURCE_BASE = 'https://www.ipdeny.com/ipblocks/data/countries/'
@@ -21,6 +25,8 @@ const DEFAULT_GEOIP_SOURCE_BASE = 'https://www.ipdeny.com/ipblocks/data/countrie
 type ProgressLine = { ts: string; msg: string }
 type GeoipCreatePayload = { country_code: string; display_name: string; url?: string | null }
 type GeoipUpdatePayload = { display_name?: string; enabled?: boolean; url?: string | null }
+type GeoipExclusionCreatePayload = { address: string; enabled?: boolean }
+type GeoipExclusionUpdatePayload = { address?: string; enabled?: boolean }
 
 export default function GeoIP() {
   const qc = useQueryClient()
@@ -29,6 +35,9 @@ export default function GeoIP() {
   const [addOpen, setAddOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<GeoipSource | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<GeoipSource | null>(null)
+  const [addExclusionOpen, setAddExclusionOpen] = useState(false)
+  const [editExclusionTarget, setEditExclusionTarget] = useState<GeoipExclusion | null>(null)
+  const [deleteExclusionTarget, setDeleteExclusionTarget] = useState<GeoipExclusion | null>(null)
   const cleanupRef = useRef<(() => void) | null>(null)
   const termRef = useRef<HTMLDivElement>(null)
 
@@ -44,9 +53,17 @@ export default function GeoIP() {
     refetchInterval: 10_000,
   })
 
+  const { data: exclusions = [], isLoading: exclusionsLoading } = useQuery<GeoipExclusion[]>({
+    queryKey: ['geoip-exclusions'],
+    queryFn: () => getGeoipExclusions().then((r) => r.data),
+    refetchInterval: 10_000,
+  })
+
   const refreshGeoip = () => {
     qc.invalidateQueries({ queryKey: ['geoip-status'] })
     qc.invalidateQueries({ queryKey: ['geoip-sources'] })
+    qc.invalidateQueries({ queryKey: ['geoip-exclusions'] })
+    qc.invalidateQueries({ queryKey: ['routing'] })
   }
 
   useEffect(() => {
@@ -161,6 +178,52 @@ export default function GeoIP() {
       }
       if (context?.previousStatus) {
         qc.setQueryData(['geoip-status'], context.previousStatus)
+      }
+    },
+    onSettled: () => refreshGeoip(),
+  })
+
+  const createExclusionMut = useMutation({
+    mutationFn: (payload: GeoipExclusionCreatePayload) => createGeoipExclusion(payload),
+    onSuccess: () => {
+      setAddExclusionOpen(false)
+      refreshGeoip()
+    },
+  })
+
+  const updateExclusionMut = useMutation({
+    mutationFn: ({ id, payload }: { id: number; payload: GeoipExclusionUpdatePayload }) =>
+      updateGeoipExclusion(id, payload),
+    onSuccess: () => {
+      setEditExclusionTarget(null)
+      refreshGeoip()
+    },
+  })
+
+  const deleteExclusionMut = useMutation({
+    mutationFn: (id: number) => deleteGeoipExclusion(id),
+    onSuccess: () => {
+      setDeleteExclusionTarget(null)
+      refreshGeoip()
+    },
+  })
+
+  const toggleExclusionMut = useMutation({
+    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) =>
+      updateGeoipExclusion(id, { enabled }),
+    onMutate: async ({ id, enabled }) => {
+      await qc.cancelQueries({ queryKey: ['geoip-exclusions'] })
+      const previousExclusions = qc.getQueryData<GeoipExclusion[]>(['geoip-exclusions'])
+
+      qc.setQueryData<GeoipExclusion[]>(['geoip-exclusions'], (current = []) =>
+        current.map((item) => item.id === id ? { ...item, enabled } : item)
+      )
+
+      return { previousExclusions }
+    },
+    onError: (_error, _vars, context) => {
+      if (context?.previousExclusions) {
+        qc.setQueryData(['geoip-exclusions'], context.previousExclusions)
       }
     },
     onSettled: () => refreshGeoip(),
@@ -288,6 +351,75 @@ export default function GeoIP() {
         </div>
       </div>
 
+      <div className="section">
+        <div className="flex items-center justify-between" style={{ gap: 16, marginBottom: 12 }}>
+          <div className="section-title" style={{ marginBottom: 0 }}>Excluded addresses</div>
+          <button className="btn btn-primary btn-sm" onClick={() => setAddExclusionOpen(true)}>
+            + Add Address
+          </button>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Address / CIDR</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {exclusionsLoading ? (
+                <tr>
+                  <td colSpan={4} style={{ textAlign: 'center', padding: 24 }}>
+                    <span className="spinner" />
+                  </td>
+                </tr>
+              ) : exclusions.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>
+                    No excluded addresses configured
+                  </td>
+                </tr>
+              ) : exclusions.map((item) => (
+                <tr key={item.id}>
+                  <td className="text-mono">{item.address}</td>
+                  <td>
+                    <StatusBadge status={item.enabled ? 'online' : 'offline'} />
+                  </td>
+                  <td className="text-muted text-sm">{formatDateTimeLocal(item.created_at)}</td>
+                  <td>
+                    <div className="flex items-center gap-2" style={{ justifyContent: 'flex-end' }}>
+                      <label className="toggle" title={item.enabled ? 'Disable exclusion' : 'Enable exclusion'}>
+                        <input
+                          type="checkbox"
+                          checked={item.enabled}
+                          onChange={() => toggleExclusionMut.mutate({ id: item.id, enabled: !item.enabled })}
+                          disabled={toggleExclusionMut.isPending}
+                        />
+                        <span className="toggle-slider" />
+                      </label>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => setEditExclusionTarget(item)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        className="btn btn-danger btn-sm"
+                        onClick={() => setDeleteExclusionTarget(item)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       {(lines.length > 0 || updating || status?.update_running) && (
         <div className="section">
           <div className="section-title">Update progress</div>
@@ -342,7 +474,115 @@ export default function GeoIP() {
           </div>
         </Modal>
       )}
+
+      {addExclusionOpen && (
+        <ExclusionModal
+          title="Add excluded address"
+          pending={createExclusionMut.isPending}
+          onClose={() => setAddExclusionOpen(false)}
+          onSubmit={(payload) => createExclusionMut.mutateAsync(payload)}
+        />
+      )}
+
+      {editExclusionTarget && (
+        <ExclusionModal
+          title="Edit excluded address"
+          exclusion={editExclusionTarget}
+          pending={updateExclusionMut.isPending}
+          onClose={() => setEditExclusionTarget(null)}
+          onSubmit={(payload) => updateExclusionMut.mutateAsync({ id: editExclusionTarget.id, payload })}
+        />
+      )}
+
+      {deleteExclusionTarget && (
+        <Modal open title="Remove excluded address" onClose={() => setDeleteExclusionTarget(null)}>
+          <div style={{ marginBottom: 16, fontSize: 14 }}>
+            Remove {deleteExclusionTarget.address} from excluded addresses?
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-secondary" onClick={() => setDeleteExclusionTarget(null)}>Cancel</button>
+            <button
+              className="btn btn-danger"
+              onClick={() => deleteExclusionMut.mutate(deleteExclusionTarget.id)}
+              disabled={deleteExclusionMut.isPending}
+            >
+              {deleteExclusionMut.isPending ? <span className="spinner" /> : 'Remove'}
+            </button>
+          </div>
+        </Modal>
+      )}
     </>
+  )
+}
+
+function ExclusionModal({
+  title,
+  exclusion,
+  pending,
+  onClose,
+  onSubmit,
+}: {
+  title: string
+  exclusion?: GeoipExclusion
+  pending: boolean
+  onClose: () => void
+  onSubmit: (payload: GeoipExclusionCreatePayload) => Promise<unknown>
+}) {
+  const [address, setAddress] = useState(exclusion?.address ?? '')
+  const [enabled, setEnabled] = useState(exclusion?.enabled ?? true)
+  const [error, setError] = useState('')
+
+  const handleSubmit = async () => {
+    setError('')
+    if (!address.trim()) {
+      setError('Address or CIDR is required.')
+      return
+    }
+
+    try {
+      await onSubmit({ address: address.trim(), enabled })
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to save excluded address'))
+    }
+  }
+
+  return (
+    <Modal open title={title} onClose={onClose}>
+      <div className="form-group">
+        <label className="form-label">Address or CIDR</label>
+        <input
+          className="form-input mono"
+          value={address}
+          onChange={(e) => setAddress(e.target.value)}
+          placeholder="203.0.113.10 or 203.0.113.0/24"
+        />
+      </div>
+
+      <div className="form-group">
+        <label className="form-label" style={{ marginBottom: 8 }}>
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => setEnabled(e.target.checked)}
+            style={{ marginRight: 8 }}
+          />
+          Enabled
+        </label>
+      </div>
+
+      {error && (
+        <div style={{ color: 'var(--danger)', fontSize: 13, marginTop: 10 }}>
+          {error}
+        </div>
+      )}
+
+      <div className="modal-actions">
+        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={handleSubmit} disabled={pending}>
+          {pending ? <span className="spinner" /> : 'Save'}
+        </button>
+      </div>
+    </Modal>
   )
 }
 

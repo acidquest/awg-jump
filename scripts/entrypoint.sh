@@ -57,7 +57,7 @@ import os
 import sqlite3
 
 db_path = os.environ.get("DB_PATH", "/data/config.db")
-legacy_revisions = {"0002", "0003", "0004", "0005", "0006", "0007"}
+legacy_revisions = {"0002", "0003", "0004", "0006", "0007"}
 
 if os.path.exists(db_path):
     try:

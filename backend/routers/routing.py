@@ -9,6 +9,7 @@ from backend.database import get_db
 from backend.models.routing_settings import RoutingSettings
 from backend.models.upstream_node import NodeStatus, UpstreamNode
 from backend.routers.auth import get_current_user
+from backend.routers.geoip import get_enabled_exclusion_prefixes
 from backend.services import awg as awg_svc
 from backend.services import routing as routing_svc
 
@@ -85,6 +86,7 @@ async def update_settings(
         active_node = await _get_active_node(session)
         geoip_node = await _get_geoip_node(session)
         server_ifaces = await awg_svc.list_enabled_server_interface_names(session)
+        excluded_prefixes = await get_enabled_exclusion_prefixes(session)
         routing_svc.setup_policy_routing("awg2" if geoip_node else None)
         routing_svc.update_vpn_route("awg1" if active_node else None)
         routing_svc.update_upstream_host_route(
@@ -98,6 +100,7 @@ async def update_settings(
             server_ifaces=server_ifaces,
             invert_geoip=settings_row.invert_geoip,
             geoip_upstream_enabled=geoip_node is not None,
+            excluded_prefixes=excluded_prefixes,
         )
         return {
             "status": "updated",
@@ -121,6 +124,7 @@ async def apply_routing(
         active_node = await _get_active_node(session)
         geoip_node = await _get_geoip_node(session)
         server_ifaces = await awg_svc.list_enabled_server_interface_names(session)
+        excluded_prefixes = await get_enabled_exclusion_prefixes(session)
         routing_svc.setup_policy_routing("awg2" if geoip_node else None)
         routing_svc.update_vpn_route("awg1" if active_node else None)
         routing_svc.update_upstream_host_route(
@@ -134,6 +138,7 @@ async def apply_routing(
             server_ifaces=server_ifaces,
             invert_geoip=settings_row.invert_geoip,
             geoip_upstream_enabled=geoip_node is not None,
+            excluded_prefixes=excluded_prefixes,
         )
         return {
             "status": "applied",

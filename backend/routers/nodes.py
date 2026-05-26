@@ -301,6 +301,7 @@ async def _get_geoip_node(session: AsyncSession) -> UpstreamNode | None:
 async def _apply_current_routing(session: AsyncSession) -> None:
     from backend.services import awg as awg_svc
     from backend.services import routing as routing_svc
+    from backend.routers.geoip import get_enabled_exclusion_prefixes
 
     settings_row = await _get_or_create_routing_settings(session)
     active_node = await session.scalar(
@@ -316,6 +317,7 @@ async def _apply_current_routing(session: AsyncSession) -> None:
         )
     )
     server_ifaces = await awg_svc.list_enabled_server_interface_names(session)
+    excluded_prefixes = await get_enabled_exclusion_prefixes(session)
     routing_svc.setup_policy_routing("awg2" if geoip_node else None)
     routing_svc.update_vpn_route("awg1" if active_node else None)
     routing_svc.update_upstream_host_route(
@@ -330,6 +332,7 @@ async def _apply_current_routing(session: AsyncSession) -> None:
         server_ifaces=server_ifaces,
         invert_geoip=settings_row.invert_geoip,
         geoip_upstream_enabled=geoip_node is not None,
+        excluded_prefixes=excluded_prefixes,
     )
 
 

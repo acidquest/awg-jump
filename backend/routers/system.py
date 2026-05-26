@@ -18,6 +18,7 @@ from backend.models.upstream_node import UpstreamNode
 from backend.models.upstream_node import NodeStatus
 from backend.models.geoip import GeoipSource
 from backend.routers.auth import get_current_user
+from backend.routers.geoip import get_enabled_exclusion_prefixes
 from backend.config import settings
 import backend.services.awg as awg_svc
 import backend.services.ipset_manager as ipset_mgr
@@ -243,6 +244,7 @@ async def restart_routing(
             )
         )
         server_ifaces = await awg_svc.list_enabled_server_interface_names(session)
+        excluded_prefixes = await get_enabled_exclusion_prefixes(session)
         routing_svc.setup_policy_routing("awg2" if geoip_node else None)
         routing_svc.update_vpn_route("awg1" if active_node else None)
         routing_svc.update_upstream_host_route(
@@ -256,6 +258,7 @@ async def restart_routing(
             server_ifaces=server_ifaces,
             invert_geoip=invert_geoip,
             geoip_upstream_enabled=geoip_node is not None,
+            excluded_prefixes=excluded_prefixes,
         )
     except Exception as e:
         errors.append(f"setup: {e}")

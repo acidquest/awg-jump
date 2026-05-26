@@ -2,6 +2,7 @@
 GeoIP API — управление источниками, обновление, SSE прогресс.
 """
 import asyncio
+import ipaddress
 import json
 import logging
 from datetime import datetime, timezone
@@ -15,8 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db, AsyncSessionLocal
 from backend.models.geoip import GeoipSource
+from backend.models.geoip_exclusion import GeoipExclusion
+from backend.models.upstream_node import NodeStatus, UpstreamNode
 from backend.routers.auth import get_current_user
-from backend.services import geoip_fetcher, ipset_manager
+from backend.services import geoip_fetcher, ipset_manager, routing as routing_svc
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/geoip", tags=["geoip"])
@@ -129,11 +132,87 @@ class GeoIPSourceResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class GeoIPExclusionCreate(BaseModel):
+    address: str
+    enabled: bool = True
+
+    @field_validator("address")
+    @classmethod
+    def validate_address(cls, value: str) -> str:
+        return normalize_exclusion_address(value)
+
+
+class GeoIPExclusionUpdate(BaseModel):
+    address: str | None = None
+    enabled: bool | None = None
+
+    @field_validator("address")
+    @classmethod
+    def validate_address(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return normalize_exclusion_address(value)
+
+
+class GeoIPExclusionResponse(BaseModel):
+    id: int
+    address: str
+    enabled: bool
+    created_at: datetime | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+def normalize_exclusion_address(value: str) -> str:
+    candidate = value.strip()
+    if not candidate:
+        raise ValueError("address must not be empty")
+    try:
+        if "/" in candidate:
+            network = ipaddress.ip_network(candidate, strict=False)
+        else:
+            network = ipaddress.ip_network(f"{candidate}/32", strict=False)
+    except ValueError as exc:
+        raise ValueError(f"Invalid IPv4 address or CIDR: {value}") from exc
+
+    if network.version != 4:
+        raise ValueError("Only IPv4 addresses and CIDR networks are supported")
+    return str(network)
+
+
+async def get_enabled_exclusion_prefixes(session: AsyncSession) -> list[str]:
+    result = await session.execute(
+        select(GeoipExclusion.address)
+        .where(GeoipExclusion.enabled == True)  # noqa: E712
+        .order_by(GeoipExclusion.id)
+    )
+    return list(result.scalars().all())
+
+
+async def _sync_live_exclusions_if_geoip_enabled(session: AsyncSession) -> None:
+    geoip_node = await session.scalar(
+        select(UpstreamNode).where(
+            UpstreamNode.is_geoip == True,  # noqa: E712
+            UpstreamNode.status.in_([NodeStatus.online, NodeStatus.degraded]),
+        )
+    )
+    if geoip_node is None:
+        return
+    routing_svc.sync_excluded_ipset(await get_enabled_exclusion_prefixes(session))
+
+
 async def _get_source_or_404(session: AsyncSession, source_id: int) -> GeoipSource:
     source = await session.get(GeoipSource, source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="GeoIP source not found")
     return source
+
+
+async def _get_exclusion_or_404(session: AsyncSession, exclusion_id: int) -> GeoipExclusion:
+    exclusion = await session.get(GeoipExclusion, exclusion_id)
+    if exclusion is None:
+        raise HTTPException(status_code=404, detail="GeoIP exclusion not found")
+    return exclusion
 
 
 # ── Routes ────────────────────────────────────────────────────────────────
@@ -145,6 +224,80 @@ async def list_sources(
 ) -> list[GeoIPSourceResponse]:
     result = await session.execute(select(GeoipSource).order_by(GeoipSource.id))
     return [GeoIPSourceResponse.model_validate(s) for s in result.scalars().all()]
+
+
+@router.get("/exclusions", response_model=list[GeoIPExclusionResponse])
+async def list_exclusions(
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+) -> list[GeoIPExclusionResponse]:
+    result = await session.execute(select(GeoipExclusion).order_by(GeoipExclusion.id))
+    return [GeoIPExclusionResponse.model_validate(item) for item in result.scalars().all()]
+
+
+@router.post("/exclusions", response_model=GeoIPExclusionResponse, status_code=201)
+async def create_exclusion(
+    body: GeoIPExclusionCreate,
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+) -> GeoIPExclusionResponse:
+    existing = await session.scalar(
+        select(GeoipExclusion).where(GeoipExclusion.address == body.address)
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"GeoIP exclusion '{body.address}' already exists",
+        )
+
+    exclusion = GeoipExclusion(address=body.address, enabled=body.enabled)
+    session.add(exclusion)
+    await session.flush()
+    await _sync_live_exclusions_if_geoip_enabled(session)
+    await session.refresh(exclusion)
+    return GeoIPExclusionResponse.model_validate(exclusion)
+
+
+@router.put("/exclusions/{exclusion_id}", response_model=GeoIPExclusionResponse)
+async def update_exclusion(
+    exclusion_id: int,
+    body: GeoIPExclusionUpdate,
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+) -> GeoIPExclusionResponse:
+    exclusion = await _get_exclusion_or_404(session, exclusion_id)
+
+    if body.address is not None and body.address != exclusion.address:
+        existing = await session.scalar(
+            select(GeoipExclusion).where(GeoipExclusion.address == body.address)
+        )
+        if existing is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"GeoIP exclusion '{body.address}' already exists",
+            )
+        exclusion.address = body.address
+
+    if body.enabled is not None:
+        exclusion.enabled = body.enabled
+
+    session.add(exclusion)
+    await session.flush()
+    await _sync_live_exclusions_if_geoip_enabled(session)
+    await session.refresh(exclusion)
+    return GeoIPExclusionResponse.model_validate(exclusion)
+
+
+@router.delete("/exclusions/{exclusion_id}", status_code=204)
+async def delete_exclusion(
+    exclusion_id: int,
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+) -> None:
+    exclusion = await _get_exclusion_or_404(session, exclusion_id)
+    await session.delete(exclusion)
+    await session.flush()
+    await _sync_live_exclusions_if_geoip_enabled(session)
 
 
 @router.post("/sources", response_model=GeoIPSourceResponse, status_code=201)

@@ -27,6 +27,7 @@ from backend.models.routing_settings import RoutingSettings
 from backend.models.upstream_node import NodeStatus, UpstreamNode
 from backend.models.dns_manual_address import DnsManualAddress
 from backend.routers import auth, backup, dns, geoip, interfaces, nodes, peers, routing, settings as settings_router, system, telemt
+from backend.routers.geoip import get_enabled_exclusion_prefixes
 from backend.scheduler import scheduler, setup_scheduler
 import backend.services.awg as awg_svc
 import backend.services.dns_manager as dns_mgr
@@ -339,6 +340,7 @@ async def _init_geoip_and_routing() -> None:
                 )
             )
             server_ifaces = await awg_svc.list_enabled_server_interface_names(session)
+            excluded_prefixes = await get_enabled_exclusion_prefixes(session)
         routing_svc.setup_policy_routing("awg2" if geoip_node else None)
         routing_svc.update_vpn_route("awg1" if active_node else None)
         routing_svc.update_upstream_host_route(
@@ -352,6 +354,7 @@ async def _init_geoip_and_routing() -> None:
             server_ifaces=server_ifaces,
             invert_geoip=invert_geoip,
             geoip_upstream_enabled=geoip_node is not None,
+            excluded_prefixes=excluded_prefixes,
         )
         logger.info("Policy routing configured")
     except Exception as e:

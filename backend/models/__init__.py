@@ -1,6 +1,7 @@
 from backend.models.interface import Interface
 from backend.models.peer import Peer
 from backend.models.geoip import GeoipSource
+from backend.models.geoip_exclusion import GeoipExclusion
 from backend.models.upstream_node import UpstreamNode, DeployLog
 from backend.models.routing_rule import RoutingRule
 from backend.models.routing_settings import RoutingSettings
@@ -15,6 +16,7 @@ __all__ = [
     "Interface",
     "Peer",
     "GeoipSource",
+    "GeoipExclusion",
     "UpstreamNode",
     "DeployLog",
     "RoutingRule",

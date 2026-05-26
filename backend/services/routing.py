@@ -4,6 +4,7 @@ Policy routing manager — ip rule/route + iptables mangle/nat.
 Политика:
   fwmark FWMARK_LOCAL → table ROUTING_TABLE_LOCAL → default via eth0 или awg2
   fwmark FWMARK_VPN → table ROUTING_TABLE_VPN → default dev awg1
+  fwmark FWMARK_EXCLUDED → table ROUTING_TABLE_EXCLUDED → default via eth0
 """
 import logging
 import re
@@ -15,6 +16,7 @@ import backend.services.ipset_manager as ipset_mgr
 
 logger = logging.getLogger(__name__)
 _GEOIP_IPSET_NAME = "geoip_local"
+_GEOIP_EXCLUDED_IPSET_NAME = "geoip_excluded"
 _VPN_ROUTE_METRIC_PRIMARY = "100"
 _VPN_ROUTE_METRIC_FALLBACK = "200"
 _DNS_OUTPUT_PROTOCOLS = ("udp", "tcp")
@@ -81,11 +83,33 @@ def _mark_rules(
         geoip_mark = settings.fwmark_vpn if invert_geoip else settings.fwmark_local
         other_mark = settings.fwmark_local if invert_geoip else settings.fwmark_vpn
 
+    geoip_match: list[str] = ["-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst"]
+    output_geoip_match: list[str] = ["-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst"]
+    if geoip_upstream_enabled:
+        geoip_match = [
+            "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
+            "-m", "set", "!", "--match-set", _GEOIP_EXCLUDED_IPSET_NAME, "dst",
+        ]
+        output_geoip_match = [
+            "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
+            "-m", "set", "!", "--match-set", _GEOIP_EXCLUDED_IPSET_NAME, "dst",
+        ]
+
+    excluded_mark = settings.fwmark_excluded
     return {
         "geoip_mark": geoip_mark,
         "other_mark": other_mark,
+        "excluded_mark": excluded_mark,
+        "prerouting_excluded": [
+            [
+                "-i", iface,
+                "-m", "set", "--match-set", _GEOIP_EXCLUDED_IPSET_NAME, "dst",
+                "-j", "MARK", "--set-mark", excluded_mark,
+            ]
+            for iface in server_ifaces
+        ] if geoip_upstream_enabled else [],
         "prerouting_geoip": [
-            ["-i", iface, "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst", "-j", "MARK", "--set-mark", geoip_mark]
+            ["-i", iface, *geoip_match, "-j", "MARK", "--set-mark", geoip_mark]
             for iface in server_ifaces
         ],
         "prerouting_other": [
@@ -93,9 +117,12 @@ def _mark_rules(
             for iface in server_ifaces
         ],
         "output_geoip": [
-            "-m", "set", "--match-set", _GEOIP_IPSET_NAME, "dst",
-            "-j", "MARK", "--set-mark", geoip_mark,
+            *output_geoip_match, "-j", "MARK", "--set-mark", geoip_mark,
         ],
+        "output_excluded": [
+            "-m", "set", "--match-set", _GEOIP_EXCLUDED_IPSET_NAME, "dst",
+            "-j", "MARK", "--set-mark", excluded_mark,
+        ] if geoip_upstream_enabled else [],
         "output_other": [
             "-m", "set", "!", "--match-set", _GEOIP_IPSET_NAME, "dst",
             "-j", "MARK", "--set-mark", other_mark,
@@ -108,11 +135,19 @@ def _remove_all_policy_mark_rules() -> None:
     for invert_geoip in (False, True):
         for geoip_upstream_enabled in (False, True):
             rules = _mark_rules(candidate_ifaces, invert_geoip, geoip_upstream_enabled)
+            for rule in rules["prerouting_excluded"]:  # type: ignore[assignment]
+                _ipt_del("mangle", "PREROUTING", rule)
             for rule in rules["prerouting_geoip"]:  # type: ignore[assignment]
                 _ipt_del("mangle", "PREROUTING", rule)
             for rule in rules["prerouting_other"]:  # type: ignore[assignment]
                 _ipt_del("mangle", "PREROUTING", rule)
             for proto in _DNS_OUTPUT_PROTOCOLS:
+                if rules["output_excluded"]:
+                    _ipt_del("mangle", "OUTPUT", [
+                        "-p", proto,
+                        "--dport", "53",
+                        *rules["output_excluded"],  # type: ignore[list-item]
+                    ])
                 _ipt_del("mangle", "OUTPUT", [
                     "-p", proto,
                     "--dport", "53",
@@ -187,6 +222,21 @@ def _ensure_geoip_ipset() -> None:
     logger.warning("Created missing ipset %s as empty set", _GEOIP_IPSET_NAME)
 
 
+def _ensure_excluded_ipset() -> None:
+    if ipset_mgr.exists(_GEOIP_EXCLUDED_IPSET_NAME):
+        return
+    ipset_mgr.create(_GEOIP_EXCLUDED_IPSET_NAME)
+    logger.warning("Created missing ipset %s as empty set", _GEOIP_EXCLUDED_IPSET_NAME)
+
+
+def _sync_excluded_ipset(prefixes: list[str]) -> None:
+    ipset_mgr.create_or_update(_GEOIP_EXCLUDED_IPSET_NAME, prefixes)
+
+
+def sync_excluded_ipset(prefixes: list[str]) -> None:
+    _sync_excluded_ipset(prefixes)
+
+
 def update_geoip_route(
     interface_name: Optional[str],
     fallback_gateway: Optional[str] = None,
@@ -241,8 +291,10 @@ def setup_policy_routing(geoip_interface_name: Optional[str] = None) -> None:
     """
     fwmark_local = settings.fwmark_local
     fwmark_vpn = settings.fwmark_vpn
+    fwmark_excluded = settings.fwmark_excluded
     table_local = settings.routing_table_local
     table_vpn = settings.routing_table_vpn
+    table_excluded = settings.routing_table_excluded
     phys_iface = settings.physical_iface
 
     # ip rule: fwmark → таблица
@@ -261,6 +313,7 @@ def setup_policy_routing(geoip_interface_name: Optional[str] = None) -> None:
     gw = _get_default_gateway(phys_iface)
     update_geoip_route(geoip_interface_name, fallback_gateway=gw)
     update_vpn_route("awg1", fallback_gateway=gw)
+    update_excluded_route(geoip_interface_name is not None, fallback_gateway=gw)
 
 
 def update_vpn_route(
@@ -305,10 +358,44 @@ def update_vpn_route(
         logger.warning("Cannot determine fallback gateway for VPN table on %s", phys_iface)
 
 
+def update_excluded_route(
+    enabled: bool,
+    fallback_gateway: Optional[str] = None,
+) -> None:
+    table_excluded = settings.routing_table_excluded
+    fwmark_excluded = settings.fwmark_excluded
+    phys_iface = settings.physical_iface
+
+    if not enabled:
+        _run(["ip", "rule", "del", "fwmark", fwmark_excluded, "table", str(table_excluded)])
+        _run(["ip", "route", "flush", "table", str(table_excluded)])
+        return
+
+    if not _rule_exists(fwmark_excluded, table_excluded):
+        rc, out = _run(["ip", "rule", "add", "fwmark", fwmark_excluded, "table", str(table_excluded)])
+        if rc != 0:
+            raise RuntimeError(f"ip rule add EXCLUDED failed: {out}")
+        logger.info("Added ip rule: fwmark %s → table %d", fwmark_excluded, table_excluded)
+
+    gw = fallback_gateway or _get_default_gateway(phys_iface)
+    if gw:
+        _ensure_route(
+            table_excluded,
+            ["default", "via", gw, "dev", phys_iface, "metric", _VPN_ROUTE_METRIC_PRIMARY],
+            description=(
+                f"EXCLUDED table: default via {gw} dev {phys_iface} "
+                f"metric {_VPN_ROUTE_METRIC_PRIMARY} (table {table_excluded})"
+            ),
+        )
+    else:
+        logger.warning("Cannot determine gateway for EXCLUDED table on %s", phys_iface)
+
+
 def setup_iptables(
     server_ifaces: list[str] | None = None,
     invert_geoip: bool = False,
     geoip_upstream_enabled: bool = False,
+    excluded_prefixes: list[str] | None = None,
 ) -> None:
     """
     Настраивает правила iptables для policy routing + NAT.
@@ -319,11 +406,17 @@ def setup_iptables(
     rules = _mark_rules(effective_server_ifaces, invert_geoip, geoip_upstream_enabled)
 
     _ensure_geoip_ipset()
+    if geoip_upstream_enabled:
+        _ensure_excluded_ipset()
+        if excluded_prefixes is not None:
+            _sync_excluded_ipset(excluded_prefixes)
     _remove_all_policy_mark_rules()
 
     # mangle PREROUTING: fwmark для трафика от AWG-клиентов (-i awg0).
     # Ограничение по интерфейсу обязательно: без него маркируются и ответные пакеты
     # из интернета, что ломает маршрутизацию обратно к клиентам.
+    for rule in rules["prerouting_excluded"]:  # type: ignore[assignment]
+        _ipt_add("mangle", "PREROUTING", rule)
     for rule in rules["prerouting_geoip"]:  # type: ignore[assignment]
         _ipt_add("mangle", "PREROUTING", rule)
     for rule in rules["prerouting_other"]:  # type: ignore[assignment]
@@ -335,6 +428,8 @@ def setup_iptables(
     # Ограничиваемся DNS, чтобы не ломать обычный container-to-container трафик
     # (например nginx -> awg-jump по Docker bridge).
     for proto in _DNS_OUTPUT_PROTOCOLS:
+        if rules["output_excluded"]:
+            _ipt_add("mangle", "OUTPUT", ["-p", proto, "--dport", "53", *rules["output_excluded"]])  # type: ignore[list-item]
         _ipt_add("mangle", "OUTPUT", ["-p", proto, "--dport", "53", *rules["output_geoip"]])  # type: ignore[list-item]
         _ipt_add("mangle", "OUTPUT", ["-p", proto, "--dport", "53", *rules["output_other"]])  # type: ignore[list-item]
     logger.info("iptables mangle OUTPUT rules configured (DNS only)")
@@ -363,18 +458,22 @@ def teardown() -> None:
     """Удаляет все установленные правила (для тестов и graceful shutdown)."""
     fwmark_local = settings.fwmark_local
     fwmark_vpn = settings.fwmark_vpn
+    fwmark_excluded = settings.fwmark_excluded
     table_local = settings.routing_table_local
     table_vpn = settings.routing_table_vpn
+    table_excluded = settings.routing_table_excluded
     phys_iface = settings.physical_iface
 
     # ip rule
     _run(["ip", "rule", "del", "fwmark", fwmark_local, "table", str(table_local)])
     _run(["ip", "rule", "del", "fwmark", fwmark_vpn, "table", str(table_vpn)])
+    _run(["ip", "rule", "del", "fwmark", fwmark_excluded, "table", str(table_excluded)])
 
     # ip route: полностью очищаем управляемые таблицы, т.к. в VPN-таблице
     # теперь может быть и primary route через awg1, и fallback через physical iface.
     _run(["ip", "route", "flush", "table", str(table_local)])
     _run(["ip", "route", "flush", "table", str(table_vpn)])
+    _run(["ip", "route", "flush", "table", str(table_excluded)])
 
     _remove_all_policy_mark_rules()
 
@@ -390,8 +489,10 @@ def get_status(
     """Возвращает текущее состояние правил маршрутизации."""
     fwmark_local = settings.fwmark_local
     fwmark_vpn = settings.fwmark_vpn
+    fwmark_excluded = settings.fwmark_excluded
     table_local = settings.routing_table_local
     table_vpn = settings.routing_table_vpn
+    table_excluded = settings.routing_table_excluded
     phys_iface = settings.physical_iface
     effective_server_ifaces = [iface for iface in (server_ifaces or ["awg0"]) if iface]
     rules = _mark_rules(effective_server_ifaces, invert_geoip, geoip_upstream_enabled)
@@ -399,15 +500,20 @@ def get_status(
     _, rules_out = _run(["ip", "rule", "show"])
     _, route_local_out = _run(["ip", "route", "show", "table", str(table_local)])
     _, route_vpn_out = _run(["ip", "route", "show", "table", str(table_vpn)])
+    _, route_excluded_out = _run(["ip", "route", "show", "table", str(table_excluded)])
 
     return {
         "rule_local": _rule_exists(fwmark_local, table_local),
         "rule_vpn": _rule_exists(fwmark_vpn, table_vpn),
+        "rule_excluded": _rule_exists(fwmark_excluded, table_excluded),
         "route_local": route_local_out.strip() or None,
         "route_vpn": route_vpn_out.strip() or None,
+        "route_excluded": route_excluded_out.strip() or None,
         "invert_geoip": invert_geoip,
         "geoip_mark": rules["geoip_mark"],
         "other_mark": rules["other_mark"],
+        "excluded_mark": rules["excluded_mark"],
+        "prerouting_excluded": bool(rules["prerouting_excluded"]) and all(_ipt_rule_exists("mangle", "PREROUTING", rule) for rule in rules["prerouting_excluded"]),  # type: ignore[arg-type]
         "prerouting_geoip": all(_ipt_rule_exists("mangle", "PREROUTING", rule) for rule in rules["prerouting_geoip"]),  # type: ignore[arg-type]
         "prerouting_other": all(_ipt_rule_exists("mangle", "PREROUTING", rule) for rule in rules["prerouting_other"]),  # type: ignore[arg-type]
         "server_ifaces": effective_server_ifaces,
@@ -442,6 +548,14 @@ def get_status(
             ])
             for proto in _DNS_OUTPUT_PROTOCOLS
         ),
+        "output_excluded": all(
+            _ipt_rule_exists("mangle", "OUTPUT", [
+                "-p", proto,
+                "--dport", "53",
+                *rules["output_excluded"],  # type: ignore[list-item]
+            ])
+            for proto in _DNS_OUTPUT_PROTOCOLS
+        ) if rules["output_excluded"] else False,
         "output_other": all(
             _ipt_rule_exists("mangle", "OUTPUT", [
                 "-p", proto,
@@ -456,6 +570,7 @@ def get_status(
         "ip_routes": {
             str(table_local): [line.strip() for line in route_local_out.splitlines() if line.strip()],
             str(table_vpn): [line.strip() for line in route_vpn_out.splitlines() if line.strip()],
+            str(table_excluded): [line.strip() for line in route_excluded_out.splitlines() if line.strip()],
         },
         "physical_iface": phys_iface,
     }

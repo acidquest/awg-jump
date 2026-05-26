@@ -1,0 +1,14 @@
+from datetime import datetime, timezone
+
+from sqlalchemy import Boolean, Column, DateTime, Integer, String
+
+from backend.database import Base
+
+
+class GeoipExclusion(Base):
+    __tablename__ = "geoip_exclusions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    address = Column(String(64), unique=True, nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True, server_default="1")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

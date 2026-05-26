@@ -184,6 +184,13 @@ export interface GeoipSource {
   created_at: string | null
 }
 
+export interface GeoipExclusion {
+  id: number
+  address: string
+  enabled: boolean
+  created_at: string | null
+}
+
 export interface GeoipStatus {
   update_running: boolean
   total_prefixes: number
@@ -356,10 +363,14 @@ export interface SystemMetricsResponse {
 export interface RoutingStatus {
   rule_local: boolean
   rule_vpn: boolean
+  rule_excluded: boolean
   route_local: string | null
   route_vpn: string | null
+  route_excluded: string | null
+  prerouting_excluded: boolean
   prerouting_geoip: boolean
   prerouting_other: boolean
+  output_excluded: boolean
   output_geoip: boolean
   output_other: boolean
   nat_eth0: boolean
@@ -368,6 +379,7 @@ export interface RoutingStatus {
   invert_geoip: boolean
   geoip_mark: string
   other_mark: string
+  excluded_mark: string
   geoip_destination: 'local' | 'vpn' | 'geoip_node'
   other_destination: 'local' | 'vpn'
   physical_iface: string

@@ -19,6 +19,7 @@ from backend.config import settings
 from backend.database import Base, get_db
 from backend.models.interface import Interface, InterfaceMode, InterfaceProtocol
 from backend.models.geoip import GeoipSource
+from backend.models.geoip_exclusion import GeoipExclusion  # noqa: F401
 from backend.models.routing_settings import RoutingSettings
 from backend.models.telemt_settings import TelemtSettings  # noqa: F401
 from backend.models.telemt_user import TelemtUser  # noqa: F401

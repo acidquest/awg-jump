@@ -199,3 +199,57 @@ async def test_update_source_toggle_enabled_rebuilds(
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_geoip_exclusion_normalizes_single_ipv4(client: AsyncClient, auth_headers: dict) -> None:
+    resp = await client.post(
+        "/api/geoip/exclusions",
+        headers=auth_headers,
+        json={"address": "203.0.113.10"},
+    )
+
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert data["address"] == "203.0.113.10/32"
+    assert data["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_create_geoip_exclusion_rejects_ipv6(client: AsyncClient, auth_headers: dict) -> None:
+    resp = await client.post(
+        "/api/geoip/exclusions",
+        headers=auth_headers,
+        json={"address": "2001:db8::/32"},
+    )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_geoip_exclusion_rejects_duplicate(client: AsyncClient, auth_headers: dict) -> None:
+    payload = {"address": "198.51.100.0/24"}
+    first = await client.post("/api/geoip/exclusions", headers=auth_headers, json=payload)
+    second = await client.post("/api/geoip/exclusions", headers=auth_headers, json=payload)
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_update_geoip_exclusion_toggle(client: AsyncClient, auth_headers: dict) -> None:
+    created = await client.post(
+        "/api/geoip/exclusions",
+        headers=auth_headers,
+        json={"address": "192.0.2.1"},
+    )
+    assert created.status_code == 201, created.text
+
+    resp = await client.put(
+        f"/api/geoip/exclusions/{created.json()['id']}",
+        headers=auth_headers,
+        json={"enabled": False},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["enabled"] is False

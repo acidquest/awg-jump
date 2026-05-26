@@ -105,10 +105,15 @@ export const getNodePeerConfig = (id: number, peerId: number) =>
 // ── GeoIP ─────────────────────────────────────────────────────────────────
 export const getGeoipStatus = () => api.get('/geoip/status')
 export const getGeoipSources = () => api.get('/geoip/sources')
+export const getGeoipExclusions = () => api.get('/geoip/exclusions')
 export const createGeoipSource = (data: Record<string, unknown>) => api.post('/geoip/sources', data)
+export const createGeoipExclusion = (data: Record<string, unknown>) => api.post('/geoip/exclusions', data)
 export const updateGeoipSource = (id: number, data: Record<string, unknown>) =>
   api.put(`/geoip/sources/${id}`, data)
+export const updateGeoipExclusion = (id: number, data: Record<string, unknown>) =>
+  api.put(`/geoip/exclusions/${id}`, data)
 export const deleteGeoipSource = (id: number) => api.delete(`/geoip/sources/${id}`)
+export const deleteGeoipExclusion = (id: number) => api.delete(`/geoip/exclusions/${id}`)
 export const triggerGeoipUpdate = () => api.post('/geoip/update')
 
 // ── Routing ───────────────────────────────────────────────────────────────

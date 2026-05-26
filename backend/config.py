@@ -59,8 +59,10 @@ class Settings(BaseSettings):
     physical_iface: str = "eth0"
     routing_table_local: int = 100
     routing_table_vpn: int = 200
+    routing_table_excluded: int = 300
     fwmark_local: str = "0x1"
     fwmark_vpn: str = "0x2"
+    fwmark_excluded: str = "0x3"
 
     # ── GeoIP ────────────────────────────────────────────────────────────
     geoip_source: str = "https://www.ipdeny.com/ipblocks/data/countries/"
