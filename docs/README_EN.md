@@ -23,8 +23,9 @@
 
 **AWG Jump** is a containerized jump server built on [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go) (a WireGuard fork with DPI obfuscation). It implements a split traffic routing policy:
 
-- **Russian IP addresses** → host's physical interface (`eth0`) — direct connection, no VPN.
-- **All other traffic** → `awg1` — upstream node (foreign VPS).
+- **GeoIP local zone** → host's physical interface (`eth0`) or a dedicated GeoIP node through `awg2`, when enabled.
+- **All other traffic** → `awg1` — active upstream node.
+- **GeoIP-node exclusions** → host's physical interface (`eth0`) even when `awg2` is enabled.
 
 Additionally provides **Split DNS**: clients receive a built-in DNS server that routes queries for local-zone domains through configurable local zone DNS servers, and everything else through configurable VPN zone DNS servers.
 
@@ -60,11 +61,12 @@ Browser (WEB_PORT, default HTTPS:8080)
 │                                             │
 │  FastAPI + SQLite + APScheduler             │
 │  uvicorn (http or https)                    │
-│  amneziawg-go (awg0 + awg1)                │
+│  amneziawg-go (awg0 + awg1 + awg2)         │
 │  dnsmasq (split DNS)                        │
 │  ipset geoip_local + iptables policy routing│
 └─────────────────────────────────────────────┘
-       │ awg0 UDP:51820          │ awg1 → upstream
+       │ awg0 UDP:51820          │ awg1 → active upstream
+       │                         │ awg2 → GeoIP upstream (optional)
        │                         │
   AWG Clients              ┌─────┴──────┐
   (phone, PC)              │  awg-node  │ VPS #1 (active)
@@ -78,11 +80,12 @@ Browser (WEB_PORT, default HTTPS:8080)
 
 ```
 Client → awg0 → iptables mangle PREROUTING:
-    dst in ipset geoip_local  →  fwmark LOCAL →  table 100  →  eth0 (direct)
+    dst in ipset geoip_local  →  fwmark LOCAL →  table 100  →  eth0 or awg2
     dst not in geoip_local    →  fwmark VPN →  table 200  →  awg1 (VPN)
+    dst in geoip_excluded     →  fwmark EXCLUDED → table 300 → eth0 (when a GeoIP node is enabled)
 
 Container (dnsmasq DNS queries) → iptables mangle OUTPUT:
-    dst in ipset geoip_local  →  fwmark LOCAL →  table 100  →  eth0
+    dst in ipset geoip_local  →  fwmark LOCAL →  table 100  →  eth0 or awg2
     dst not in geoip_local    →  fwmark VPN →  table 200  →  awg1
 ```
 
@@ -188,8 +191,10 @@ On first launch, the container automatically:
 | `PHYSICAL_IFACE` | `eth0` | Physical interface for local-zone traffic |
 | `ROUTING_TABLE_LOCAL` | `100` | Routing table for local-zone traffic |
 | `ROUTING_TABLE_VPN` | `200` | Routing table for VPN traffic |
+| `ROUTING_TABLE_EXCLUDED` | `300` | Routing table for GeoIP-node exclusions |
 | `FWMARK_LOCAL` | `0x1` | fwmark for local-zone packets |
 | `FWMARK_VPN` | `0x2` | fwmark for VPN packets |
+| `FWMARK_EXCLUDED` | `0x3` | fwmark for GeoIP-node exclusions |
 
 ### GeoIP
 
@@ -206,8 +211,8 @@ On first launch, the container automatically:
 | `NODE_HEALTH_CHECK_INTERVAL` | `30` | Health check interval (seconds) |
 | `NODE_HEALTH_CHECK_TIMEOUT` | `5` | Single check timeout (seconds) |
 | `NODE_FAILOVER_THRESHOLD` | `3` | Failures before node failover |
-| `NODE_AWG_PORT` | `51821` | AWG UDP port on remote nodes |
-| `NODE_VPN_SUBNET` | `10.20.0.0/24` | Subnet for jump ↔ node communication |
+
+The AWG port, node interface address, and tunnel network are configured per node or imported from a manual `.conf`; exit/upstream nodes no longer have global `.env` variables.
 
 ---
 
@@ -264,10 +269,11 @@ The caller IP is taken from the request and matched against `awg0` peer `tunnel_
 Manage upstream nodes:
 
 - Add a VPS with SSH credentials (not stored).
-- Deploy `awg-node` over SSH: install Docker, build image, start container.
+- Deploy `awg-node` over SSH: validate sudo for non-root users, install Docker, build image, start container.
 - `Add node` for manual upstream nodes imported from a standard AWG peer `.conf`.
 - Streaming deploy log output (SSE).
-- Switch active node, view metrics (latency, RX/TX).
+- Switch active node, view RX/TX and last handshake time.
+- **GeoIP** button enables a second online/degraded node as a dedicated upstream for GeoIP prefixes through `awg2`. The active regular node cannot also be the GeoIP node.
 - Automatic failover when the active node degrades.
 - Managed nodes expose shared peers, peer `.conf` export, and apply those peer changes on `Redeploy`.
 - Manual nodes do not have `Redeploy`, `Deploy history`, or peer management.
@@ -288,7 +294,7 @@ Values are persisted into `.env`. Transport, port, and certificate changes requi
 View the current policy routing state:
 
 - ip rules (fwmark → table mapping).
-- ip routes in RU and VPN tables.
+- ip routes in LOCAL, VPN, and EXCLUDED tables.
 - iptables rule status (PREROUTING, OUTPUT, NAT).
 - **Apply** (recreate rules) and **Reset** (delete rules) buttons.
 
@@ -298,6 +304,7 @@ View the current policy routing state:
 - Manage countries in the local routing zone: RU, BY, KZ, and others.
 - Add, edit, and delete enabled GeoIP sources from the UI.
 - Source URL is built automatically from `country_code`, but can be overridden if needed.
+- The **Excluded addresses** table stores IPv4/CIDR exclusions from the GeoIP node. These addresses are not routed into `awg2` and stay on the direct physical interface.
 - Manual trigger for updating the aggregated GeoIP ipset.
 
 ### Split DNS
@@ -391,10 +398,11 @@ For upstream nodes, ready-made host-side installers are stored under `node/scrip
 - `H1–H4` must be unique and must not equal standard WG values (1, 2, 3, 4).
 - Parameters are generated automatically and stored in `config.db`. Included in backups.
 
-### Two Parameter Sets
+### Parameter Sets
 
 - **awg0** (server ↔ clients): `S*` and `H*` in server config; `Jc/Jmin/Jmax + S* + H*` in client config.
-- **awg1** (jump → upstream node): `Jc/Jmin/Jmax + S* + H*` in awg1 `[Interface]` (jump is the client); only `S* + H*` in node config (node is the server).
+- **awg1** (jump → active upstream node): `Jc/Jmin/Jmax + S* + H*` in awg1 `[Interface]` (jump is the client); only `S* + H*` in node config (node is the server).
+- **awg2** (jump → GeoIP node): reuses the `awg1` keypair, but has a separate peer/endpoint and is applied only when a GeoIP node is enabled.
 
 ---
 
@@ -406,11 +414,12 @@ For upstream nodes, ready-made host-side installers are stored under `node/scrip
 2. On schedule per `GEOIP_UPDATE_CRON` and on manual updates, all enabled GeoIP sources are loaded from the database.
 3. For each country, the source URL is built automatically from `country_code` using `GEOIP_SOURCE` unless an explicit `url` is stored.
 4. All CIDR blocks are merged into a single ipset `geoip_local` (atomic swap — no connection disruption).
-5. iptables mangle **PREROUTING** marks incoming packets from `awg0`:
+5. When no GeoIP node is enabled, iptables mangle **PREROUTING** marks incoming packets from `awg0`/`wg0` with the regular policy:
    - dst in `geoip_local` → `fwmark LOCAL` → table 100 → `eth0`
    - dst not in `geoip_local` → `fwmark VPN` → table 200 → `awg1`
-6. iptables mangle **OUTPUT** marks the container's own traffic (DNS queries etc.) by the same rules.
-7. `iptables nat POSTROUTING MASQUERADE` provides NAT on both outgoing interfaces.
+6. When a GeoIP node is enabled, the GeoIP local zone goes through the dedicated `awg2` tunnel, all other traffic goes through the active upstream node `awg1`, and addresses in `geoip_excluded` receive `fwmark EXCLUDED` and go directly through the physical interface.
+7. iptables mangle **OUTPUT** marks the container's own DNS traffic by the same rules.
+8. `iptables nat POSTROUTING MASQUERADE` provides NAT on `eth0`, `awg1`, and `awg2`.
 
 ### Routing Inversion
 
@@ -419,7 +428,9 @@ The **Routing** page exposes the `invert_geoip` toggle.
 - `invert_geoip = false` (Normal): the GeoIP local zone goes directly through `eth0`, while all other traffic goes through `awg1`.
 - `invert_geoip = true` (Inverted): the logic is reversed, so the GeoIP local zone goes through `awg1`, while all other traffic goes directly through `eth0`.
 
-This affects both client traffic arriving from `awg0` and the container's own outbound traffic, including `dnsmasq` DNS queries.
+When a GeoIP node is enabled, it takes precedence over inversion: the GeoIP local zone is sent to `awg2`, all other traffic stays on `awg1`, and **Local Routing Zones** exclusions go directly.
+
+This affects client traffic arriving from `awg0`/`wg0` and the container's own DNS traffic.
 
 ### Updating GeoIP
 
@@ -447,7 +458,7 @@ Client → AWG DNS (10.10.0.1:53) → dnsmasq:
     everything else                               → VPN zone DNS servers
 ```
 
-The container's own DNS traffic (dnsmasq queries to upstream resolvers) is routed via iptables OUTPUT using the same `geoip_local` ipset: local-zone IPs go through `eth0`, everything else goes through `awg1`.
+The container's own DNS traffic (dnsmasq queries to upstream resolvers) is routed via iptables OUTPUT using the same `geoip_local` ipset: local-zone IPs go through `eth0` or through `awg2` when a GeoIP node is enabled; everything else goes through `awg1`.
 
 ### Default Domains
 
@@ -534,10 +545,12 @@ Each node is stored in the `upstream_nodes` table:
 
 - `host` — VPS IP or hostname
 - `awg_port` — AWG UDP port on the node (default `51821`)
-- `awg_address` — node IP in the VPN subnet (e.g. `10.20.0.3/32`)
+- `awg_address` — `awg0` interface IP on the upstream node (e.g. `10.20.0.3/32`)
+- `tunnel_network` — CIDR of this node's tunnel network, derived from the interface address and checked for overlaps
 - `provisioning_mode` — `managed | manual`
 - `status` — `pending | deploying | online | degraded | offline | error`
-- `is_active` — only one node is active at a time
+- `is_active` — only one regular upstream node is active at a time
+- `is_geoip` — dedicated node for GeoIP prefixes via `awg2`; an active node cannot be used as the GeoIP node
 - `priority` — failover order
 
 ### Node Deployment
@@ -545,9 +558,10 @@ Each node is stored in the `upstream_nodes` table:
 The node is deployed from the web interface via SSH:
 
 1. The jump server packages the `node/` directory into a tar archive and streams it to the VPS via SSH pipe.
-2. Docker is installed on the VPS, and the `awg-node:local` image is built.
-3. AWG keys and a node config are generated (with awg1 obfuscation parameters).
-4. The node container is started.
+2. If the SSH user is not `root`, host-side commands are run through `sudo -S`; sudo access is validated before deployment starts.
+3. Docker is installed on the VPS, and the `awg-node:local` image is built.
+4. AWG keys, the node interface address, and the node tunnel network are prepared, then a config is generated with the relevant client interface obfuscation parameters.
+5. The node container is started.
 
 SSH credentials (login/password) are **never stored** anywhere.
 
@@ -682,11 +696,10 @@ awg-jump/
 │   └── alembic/            # DB migrations
 │       └── versions/
 │           ├── 0001_initial_schema.py
-│           ├── 0002_peer_private_key.py
-│           ├── 0003_node_private_key.py
-│           ├── 0004_dns_domains.py
-│           ├── 0005_geoip_local_multi_country.py
-│           └── 0006_dns_zone_settings.py
+│           ├── 0002_add_system_metrics.py
+│           ├── 0003_add_geoip_node_role.py
+│           ├── 0004_add_upstream_tunnel_network.py
+│           └── 0005_add_geoip_exclusions.py
 │
 ├── frontend/
 │   ├── src/

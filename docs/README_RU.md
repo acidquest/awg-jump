@@ -23,8 +23,9 @@
 
 **AWG Jump** — контейнеризированный jump-сервер на базе [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go) (форк WireGuard с DPI-обфускацией). Реализует политику раздельной маршрутизации трафика:
 
-- **Российские IP-адреса** → физический интерфейс хоста (`eth0`) — прямой выход без VPN.
-- **Остальной трафик** → `awg1` — upstream-нода (зарубежный VPS).
+- **GeoIP local zone** → физический интерфейс хоста (`eth0`) либо отдельная GeoIP-нода через `awg2`, если она включена.
+- **Остальной трафик** → `awg1` — активная upstream-нода.
+- **Исключения GeoIP-ноды** → физический интерфейс хоста (`eth0`) даже при включённом `awg2`.
 
 Дополнительно предоставляет **Split DNS**: клиенты получают встроенный DNS-сервер, который направляет запросы к доменам локальной зоны через настраиваемые DNS-серверы local zone, а остальные — через настраиваемые DNS-серверы VPN zone.
 
@@ -60,11 +61,12 @@
 │                                             │
 │  FastAPI + SQLite + APScheduler             │
 │  uvicorn (http или https)                   │
-│  amneziawg-go (awg0 + awg1)                │
+│  amneziawg-go (awg0 + awg1 + awg2)         │
 │  dnsmasq (split DNS)                        │
 │  ipset geoip_local + iptables policy routing│
 └──────────────────────────────────────────────┘
-       │ awg0 UDP:51820          │ awg1 → upstream
+       │ awg0 UDP:51820          │ awg1 → active upstream
+       │                         │ awg2 → GeoIP upstream (optional)
        │                         │
   AWG-клиенты              ┌─────┴──────┐
   (телефон, ПК)            │  awg-node  │ VPS #1 (активная)
@@ -78,11 +80,12 @@
 
 ```
 Клиент → awg0 → iptables mangle PREROUTING:
-    dst в ipset geoip_local  →  fwmark LOCAL →  table 100  →  eth0 (прямой)
+    dst в ipset geoip_local  →  fwmark LOCAL →  table 100  →  eth0 или awg2
     dst не в geoip_local     →  fwmark VPN →  table 200  →  awg1 (VPN)
+    dst в geoip_excluded     →  fwmark EXCLUDED → table 300 → eth0 (если включена GeoIP-нода)
 
 Контейнер (DNS-запросы dnsmasq) → iptables mangle OUTPUT:
-    dst в ipset geoip_local  →  fwmark LOCAL →  table 100  →  eth0
+    dst в ipset geoip_local  →  fwmark LOCAL →  table 100  →  eth0 или awg2
     dst не в geoip_local     →  fwmark VPN →  table 200  →  awg1
 ```
 
@@ -188,8 +191,10 @@ https://<SERVER_HOST>:<WEB_PORT>
 | `PHYSICAL_IFACE` | `eth0` | Физический интерфейс для local-zone трафика |
 | `ROUTING_TABLE_LOCAL` | `100` | Таблица маршрутизации для local-zone трафика |
 | `ROUTING_TABLE_VPN` | `200` | Таблица маршрутизации для VPN-трафика |
+| `ROUTING_TABLE_EXCLUDED` | `300` | Таблица маршрутизации для исключений из GeoIP-ноды |
 | `FWMARK_LOCAL` | `0x1` | fwmark для пакетов local zone |
 | `FWMARK_VPN` | `0x2` | fwmark для VPN-пакетов |
+| `FWMARK_EXCLUDED` | `0x3` | fwmark для исключений из GeoIP-ноды |
 
 ### GeoIP
 
@@ -206,8 +211,8 @@ https://<SERVER_HOST>:<WEB_PORT>
 | `NODE_HEALTH_CHECK_INTERVAL` | `30` | Интервал проверки здоровья (сек) |
 | `NODE_HEALTH_CHECK_TIMEOUT` | `5` | Таймаут одной проверки (сек) |
 | `NODE_FAILOVER_THRESHOLD` | `3` | Кол-во неудач до переключения ноды |
-| `NODE_AWG_PORT` | `51821` | UDP-порт AWG на удалённых нодах |
-| `NODE_VPN_SUBNET` | `10.20.0.0/24` | Подсеть для связи jump ↔ ноды |
+
+Порт AWG, адрес интерфейса ноды и сеть туннеля задаются в карточке конкретной ноды или берутся из импортированного manual `.conf`; глобальных `.env` переменных для upstream-нод больше нет.
 
 ---
 
@@ -264,10 +269,11 @@ IP клиента берётся из запроса и сопоставляет
 Управление upstream-нодами:
 
 - Добавление VPS с указанием SSH credentials (не сохраняются).
-- Деплой `awg-node` по SSH: установка Docker, сборка образа, запуск контейнера.
+- Деплой `awg-node` по SSH: проверка sudo при non-root пользователе, установка Docker, сборка образа, запуск контейнера.
 - Кнопка **Add node** для добавления manual-ноды из стандартного AWG peer `.conf`.
 - Потоковый вывод лога деплоя (SSE).
-- Переключение активной ноды, просмотр метрик (latency, RX/TX).
+- Переключение активной ноды, просмотр RX/TX и времени последнего handshake.
+- Кнопка **GeoIP** включает вторую online/degraded ноду как отдельный upstream для GeoIP-префиксов через `awg2`. Активная обычная нода не может одновременно быть GeoIP-нодой.
 - Автоматический failover при деградации активной ноды.
 - Для managed-ноды: таблица shared peers, экспорт peer в `.conf`, применение изменений при `Redeploy`.
 - Для manual-ноды: нет `Redeploy`, `Deploy history` и управления peer'ами.
@@ -288,7 +294,7 @@ IP клиента берётся из запроса и сопоставляет
 Просмотр текущего состояния политики маршрутизации:
 
 - ip rules (fwmark → таблица).
-- ip routes в таблицах LOCAL и VPN.
+- ip routes в таблицах LOCAL, VPN и EXCLUDED.
 - Состояние iptables правил (PREROUTING, OUTPUT, NAT).
 - Кнопки **Apply** (пересоздать правила) и **Reset** (удалить).
 
@@ -298,6 +304,7 @@ IP клиента берётся из запроса и сопоставляет
 - Управление списком стран локальной зоны: RU, BY, KZ и т.д.
 - Добавление, редактирование и удаление enabled GeoIP-источников через UI.
 - URL источника для страны строится автоматически по `country_code`, при необходимости может быть переопределён.
+- Таблица **Excluded addresses** хранит IPv4/CIDR исключения из GeoIP-ноды. Эти адреса не направляются в `awg2` и остаются на прямом физическом интерфейсе.
 - Ручное обновление объединённого GeoIP ipset.
 
 ### Split DNS
@@ -391,10 +398,11 @@ ip link add awg_probe type amneziawg && ip link del awg_probe
 - `H1–H4` должны быть уникальными и не равными стандартным значениям WG (1, 2, 3, 4).
 - Параметры генерируются автоматически и хранятся в `config.db`. Включаются в бэкап.
 
-### Два набора параметров
+### Наборы параметров
 
 - **awg0** (сервер ↔ клиенты): параметры `S*` и `H*` — в конфиге сервера; `Jc/Jmin/Jmax + S* + H*` — в конфиге клиента.
-- **awg1** (jump → upstream нода): `Jc/Jmin/Jmax + S* + H*` — в `[Interface]` awg1 (jump — клиент); только `S* + H*` — в конфиге ноды (нода — сервер).
+- **awg1** (jump → активная upstream-нода): `Jc/Jmin/Jmax + S* + H*` — в `[Interface]` awg1 (jump — клиент); только `S* + H*` — в конфиге ноды (нода — сервер).
+- **awg2** (jump → GeoIP-нода): использует ключи `awg1`, но отдельный peer/endpoint и применяется только при включении GeoIP-ноды.
 
 ---
 
@@ -406,11 +414,12 @@ ip link add awg_probe type amneziawg && ip link del awg_probe
 2. По расписанию `GEOIP_UPDATE_CRON` и при ручном запуске загружаются все enabled GeoIP-источники из БД.
 3. Для каждой страны URL строится автоматически по `country_code` на основе `GEOIP_SOURCE`, если пользователь не задал явный `url`.
 4. Все CIDR-блоки объединяются в один ipset `geoip_local` (atomic swap — без разрыва соединений).
-5. iptables mangle **PREROUTING** маркирует входящие от `awg0` пакеты:
+5. Если GeoIP-нода не включена, iptables mangle **PREROUTING** маркирует входящие от `awg0`/`wg0` пакеты по обычной схеме:
    - dst в `geoip_local` → `fwmark LOCAL` → таблица 100 → `eth0`
    - dst не в `geoip_local` → `fwmark VPN` → таблица 200 → `awg1`
-6. iptables mangle **OUTPUT** маркирует трафик самого контейнера (DNS-запросы и т.д.) по тем же правилам.
-7. `iptables nat POSTROUTING MASQUERADE` обеспечивает NAT на обоих исходящих интерфейсах.
+6. Если включена GeoIP-нода, GeoIP local zone идёт через отдельный туннель `awg2`, остальной трафик идёт через активную upstream-ноду `awg1`, а адреса из `geoip_excluded` получают `fwmark EXCLUDED` и идут напрямую через физический интерфейс.
+7. iptables mangle **OUTPUT** маркирует DNS-трафик самого контейнера по тем же правилам.
+8. `iptables nat POSTROUTING MASQUERADE` обеспечивает NAT на `eth0`, `awg1` и `awg2`.
 
 ### Инверсия маршрутизации
 
@@ -419,7 +428,9 @@ ip link add awg_probe type amneziawg && ip link del awg_probe
 - `invert_geoip = false` (Normal): GeoIP local zone идёт напрямую через `eth0`, остальной трафик уходит в `awg1`.
 - `invert_geoip = true` (Inverted): логика меняется местами, то есть GeoIP local zone уходит в `awg1`, а остальной трафик идёт напрямую через `eth0`.
 
-Это влияет и на трафик клиентов из `awg0`, и на исходящий трафик самого контейнера, включая DNS-запросы `dnsmasq`.
+Если включена GeoIP-нода, она имеет приоритет над инверсией: GeoIP local zone направляется в `awg2`, остальной трафик остаётся на `awg1`, а исключения из **Local Routing Zones** идут напрямую.
+
+Это влияет и на трафик клиентов из `awg0`/`wg0`, и на DNS-трафик самого контейнера.
 
 ### Обновление GeoIP
 
@@ -447,7 +458,7 @@ AWG Jump запускает `dnsmasq` непосредственно в конт
     всё остальное                                 → DNS серверы vpn zone
 ```
 
-DNS-трафик самого контейнера (запросы dnsmasq к upstream DNS) маршрутизируется через iptables OUTPUT по тому же ipset `geoip_local`: IP локальной зоны идут через `eth0`, остальные — через `awg1`.
+DNS-трафик самого контейнера (запросы dnsmasq к upstream DNS) маршрутизируется через iptables OUTPUT по тому же ipset `geoip_local`: IP локальной зоны идут через `eth0` или через `awg2`, если включена GeoIP-нода; остальные идут через `awg1`.
 
 ### Дефолтные домены
 
@@ -534,9 +545,12 @@ server=/yandex.ru/77.88.8.8
 
 - `host` — IP или hostname VPS
 - `awg_port` — UDP-порт AWG на ноде (по умолчанию `51821`)
-- `awg_address` — IP ноды в VPN-подсети (напр. `10.20.0.3/32`)
+- `awg_address` — IP интерфейса `awg0` на upstream-ноде (напр. `10.20.0.3/32`)
+- `tunnel_network` — CIDR сети туннеля конкретной ноды, вычисляется из адреса интерфейса и проверяется на пересечения
+- `provisioning_mode` — `managed | manual`
 - `status` — `pending | deploying | online | degraded | offline | error`
-- `is_active` — только одна нода активна одновременно
+- `is_active` — только одна обычная upstream-нода активна одновременно
+- `is_geoip` — отдельная нода для GeoIP-префиксов через `awg2`; активная нода не может быть GeoIP-нодой
 - `priority` — порядок failover
 
 ### Деплой ноды
@@ -544,9 +558,10 @@ server=/yandex.ru/77.88.8.8
 Нода разворачивается из веб-интерфейса по SSH:
 
 1. Jump-сервер упаковывает папку `node/` в tar и передаёт на VPS через SSH pipe.
-2. На VPS устанавливается Docker, собирается образ `awg-node:local`.
-3. Генерируются AWG-ключи и конфиг для ноды (с параметрами обфускации awg1).
-4. Запускается контейнер с нодой.
+2. Если SSH-пользователь не `root`, все host-side команды выполняются через `sudo -S`; перед началом деплоя проверяется валидность sudo-доступа.
+3. На VPS устанавливается Docker, собирается образ `awg-node:local`.
+4. Генерируются AWG-ключи, адрес интерфейса и сеть туннеля ноды, затем создаётся конфиг с параметрами обфускации нужного клиентского интерфейса.
+5. Запускается контейнер с нодой.
 
 SSH credentials (логин/пароль) **не сохраняются** нигде.
 
@@ -675,11 +690,10 @@ awg-jump/
 │   └── alembic/            # Миграции БД
 │       └── versions/
 │           ├── 0001_initial_schema.py
-│           ├── 0002_peer_private_key.py
-│           ├── 0003_node_private_key.py
-│           ├── 0004_dns_domains.py
-│           ├── 0005_geoip_local_multi_country.py
-│           └── 0006_dns_zone_settings.py
+│           ├── 0002_add_system_metrics.py
+│           ├── 0003_add_geoip_node_role.py
+│           ├── 0004_add_upstream_tunnel_network.py
+│           └── 0005_add_geoip_exclusions.py
 │
 ├── frontend/
 │   ├── src/

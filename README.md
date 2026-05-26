@@ -28,9 +28,8 @@
 - `CLASSIC_WG`, `WG0_LISTEN_PORT`, `WG0_ADDRESS`, `WG0_DNS`: опциональный серверный интерфейс classic WireGuard `wg0`.
 - `TELEMT_ENABLED`, `TELEMT_PORT`: включение и TCP-порт встроенного MTProto proxy TeleMT.
 - `TELEMT_VERSION`: версия TeleMT, которая вшивается при сборке образа `awg-jump`.
-- `AWG1_ADDRESS`, `AWG1_ALLOWED_IPS`, `AWG1_PERSISTENT_KEEPALIVE`: клиентский интерфейс jump → upstream node.
-- `PHYSICAL_IFACE`, `ROUTING_TABLE_LOCAL`: физический интерфейс и routing table для local-zone трафика.
-- `NODE_AWG_PORT`, `NODE_VPN_SUBNET`: параметры сети upstream-нод.
+- `AWG1_ADDRESS`, `AWG1_ALLOWED_IPS`, `AWG1_PERSISTENT_KEEPALIVE`: клиентский интерфейс jump → активная upstream-нода.
+- `PHYSICAL_IFACE`, `ROUTING_TABLE_LOCAL`, `ROUTING_TABLE_VPN`: физический интерфейс и routing tables для policy routing.
 - `GEOIP_SOURCE`, `GEOIP_UPDATE_CRON`: базовый URL источника и расписание обновления GeoIP для локальной зоны.
 
 Полный список и комментарии смотри в [`.env.ru.example`](.env.ru.example) или [`.env.en.example`](.env.en.example).
@@ -39,12 +38,13 @@
 
 `awg-node` предназначен для удалённых VPS, которые `awg-jump` разворачивает по SSH из веб-интерфейса. Типовой поток такой:
 
-1. На VPS должен быть установлен Docker Engine и открыт UDP-порт `NODE_AWG_PORT`.
+1. На VPS должен быть установлен Docker Engine и открыт UDP-порт, указанный в карточке ноды. По умолчанию используется `51821/udp`.
 2. Для более стабильной работы upstream-ноды рекомендуется установить на хосте kernel module `amneziawg` вместе с `amneziawg-tools`. Перед установкой модуля обязательно установи headers именно для текущего ядра: `linux-headers-$(uname -r)`.
 3. Готовые host-side скрипты лежат в [node/scripts/install-kernel-module-debian12.sh](/opt/awg-jump/node/scripts/install-kernel-module-debian12.sh) и [node/scripts/install-kernel-module-debian13.sh](/opt/awg-jump/node/scripts/install-kernel-module-debian13.sh). При SSH-деплое ноды директория `node/` целиком доставляется на удалённый хост в `/opt/awg-node`, поэтому эти скрипты будут доступны там же: `/opt/awg-node/scripts/`.
-4. В UI на странице Nodes добавляется нода с SSH host/login/password или ключом.
-5. `awg-jump` собирает или доставляет образ `awg-node`, генерирует конфиг peer'а и поднимает контейнер на удалённой машине.
-6. При активации ноды jump-сервер обновляет `awg1`, а health-check/failover переключает активную ноду при деградации.
+4. В UI на странице Nodes добавляется нода с SSH host/login/password или ключом. Если SSH-пользователь не `root`, деплой выполняет host-side команды через `sudo` и заранее проверяет sudo-доступ.
+5. `awg-jump` собирает или доставляет образ `awg-node`, назначает адреса туннеля из адреса интерфейса ноды, генерирует конфиг peer'а и поднимает контейнер на удалённой машине.
+6. При активации обычной ноды jump-сервер обновляет `awg1`, а health-check/failover переключает активную ноду при деградации.
+7. Любую вторую online/degraded ноду можно включить как GeoIP-ноду. Тогда GeoIP-префиксы маршрутизируются через отдельный туннель `awg2`, а исключения из **Local Routing Zones** остаются на прямом физическом интерфейсе.
 
 Для ручного развёртывания upstream-узла смотри [node/README.md](node/README.md).
 
@@ -57,7 +57,7 @@
 - Клиенты получают DNS сервера своего входного интерфейса (`awg0` или `wg0`) автоматически.
 - Домены из списка в веб-интерфейсе (страница **Split DNS**) могут быть направлены в `Local Zone` или `VPN Zone`.
 - Для каждой зоны задаётся свой список DNS-серверов в UI и хранится в БД.
-- DNS-запросы самого контейнера маршрутизируются по тем же правилам GeoIP: IP из `geoip_local` идут через `eth0`, остальные — через `awg1` (upstream VPN).
+- DNS-запросы самого контейнера маршрутизируются по тем же правилам GeoIP: IP из `geoip_local` идут в local zone или через `awg2`, если включена GeoIP-нода; остальное идёт через `awg1` (active upstream VPN).
 
 **Управление доменами:**
 
