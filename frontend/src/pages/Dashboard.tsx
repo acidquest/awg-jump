@@ -465,11 +465,12 @@ function RoutingDiagram({
   activeNodeExternalIp: string | null
 }) {
   const physicalIface = routing.physical_iface ?? 'eth0'
-  const localZoneLabel = routing.geoip_destination === 'local' ? 'GeoIP local zone' : 'Other traffic'
+  const geoipViaNode = routing.geoip_destination === 'geoip_node'
+  const localZoneLabel = routing.geoip_destination === 'local' || geoipViaNode ? 'GeoIP local zone' : 'Other traffic'
   const vpnZoneLabel = routing.geoip_destination === 'vpn' ? 'GeoIP local zone' : 'Other traffic'
-  const localMark = routing.geoip_destination === 'local' ? routing.geoip_mark : routing.other_mark
+  const localMark = routing.geoip_destination === 'local' || geoipViaNode ? routing.geoip_mark : routing.other_mark
   const vpnMark = routing.geoip_destination === 'vpn' ? routing.geoip_mark : routing.other_mark
-  const localMarked = routing.geoip_destination === 'local' ? routing.prerouting_geoip : routing.prerouting_other
+  const localMarked = routing.geoip_destination === 'local' || geoipViaNode ? routing.prerouting_geoip : routing.prerouting_other
   const vpnMarked = routing.geoip_destination === 'vpn' ? routing.prerouting_geoip : routing.prerouting_other
 
   return (
@@ -478,7 +479,9 @@ function RoutingDiagram({
         <div>
           <div className="routing-diagram-title">Live traffic map</div>
           <div className="routing-diagram-subtitle">
-            {routing.invert_geoip ? 'Inverted mode: GeoIP zone goes to upstream VPN, other traffic goes directly to the local interface.' : 'Normal mode: GeoIP zone goes directly to the local interface, other traffic goes to upstream VPN.'}
+            {geoipViaNode
+              ? 'GeoIP node mode: GeoIP zone goes to awg2, other traffic goes to the active upstream VPN.'
+              : routing.invert_geoip ? 'Inverted mode: GeoIP zone goes to upstream VPN, other traffic goes directly to the local interface.' : 'Normal mode: GeoIP zone goes directly to the local interface, other traffic goes to upstream VPN.'}
           </div>
         </div>
         <div className="routing-diagram-mode">
@@ -522,8 +525,8 @@ function RoutingDiagram({
               <div className="routing-branch-label">{localZoneLabel}</div>
               <TrafficNode
                 icon={<InternetIcon />}
-                title={physicalIface}
-                meta={localExternalIp ? `external IP ${localExternalIp}` : 'external IP not configured'}
+                title={geoipViaNode ? 'awg2' : physicalIface}
+                meta={geoipViaNode ? 'GeoIP upstream node' : localExternalIp ? `external IP ${localExternalIp}` : 'external IP not configured'}
                 accent
               />
               <div className="routing-branch-meta">

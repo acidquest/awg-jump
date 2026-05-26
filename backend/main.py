@@ -139,6 +139,8 @@ async def _ensure_sqlite_columns() -> None:
             await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN raw_conf TEXT"))
         if "client_address" not in node_columns:
             await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_address VARCHAR(64)"))
+        if "tunnel_network" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN tunnel_network VARCHAR(64)"))
         if "client_dns" not in node_columns:
             await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_dns VARCHAR(256)"))
         if "client_allowed_ips" not in node_columns:
@@ -169,6 +171,8 @@ async def _ensure_sqlite_columns() -> None:
             await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN client_obf_h4 INTEGER"))
         if "probe_ip" not in node_columns:
             await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN probe_ip VARCHAR(64)"))
+        if "is_geoip" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN is_geoip BOOLEAN NOT NULL DEFAULT 0"))
 
         result = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='node_peers'"))
         if result.first() is None:
@@ -234,13 +238,23 @@ async def _init_keys_and_obfuscation() -> None:
                 logger.info("Generated obfuscation params for %s", iface.name)
             if changed:
                 session.add(iface)
+        awg1 = next((iface for iface in ifaces if iface.name == "awg1"), None)
+        awg2 = next((iface for iface in ifaces if iface.name == "awg2"), None)
+        if awg1 and awg2 and (
+            awg2.private_key != awg1.private_key or awg2.public_key != awg1.public_key
+        ):
+            awg2.private_key = awg1.private_key
+            awg2.public_key = awg1.public_key
+            awg2.updated_at = datetime.now(timezone.utc)
+            session.add(awg2)
+            logger.info("Synced awg2 keypair from awg1 for GeoIP upstream reuse")
         await session.commit()
 
 
 async def _start_interfaces() -> None:
     """Поднимает все enabled AWG интерфейсы."""
     async with AsyncSessionLocal() as session:
-        visible_names = awg_svc.visible_interface_names()
+        visible_names = awg_svc.managed_interface_names()
         result = await session.execute(select(Interface).where(Interface.enabled == True))  # noqa: E712
         for iface in result.scalars().all():
             if iface.name not in visible_names:
@@ -318,13 +332,27 @@ async def _init_geoip_and_routing() -> None:
                     UpstreamNode.status == NodeStatus.online,
                 )
             )
+            geoip_node = await session.scalar(
+                select(UpstreamNode).where(
+                    UpstreamNode.is_geoip == True,  # noqa: E712
+                    UpstreamNode.status.in_([NodeStatus.online, NodeStatus.degraded]),
+                )
+            )
             server_ifaces = await awg_svc.list_enabled_server_interface_names(session)
-        routing_svc.setup_policy_routing()
+        routing_svc.setup_policy_routing("awg2" if geoip_node else None)
         routing_svc.update_vpn_route("awg1" if active_node else None)
         routing_svc.update_upstream_host_route(
             active_node.awg_address if active_node and active_node.awg_address else None
         )
-        routing_svc.setup_iptables(server_ifaces=server_ifaces, invert_geoip=invert_geoip)
+        routing_svc.update_upstream_host_route(
+            geoip_node.awg_address if geoip_node and geoip_node.awg_address else None,
+            interface_name="awg2",
+        )
+        routing_svc.setup_iptables(
+            server_ifaces=server_ifaces,
+            invert_geoip=invert_geoip,
+            geoip_upstream_enabled=geoip_node is not None,
+        )
         logger.info("Policy routing configured")
     except Exception as e:
         logger.error("Routing setup failed: %s", e)

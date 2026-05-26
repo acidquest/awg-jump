@@ -7,7 +7,7 @@ from sqlalchemy import select
 from backend.models.interface import Interface
 from backend.models.upstream_node import NodePeer, NodeStatus, ProvisioningMode, UpstreamNode
 from backend.services.node_deployer import _get_node, _make_env_content, _make_node_server_config, deployer
-from backend.services.upstream_nodes import apply_node_to_awg1
+from backend.services.upstream_nodes import apply_node_to_awg1, derive_node_tunnel_addresses
 from backend.tests.conftest import TestSessionLocal
 
 
@@ -50,15 +50,36 @@ async def test_get_node_eager_loads_shared_peers(db_session) -> None:
     assert shared_peers[0].tunnel_address == "10.30.0.2/32"
 
 
-def test_make_env_content_uses_24_mask_for_node_interface() -> None:
+def test_derive_node_tunnel_addresses_from_jump_interface_ip() -> None:
+    client_address, awg_address, tunnel_network = derive_node_tunnel_addresses("10.31.0.2/24")
+
+    assert client_address == "10.31.0.2/32"
+    assert awg_address == "10.31.0.1/32"
+    assert tunnel_network == "10.31.0.0/24"
+
+
+def test_derive_node_tunnel_addresses_treats_plain_ip_or_32_as_24_network() -> None:
+    assert derive_node_tunnel_addresses("10.32.0.2") == (
+        "10.32.0.2/32",
+        "10.32.0.1/32",
+        "10.32.0.0/24",
+    )
+    assert derive_node_tunnel_addresses("10.33.0.2/32") == (
+        "10.33.0.2/32",
+        "10.33.0.1/32",
+        "10.33.0.0/24",
+    )
+
+
+def test_make_env_content_uses_derived_node_interface_address() -> None:
     env_content = _make_env_content(
         private_key="node-private-key",
-        awg_address="10.20.0.3/32",
+        awg_interface_address="10.20.0.1/24",
         awg_port=51821,
     )
 
-    assert "AWG_ADDRESS=10.20.0.3/24" in env_content
-    assert "AWG_ADDRESS=10.20.0.3/32" not in env_content
+    assert "AWG_ADDRESS=10.20.0.1/24" in env_content
+    assert "AWG_ADDRESS=10.20.0.1/32" not in env_content
 
 
 @pytest.mark.asyncio

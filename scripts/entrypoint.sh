@@ -106,6 +106,12 @@ async def ensure_tables():
         interface_columns = {row[1] for row in result.fetchall()}
         if "protocol" not in interface_columns:
             await conn.execute(text("ALTER TABLE interfaces ADD COLUMN protocol VARCHAR(16) NOT NULL DEFAULT 'awg'"))
+        result = await conn.execute(text("PRAGMA table_info(upstream_nodes)"))
+        node_columns = {row[1] for row in result.fetchall()}
+        if "is_geoip" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN is_geoip BOOLEAN NOT NULL DEFAULT 0"))
+        if "tunnel_network" not in node_columns:
+            await conn.execute(text("ALTER TABLE upstream_nodes ADD COLUMN tunnel_network VARCHAR(64)"))
         await conn.execute(
             text(
                 """
@@ -216,9 +222,9 @@ async def init_defaults():
                 name="awg1",
                 mode=InterfaceMode.client,
                 protocol=InterfaceProtocol.awg,
-                address=settings.awg1_address,
-                allowed_ips=settings.awg1_allowed_ips,
-                persistent_keepalive=settings.awg1_persistent_keepalive,
+                address="",
+                allowed_ips="0.0.0.0/0",
+                persistent_keepalive=25,
                 enabled=True,
                 created_at=datetime.now(timezone.utc),
                 updated_at=datetime.now(timezone.utc),
@@ -228,6 +234,38 @@ async def init_defaults():
         elif awg1.protocol != InterfaceProtocol.awg:
             awg1.protocol = InterfaceProtocol.awg
             session.add(awg1)
+
+        # ── awg2 (служебный upstream для GeoIP-трафика) ─────────────────
+        result = await session.execute(select(Interface).where(Interface.name == "awg2"))
+        awg2 = result.scalar_one_or_none()
+        if not awg2:
+            awg2 = Interface(
+                name="awg2",
+                mode=InterfaceMode.client,
+                protocol=InterfaceProtocol.awg,
+                private_key=awg1.private_key,
+                public_key=awg1.public_key,
+                address="",
+                allowed_ips="0.0.0.0/0",
+                persistent_keepalive=25,
+                enabled=True,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(awg2)
+            print("[init] Created default interface: awg2")
+        else:
+            changed = False
+            if awg2.protocol != InterfaceProtocol.awg:
+                awg2.protocol = InterfaceProtocol.awg
+                changed = True
+            if awg2.private_key != awg1.private_key or awg2.public_key != awg1.public_key:
+                awg2.private_key = awg1.private_key
+                awg2.public_key = awg1.public_key
+                changed = True
+            if changed:
+                awg2.updated_at = datetime.now(timezone.utc)
+                session.add(awg2)
 
         # ── wg0 (classic wireguard server) ─────────────────────────────
         result = await session.execute(select(Interface).where(Interface.name == "wg0"))

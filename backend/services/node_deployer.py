@@ -5,13 +5,14 @@ SSH пароль никогда не логируется, не сохраняе
 """
 import asyncio
 import io
-import ipaddress
 import json
 import logging
+import shlex
 import socket
 import time
 import tarfile
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import asyncssh
@@ -24,7 +25,12 @@ from backend.database import AsyncSessionLocal
 from backend.models.interface import Interface
 from backend.models.upstream_node import DeployLog, DeployStatus, NodePeer, NodeStatus, UpstreamNode
 from backend.services.awg import _run_cmd, generate_keypair
-from backend.services.upstream_nodes import apply_node_to_awg1, inherit_client_settings_from_interface
+from backend.services.upstream_nodes import (
+    apply_node_to_awg1,
+    apply_node_to_awg2,
+    inherit_client_settings_from_interface,
+    node_interface_address_for_remote,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +39,81 @@ _deploy_queues: dict[int, asyncio.Queue] = {}
 
 # ── Счётчики неудач health-check (в памяти) ──────────────────────────────
 _health_fail_counts: dict[int, int] = {}
+
+
+class RemoteShell:
+    def __init__(
+        self,
+        conn: asyncssh.SSHClientConnection,
+        *,
+        ssh_user: str,
+        sudo_password: str,
+    ) -> None:
+        self.conn = conn
+        self.use_sudo = ssh_user != "root"
+        self.sudo_password = sudo_password
+
+    def _command(self, command: str) -> str:
+        quoted = shlex.quote(command)
+        if self.use_sudo:
+            return f"sudo -S -p '' sh -lc {quoted}"
+        return f"sh -lc {quoted}"
+
+    def _input(self, payload: str | bytes | None = None) -> str | bytes | None:
+        if not self.use_sudo:
+            return payload
+        prefix = f"{self.sudo_password}\n"
+        if payload is None:
+            return prefix
+        if isinstance(payload, bytes):
+            return prefix.encode() + payload
+        return prefix + payload
+
+    async def validate_sudo(self):
+        if not self.use_sudo:
+            return None
+        return await self.conn.run(
+            "sudo -S -p '' -v",
+            input=f"{self.sudo_password}\n",
+            check=False,
+        )
+
+    async def run(
+        self,
+        command: str,
+        *,
+        check: bool = False,
+        input_data: str | bytes | None = None,
+    ):
+        return await self.conn.run(
+            self._command(command),
+            input=self._input(input_data),
+            check=check,
+        )
+
+    def create_process(self, command: str, *, encoding: str | None = "utf-8"):
+        return self.conn.create_process(self._command(command), encoding=encoding)
+
+    async def write_process_password(self, proc) -> None:
+        if self.use_sudo:
+            proc.stdin.write(f"{self.sudo_password}\n")
+
+    async def upload_bytes_to_tmp(self, path: str, content: bytes) -> None:
+        async with self.conn.create_process(f"cat > {shlex.quote(path)}", encoding=None) as proc:
+            proc.stdin.write(content)
+            proc.stdin.write_eof()
+            await proc.wait()
+            if proc.returncode != 0:
+                raise RuntimeError(f"failed to upload {path}")
+
+    async def write_text_file(self, path: str, content: str) -> None:
+        quoted_path = shlex.quote(path)
+        result = await self.run(f"install -d -m 755 {shlex.quote(str(Path(path).parent))}", check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"failed to create remote directory for {path}: {(result.stderr or result.stdout or '')[:200]}")
+        result = await self.run(f"tee {quoted_path} >/dev/null", input_data=content, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"failed to write {path}: {(result.stderr or result.stdout or '')[:200]}")
 
 
 def get_deploy_queue(log_id: int) -> asyncio.Queue:
@@ -55,31 +136,21 @@ def _pack_node_sources() -> bytes:
     return buf.getvalue()
 
 
-async def _allocate_awg_address(session: AsyncSession) -> str:
-    """Выделяет следующий свободный /32 адрес из NODE_VPN_SUBNET (начиная с .3)."""
-    network = ipaddress.IPv4Network(settings.node_vpn_subnet)
-    result = await session.execute(
-        select(UpstreamNode.awg_address).where(UpstreamNode.awg_address.isnot(None))
-    )
-    used = {row[0].split("/")[0] for row in result.all()}
-
-    # Зарезервированные: .1 (gateway), .2 (jump awg1)
-    jump_base = str(network.network_address).rsplit(".", 1)[0]
-    reserved = {f"{jump_base}.1", f"{jump_base}.2"}
-
-    for host in network.hosts():
-        addr = str(host)
-        if addr in reserved:
-            continue
-        if addr not in used:
-            return f"{addr}/32"
-
-    raise RuntimeError("No available addresses in NODE_VPN_SUBNET")
+def _command_output_tail(result, limit: int = 1800) -> str:
+    parts: list[str] = []
+    stdout = (getattr(result, "stdout", None) or "").strip()
+    stderr = (getattr(result, "stderr", None) or "").strip()
+    if stdout:
+        parts.append(f"stdout:\n{stdout[-limit:]}")
+    if stderr:
+        parts.append(f"stderr:\n{stderr[-limit:]}")
+    return "\n".join(parts).strip()
 
 
-def _with_prefix(address: str, prefixlen: int) -> str:
-    """Normalizes an IPv4 interface address to the requested prefix length."""
-    return str(ipaddress.IPv4Interface(address).ip) + f"/{prefixlen}"
+async def _emit_failed_command_details(emit_line, label: str, result) -> None:
+    details = _command_output_tail(result)
+    if details:
+        await emit_line(f"{label} output:\n{details}")
 
 
 def _make_node_server_config(
@@ -139,12 +210,12 @@ def _make_node_server_config(
     return "\n".join(lines).strip() + "\n"
 
 
-def _make_env_content(private_key: str, awg_address: str, awg_port: int) -> str:
+def _make_env_content(private_key: str, awg_interface_address: str, awg_port: int) -> str:
     return "\n".join(
         [
             f"AWG_LISTEN_PORT={awg_port}",
             f"AWG_PRIVATE_KEY={private_key}",
-            f"AWG_ADDRESS={_with_prefix(awg_address, 24)}",
+            f"AWG_ADDRESS={awg_interface_address}",
         ]
     ) + "\n"
 
@@ -276,19 +347,19 @@ class NodeDeployer:
     REDEPLOY_TOTAL = 7
 
     @staticmethod
-    async def _cleanup_remote_awg_node(conn: asyncssh.SSHClientConnection) -> None:
+    async def _cleanup_remote_awg_node(remote: RemoteShell) -> None:
         """
         Best-effort cleanup before deploy/redeploy.
 
         awg0 is created in host network namespace, so after a crashed container it
         can remain on the host and break the next startup with "File exists".
         """
-        await conn.run(
+        await remote.run(
             "docker-compose -f /opt/awg-node/docker-compose.yml down --remove-orphans",
             check=False,
         )
-        await conn.run("docker rm -f awg-node 2>/dev/null || true", check=False)
-        await conn.run("ip link show awg0 >/dev/null 2>&1 && ip link delete awg0 || true", check=False)
+        await remote.run("docker rm -f awg-node 2>/dev/null || true", check=False)
+        await remote.run("ip link show awg0 >/dev/null 2>&1 && ip link delete awg0 || true", check=False)
 
     # ── Deploy ────────────────────────────────────────────────────────────
 
@@ -299,6 +370,7 @@ class NodeDeployer:
         ssh_user: str,
         ssh_password: str,
         ssh_port: int,
+        delete_on_failure: bool = False,
     ) -> None:
         """
         Полный SSH деплой ноды.
@@ -340,8 +412,12 @@ class NodeDeployer:
                     node_private_key = None
                     node_public_key = None
 
-                # Адрес: используем существующий или выделим позже
                 awg_address = node.awg_address
+                if not node.client_address or not awg_address:
+                    raise RuntimeError(
+                        "Node tunnel addresses are not configured. "
+                        "Set interface address in Deploy new node modal."
+                    )
                 awg_port = node.awg_port
                 host = node.host
                 awg1_public_key = awg1.public_key
@@ -371,70 +447,73 @@ class NodeDeployer:
                 raise RuntimeError(f"SSH connection failed: {e}")
 
             async with conn:
+                remote = RemoteShell(conn, ssh_user=ssh_user, sudo_password=ssh_password)
+                if remote.use_sudo:
+                    await emit_line("Checking sudo access...")
+                    res = await remote.validate_sudo()
+                    if res.returncode != 0:
+                        await _emit_failed_command_details(emit_line, "sudo check", res)
+                        raise RuntimeError(
+                            f"sudo access failed (rc={res.returncode}): "
+                            "user must be in sudoers and password must be valid"
+                        )
+
                 # ── Шаг 2: apt-get update & upgrade ──────────────────────
                 await emit("Running apt-get update && upgrade...")
-                res = await conn.run(
+                res = await remote.run(
                     "DEBIAN_FRONTEND=noninteractive apt-get update -q && "
                     "DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -q",
                     check=False,
                 )
                 if res.returncode != 0:
-                    raise RuntimeError(f"apt-get update failed (rc={res.returncode})")
+                    await _emit_failed_command_details(emit_line, "apt-get update && upgrade", res)
+                    raise RuntimeError(f"apt-get update && upgrade failed (rc={res.returncode})")
 
                 # ── Шаг 3: установка docker ───────────────────────────────
                 await emit("Installing docker.io, docker-compose, curl...")
-                res = await conn.run(
+                res = await remote.run(
                     "DEBIAN_FRONTEND=noninteractive apt-get install -y -q "
                     "docker.io docker-compose curl ca-certificates",
                     check=False,
                 )
                 if res.returncode != 0:
+                    await _emit_failed_command_details(emit_line, "apt install", res)
                     raise RuntimeError(f"apt install failed (rc={res.returncode})")
 
                 # ── Шаг 4: включить docker service ───────────────────────
                 await emit("Enabling docker service...")
-                await conn.run("systemctl enable --now docker", check=False)
+                await remote.run("systemctl enable --now docker", check=False)
 
                 # ── Шаг 5: генерация AWG keypair ──────────────────────────
                 await emit("Generating AWG keypair for node...")
                 if not node_private_key:
                     node_private_key, node_public_key = generate_keypair()
 
-                # ── Шаг 6: выделение awg_address ─────────────────────────
-                await emit("Allocating AWG address...")
-                if not awg_address:
-                    async with AsyncSessionLocal() as session:
-                        awg_address = await _allocate_awg_address(session)
-                        node_obj = await _get_node(node_id, session)
-                        node_obj.awg_address = awg_address
-                        node_obj.private_key = node_private_key
-                        node_obj.public_key = node_public_key
-                        node_obj.updated_at = datetime.now(timezone.utc)
-                        await session.commit()
-                else:
-                    # Сохранить ключи в БД
-                    async with AsyncSessionLocal() as session:
-                        node_obj = await _get_node(node_id, session)
-                        node_obj.private_key = node_private_key
-                        node_obj.public_key = node_public_key
-                        node_obj.updated_at = datetime.now(timezone.utc)
-                        await session.commit()
+                # ── Шаг 6: сохранение keypair ────────────────────────────
+                await emit("Saving AWG keypair and tunnel addresses...")
+                async with AsyncSessionLocal() as session:
+                    node_obj = await _get_node(node_id, session)
+                    node_obj.private_key = node_private_key
+                    node_obj.public_key = node_public_key
+                    node_obj.updated_at = datetime.now(timezone.utc)
+                    await session.commit()
 
                 # ── Шаг 7: передача исходников через tar pipe ─────────────
                 await emit("Uploading node sources via tar pipe...")
                 tar_bytes = await asyncio.get_running_loop().run_in_executor(
                     None, _pack_node_sources
                 )
-                await conn.run("mkdir -p /opt/awg-node", check=True)
-                async with conn.create_process(
-                    "tar -xzf - -C /opt/awg-node --strip-components=1",
-                    encoding=None,  # бинарный режим — stdin принимает bytes
-                ) as proc:
-                    proc.stdin.write(tar_bytes)
-                    proc.stdin.write_eof()
-                    await proc.wait()
+                tar_path = f"/tmp/awg-node-{log_id}.tar.gz"
+                await remote.upload_bytes_to_tmp(tar_path, tar_bytes)
+                res = await remote.run(
+                    f"mkdir -p /opt/awg-node && tar -xzf {shlex.quote(tar_path)} -C /opt/awg-node --strip-components=1 && rm -f {shlex.quote(tar_path)}",
+                    check=False,
+                )
+                if res.returncode != 0:
+                    await _emit_failed_command_details(emit_line, "upload node sources", res)
+                    raise RuntimeError(f"upload node sources failed (rc={res.returncode})")
 
-                await conn.run(
+                await remote.run(
                     "find /opt/awg-node -path '/opt/awg-node/scripts/*.sh' -o -name entrypoint.sh | xargs -r chmod +x",
                     check=False,
                 )
@@ -450,7 +529,7 @@ class NodeDeployer:
 
                 env_content = _make_env_content(
                     private_key=node_private_key,
-                    awg_address=awg_address,
+                    awg_interface_address=node_interface_address_for_remote(node),
                     awg_port=awg_port,
                 )
                 node_config_content = _make_node_server_config(
@@ -458,21 +537,20 @@ class NodeDeployer:
                     awg_address=awg_address,
                     awg_port=awg_port,
                     awg1_public_key=awg1_public_key,
-                    client_address=node.client_address or settings.awg1_address,
+                    client_address=node.client_address,
                     awg1=awg1_fresh or awg1,
                     shared_peers=shared_peers,
                 )
-                async with conn.start_sftp_client() as sftp:
-                    async with sftp.open("/opt/awg-node/.env", "w") as f:
-                        await f.write(env_content)
-                    async with sftp.open("/opt/awg-node/awg0.conf", "w") as f:
-                        await f.write(node_config_content)
+                await remote.write_text_file("/opt/awg-node/.env", env_content)
+                await remote.write_text_file("/opt/awg-node/awg0.conf", node_config_content)
 
                 # ── Шаг 9: docker build (стриминг построчно) ─────────────
                 await emit("Building docker image (this may take 2-5 min)...")
-                async with conn.create_process(
+                async with remote.create_process(
                     "docker build -t awg-node:local /opt/awg-node 2>&1"
                 ) as proc:
+                    await remote.write_process_password(proc)
+                    proc.stdin.write_eof()
                     async for line in proc.stdout:
                         stripped = line.rstrip()
                         if stripped:
@@ -484,37 +562,37 @@ class NodeDeployer:
                 # ── Шаг 10: запись docker-compose.yml ────────────────────
                 await emit("Writing docker-compose.yml...")
                 compose_content = _make_compose_content(awg_port)
-                async with conn.start_sftp_client() as sftp:
-                    async with sftp.open("/opt/awg-node/docker-compose.yml", "w") as f:
-                        await f.write(compose_content)
+                await remote.write_text_file("/opt/awg-node/docker-compose.yml", compose_content)
 
                 # ── Шаг 11: убедиться что /dev/net/tun существует на хосте ──
                 await emit("Ensuring /dev/net/tun exists on remote host...")
-                await conn.run(
+                await remote.run(
                     "[ -c /dev/net/tun ] || (mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 666 /dev/net/tun)",
                     check=False,
                 )
 
                 # ── Шаг 11.5: зачистить предыдущий контейнер/интерфейс ──
                 await emit("Cleaning up previous awg-node state...")
-                await self._cleanup_remote_awg_node(conn)
+                await self._cleanup_remote_awg_node(remote)
 
                 # ── Шаг 12 (бывший 11): docker-compose up ────────────────
                 await emit("Starting awg-node container...")
-                res = await conn.run(
+                res = await remote.run(
                     "docker-compose -f /opt/awg-node/docker-compose.yml up -d",
                     check=False,
                 )
                 if res.returncode != 0:
+                    await _emit_failed_command_details(emit_line, "docker-compose up", res)
                     raise RuntimeError(
-                        f"docker-compose up failed: {(res.stderr or '')[:200]}"
+                        f"docker-compose up failed (rc={res.returncode})"
                     )
 
                 # ── Шаг 12: проверка запуска ──────────────────────────────
                 await emit("Verifying container is running...")
                 await asyncio.sleep(5)
-                res = await conn.run("docker ps | grep awg-node", check=False)
+                res = await remote.run("docker ps | grep awg-node", check=False)
                 if res.returncode != 0:
+                    await _emit_failed_command_details(emit_line, "docker ps", res)
                     raise RuntimeError("awg-node container not found in docker ps")
 
             # ── Шаг 13: сохранение в БД ───────────────────────────────────
@@ -583,10 +661,13 @@ class NodeDeployer:
             try:
                 async with AsyncSessionLocal() as session:
                     node_obj = await _get_node(node_id, session)
-                    if node_obj.status == NodeStatus.deploying:
+                    initial_deploy = node_obj.last_deploy is None
+                    if delete_on_failure and initial_deploy:
+                        await session.delete(node_obj)
+                    elif node_obj.status == NodeStatus.deploying:
                         node_obj.status = NodeStatus.error
                         node_obj.updated_at = datetime.now(timezone.utc)
-                        await session.commit()
+                    await session.commit()
             except Exception:
                 pass
 
@@ -631,9 +712,16 @@ class NodeDeployer:
                 host = node.host
                 awg_port = node.awg_port
                 awg_address = node.awg_address
+                if not node.client_address or not awg_address:
+                    raise RuntimeError(
+                        "Node tunnel addresses are not configured. "
+                        "Set interface address and deploy again."
+                    )
                 node_private_key = node.private_key
                 shared_peers = list(node.shared_peers)
                 awg1 = await session.scalar(select(Interface).where(Interface.name == "awg1"))
+                if awg1 is None:
+                    raise RuntimeError("awg1 interface not found in database")
                 if awg1:
                     inherit_client_settings_from_interface(node, awg1)
 
@@ -658,23 +746,35 @@ class NodeDeployer:
                 raise RuntimeError(f"SSH connection failed: {e}")
 
             async with conn:
+                remote = RemoteShell(conn, ssh_user=ssh_user, sudo_password=ssh_password)
+                if remote.use_sudo:
+                    await emit_line("Checking sudo access...")
+                    res = await remote.validate_sudo()
+                    if res.returncode != 0:
+                        await _emit_failed_command_details(emit_line, "sudo check", res)
+                        raise RuntimeError(
+                            f"sudo access failed (rc={res.returncode}): "
+                            "user must be in sudoers and password must be valid"
+                        )
+
                 await emit("Uploading fresh node sources...")
                 tar_bytes = await asyncio.get_running_loop().run_in_executor(
                     None, _pack_node_sources
                 )
-                await conn.run("mkdir -p /opt/awg-node", check=True)
-                async with conn.create_process(
-                    "tar -xzf - -C /opt/awg-node --strip-components=1",
-                    encoding=None,  # бинарный режим — stdin принимает bytes
-                ) as proc:
-                    proc.stdin.write(tar_bytes)
-                    proc.stdin.write_eof()
-                    await proc.wait()
+                tar_path = f"/tmp/awg-node-{log_id}.tar.gz"
+                await remote.upload_bytes_to_tmp(tar_path, tar_bytes)
+                res = await remote.run(
+                    f"mkdir -p /opt/awg-node && tar -xzf {shlex.quote(tar_path)} -C /opt/awg-node --strip-components=1 && rm -f {shlex.quote(tar_path)}",
+                    check=False,
+                )
+                if res.returncode != 0:
+                    await _emit_failed_command_details(emit_line, "upload node sources", res)
+                    raise RuntimeError(f"upload node sources failed (rc={res.returncode})")
 
                 # Перезаписать .env (ключи из БД — не меняем)
                 env_content = _make_env_content(
                     private_key=node_private_key,
-                    awg_address=awg_address,
+                    awg_interface_address=node_interface_address_for_remote(node),
                     awg_port=awg_port,
                 )
                 node_config_content = _make_node_server_config(
@@ -682,23 +782,21 @@ class NodeDeployer:
                     awg_address=awg_address,
                     awg_port=awg_port,
                     awg1_public_key=awg1.public_key if awg1 else "",
-                    client_address=node.client_address or settings.awg1_address,
+                    client_address=node.client_address,
                     awg1=awg1,
                     shared_peers=shared_peers,
                 )
                 compose_content = _make_compose_content(awg_port)
-                async with conn.start_sftp_client() as sftp:
-                    async with sftp.open("/opt/awg-node/.env", "w") as f:
-                        await f.write(env_content)
-                    async with sftp.open("/opt/awg-node/awg0.conf", "w") as f:
-                        await f.write(node_config_content)
-                    async with sftp.open("/opt/awg-node/docker-compose.yml", "w") as f:
-                        await f.write(compose_content)
+                await remote.write_text_file("/opt/awg-node/.env", env_content)
+                await remote.write_text_file("/opt/awg-node/awg0.conf", node_config_content)
+                await remote.write_text_file("/opt/awg-node/docker-compose.yml", compose_content)
 
                 await emit("Rebuilding docker image...")
-                async with conn.create_process(
+                async with remote.create_process(
                     "docker build -t awg-node:local /opt/awg-node 2>&1"
                 ) as proc:
+                    await remote.write_process_password(proc)
+                    proc.stdin.write_eof()
                     async for line in proc.stdout:
                         stripped = line.rstrip()
                         if stripped:
@@ -707,26 +805,28 @@ class NodeDeployer:
                     if proc.returncode != 0:
                         raise RuntimeError("docker build failed")
 
-                await conn.run(
+                await remote.run(
                     "[ -c /dev/net/tun ] || (mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 666 /dev/net/tun)",
                     check=False,
                 )
                 await emit("Cleaning up previous awg-node state...")
-                await self._cleanup_remote_awg_node(conn)
+                await self._cleanup_remote_awg_node(remote)
                 await emit("Recreating container...")
-                res = await conn.run(
+                res = await remote.run(
                     "docker-compose -f /opt/awg-node/docker-compose.yml up -d --force-recreate",
                     check=False,
                 )
                 if res.returncode != 0:
+                    await _emit_failed_command_details(emit_line, "docker-compose up", res)
                     raise RuntimeError(
-                        f"docker-compose up failed: {(res.stderr or '')[:200]}"
+                        f"docker-compose up failed (rc={res.returncode})"
                     )
 
                 await emit("Verifying container...")
                 await asyncio.sleep(5)
-                res = await conn.run("docker ps | grep awg-node", check=False)
+                res = await remote.run("docker ps | grep awg-node", check=False)
                 if res.returncode != 0:
+                    await _emit_failed_command_details(emit_line, "docker ps", res)
                     raise RuntimeError("awg-node container not found")
 
             async with AsyncSessionLocal() as session:
@@ -735,7 +835,26 @@ class NodeDeployer:
                 node_obj.last_deploy = datetime.now(timezone.utc)
                 node_obj.last_seen = datetime.now(timezone.utc)
                 node_obj.updated_at = datetime.now(timezone.utc)
+                is_active = node_obj.is_active
+                is_geoip = node_obj.is_geoip
                 await session.commit()
+
+            if is_active or is_geoip:
+                async with AsyncSessionLocal() as session:
+                    node_obj = await _get_node(node_id, session)
+                    if is_geoip:
+                        await apply_node_to_awg2(session, node_obj)
+                    else:
+                        await apply_node_to_awg1(session, node_obj)
+                    await session.commit()
+
+                from backend.services.routing import update_geoip_route, update_upstream_host_route, update_vpn_route
+                if is_geoip:
+                    update_geoip_route("awg2")
+                    update_upstream_host_route(awg_address, interface_name="awg2")
+                else:
+                    update_vpn_route("awg1")
+                    update_upstream_host_route(awg_address)
 
             await emit("Redeploy complete!", status="ok")
             await _finish_log(log_id, DeployStatus.success)
@@ -901,6 +1020,7 @@ class NodeDeployer:
                 .where(
                     UpstreamNode.status == NodeStatus.online,
                     UpstreamNode.id != failed_node_id,
+                    UpstreamNode.is_geoip == False,  # noqa: E712
                 )
                 .order_by(UpstreamNode.priority, UpstreamNode.id)
                 .limit(1)
@@ -985,7 +1105,12 @@ class NodeDeployer:
                     connect_timeout=10,
                 )
                 async with conn:
-                    await conn.run(
+                    remote = RemoteShell(conn, ssh_user=ssh_user, sudo_password=ssh_password)
+                    if remote.use_sudo:
+                        res = await remote.validate_sudo()
+                        if res.returncode != 0:
+                            raise RuntimeError("sudo access failed")
+                    await remote.run(
                         "docker-compose -f /opt/awg-node/docker-compose.yml down",
                         check=False,
                     )
@@ -997,6 +1122,7 @@ class NodeDeployer:
 
         if public_key:
             _run_cmd(["awg", "set", "awg1", "peer", public_key, "remove"])
+            _run_cmd(["awg", "set", "awg2", "peer", public_key, "remove"])
 
         async with AsyncSessionLocal() as session:
             node_obj = await _get_node(node_id, session)
@@ -1004,6 +1130,10 @@ class NodeDeployer:
                 from backend.services.routing import update_upstream_host_route, update_vpn_route
                 update_vpn_route(None)
                 update_upstream_host_route(None)
+            if node_obj.is_geoip:
+                from backend.services.routing import update_geoip_route, update_upstream_host_route
+                update_geoip_route(None)
+                update_upstream_host_route(None, interface_name="awg2")
 
         _health_fail_counts.pop(node_id, None)
 

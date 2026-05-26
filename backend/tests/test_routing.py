@@ -58,6 +58,55 @@ def test_setup_iptables_inverted_swaps_marks(monkeypatch):
     assert any(routing.settings.fwmark_local in rule_args for rule_args in prerouting_rules)
 
 
+def test_setup_iptables_geoip_upstream_keeps_geoip_on_local_mark(monkeypatch):
+    calls: list[tuple[str, str, list[str]]] = []
+
+    monkeypatch.setattr(routing, "_ensure_geoip_ipset", lambda: None)
+    monkeypatch.setattr(routing, "_remove_all_policy_mark_rules", lambda: None)
+    monkeypatch.setattr(
+        routing,
+        "_ipt_add",
+        lambda table, chain, rule_args: calls.append((table, chain, rule_args.copy())),
+    )
+
+    routing.setup_iptables(invert_geoip=True, geoip_upstream_enabled=True)
+
+    prerouting_rules = [
+        rule_args for table, chain, rule_args in calls if table == "mangle" and chain == "PREROUTING"
+    ]
+    geoip_rules = [rule for rule in prerouting_rules if "--match-set" in rule and "!" not in rule]
+    assert geoip_rules
+    assert all(routing.settings.fwmark_local in rule_args for rule_args in geoip_rules)
+    assert (
+        "mangle",
+        "FORWARD",
+        [
+            "-p", "tcp",
+            "--tcp-flags", "SYN,RST", "SYN",
+            "-o", "awg2",
+            "-j", "TCPMSS", "--set-mss", "1260",
+        ],
+    ) in calls
+    assert ("nat", "POSTROUTING", ["-o", "awg2", "-j", "MASQUERADE"]) in calls
+
+
+def test_setup_policy_routing_can_route_geoip_table_to_awg2(monkeypatch):
+    routes: list[tuple[int, list[str]]] = []
+
+    monkeypatch.setattr(routing, "_rule_exists", lambda _fwmark, _table: True)
+    monkeypatch.setattr(routing, "_get_default_gateway", lambda _iface=None: "172.18.0.1")
+    monkeypatch.setattr(
+        routing,
+        "_ensure_route",
+        lambda table, route_args, description: routes.append((table, route_args.copy())),
+    )
+    monkeypatch.setattr(routing, "_delete_route", lambda *args, **kwargs: None)
+
+    routing.setup_policy_routing("awg2")
+
+    assert (routing.settings.routing_table_local, ["default", "dev", "awg2", "metric", "100"]) in routes
+
+
 @pytest.mark.asyncio
 async def test_get_routing_status_includes_mode(client, auth_headers):
     resp = await client.get("/api/routing/status", headers=auth_headers)

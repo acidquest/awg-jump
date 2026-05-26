@@ -63,6 +63,7 @@ export interface Node {
   awg_port: number
   provisioning_mode: 'managed' | 'manual'
   awg_address: string | null
+  tunnel_network: string | null
   probe_ip: string | null
   public_key: string | null
   client_address: string | null
@@ -84,6 +85,7 @@ export interface Node {
   udp_status?: string | null
   udp_detail?: string | null
   is_active: boolean
+  is_geoip: boolean
   priority: number
   last_seen: string | null
   last_deploy: string | null
@@ -133,6 +135,7 @@ export interface NodeStats {
   last_deploy: string | null
   provisioning_mode: 'managed' | 'manual'
   client_address: string | null
+  tunnel_network: string | null
   client_dns: string | null
   client_allowed_ips: string | null
   client_keepalive: number | null
@@ -361,10 +364,11 @@ export interface RoutingStatus {
   output_other: boolean
   nat_eth0: boolean
   nat_awg1: boolean
+  nat_awg2: boolean
   invert_geoip: boolean
   geoip_mark: string
   other_mark: string
-  geoip_destination: 'local' | 'vpn'
+  geoip_destination: 'local' | 'vpn' | 'geoip_node'
   other_destination: 'local' | 'vpn'
   physical_iface: string
   ip_rules: string[]

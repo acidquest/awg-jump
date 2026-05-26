@@ -55,15 +55,6 @@ class Settings(BaseSettings):
     telemt_port: int = 443
     telemt_version: str = "3.4.3"
 
-    # ── AWG1 (клиент, upstream VPN) ──────────────────────────────────────
-    awg1_endpoint: str = ""
-    awg1_private_key: str = ""
-    awg1_public_key: str = ""
-    awg1_preshared_key: str = ""
-    awg1_address: str = "10.20.0.2/32"
-    awg1_allowed_ips: str = "0.0.0.0/0"
-    awg1_persistent_keepalive: int = 25
-
     # ── Маршрутизация ────────────────────────────────────────────────────
     physical_iface: str = "eth0"
     routing_table_local: int = 100
@@ -80,8 +71,6 @@ class Settings(BaseSettings):
     node_health_check_interval: int = 30
     node_health_check_timeout: int = 5
     node_failover_threshold: int = 3
-    node_awg_port: int = 51821
-    node_vpn_subnet: str = "10.20.0.0/24"
 
     # ── Разработка ────────────────────────────────────────────────────────
     # Включить OpenAPI docs (/api/docs, /api/redoc) — только для разработки

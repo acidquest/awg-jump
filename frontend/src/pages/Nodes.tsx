@@ -4,7 +4,7 @@ import {
   getNodes, createNode, deployNode, redeployNode,
   activateNode, resetNode, checkNode, deleteNode, getNodeStats, updateNode,
   createNodePeer, deleteNodePeer, getNodePeerConfig, updateNodePeer,
-  getNodeFailoverSettings, updateNodeFailoverSettings,
+  getNodeFailoverSettings, updateNodeFailoverSettings, setNodeGeoip,
 } from '../api'
 import { FailoverSettings, Node, NodePeer, NodeStats, DeployLog } from '../types'
 import StatusBadge from '../components/StatusBadge'
@@ -75,6 +75,15 @@ export default function Nodes() {
   const activateMut = useMutation({
     mutationFn: (id: number) => activateNode(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['nodes'] }),
+  })
+
+  const geoipMut = useMutation({
+    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) => setNodeGeoip(id, enabled),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['nodes'] })
+      qc.invalidateQueries({ queryKey: ['routing'] })
+      qc.invalidateQueries({ queryKey: ['system-status'] })
+    },
   })
 
   const checkMut = useMutation({
@@ -171,14 +180,14 @@ export default function Nodes() {
             <tbody>
               {nodes.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="text-muted" style={{ textAlign: 'center', padding: 32 }}>
+	                  <td colSpan={9} className="text-muted" style={{ textAlign: 'center', padding: 32 }}>
                     No nodes deployed yet
                   </td>
                 </tr>
               ) : nodes.map((n) => (
-                <tr
-                  key={n.id}
-                  className={n.is_active ? 'active-node' : ''}
+	                <tr
+	                  key={n.id}
+	                  className={n.is_active ? 'active-node' : ''}
                   style={{ cursor: 'pointer' }}
                   onClick={() => setSelectedNode(selectedNode?.id === n.id ? null : n)}
                 >
@@ -186,20 +195,24 @@ export default function Nodes() {
                     <input
                       type="radio"
                       name="active-node"
-                      checked={n.is_active}
-                      onChange={() => {
-                        if (!n.is_active && (n.status === 'online' || n.status === 'degraded')) {
-                          activateMut.mutate(n.id)
-                        }
-                      }}
-                      style={{ accentColor: 'var(--accent)', cursor: 'pointer' }}
+	                      checked={n.is_active}
+	                      onChange={() => {
+	                        if (!n.is_active && !n.is_geoip && (n.status === 'online' || n.status === 'degraded')) {
+	                          activateMut.mutate(n.id)
+	                        }
+	                      }}
+	                      disabled={n.is_geoip}
+	                      style={{ accentColor: 'var(--accent)', cursor: 'pointer' }}
                     />
                   </td>
                   <td>
                     <span style={{ fontWeight: 500 }}>{n.name}</span>
-                    {n.is_active && (
-                      <span className="badge badge-online" style={{ marginLeft: 8 }}>active</span>
-                    )}
+	                    {n.is_active && (
+	                      <span className="badge badge-online" style={{ marginLeft: 8 }}>active</span>
+	                    )}
+	                    {n.is_geoip && (
+	                      <span className="badge badge-warning" style={{ marginLeft: 8 }}>geoip</span>
+	                    )}
                   </td>
                   <td><span className="text-mono text-muted">{n.provisioning_mode}</span></td>
                   <td className="text-mono">{n.host}</td>
@@ -226,12 +239,18 @@ export default function Nodes() {
                   <td className="text-muted" style={{ fontSize: 12 }}>{fmtDate(n.last_seen)}</td>
                   <td onClick={(e) => e.stopPropagation()}>
                     <div className="flex gap-2">
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => activateMut.mutate(n.id)}
-                        disabled={n.is_active || !['online', 'degraded'].includes(n.status)}
-                        title="Set as active"
-                      >Activate</button>
+	                      <button
+	                        className="btn btn-secondary btn-sm"
+	                        onClick={() => activateMut.mutate(n.id)}
+	                        disabled={n.is_active || n.is_geoip || !['online', 'degraded'].includes(n.status)}
+	                        title="Set as active"
+	                      >Activate</button>
+	                      <button
+	                        className={n.is_geoip ? 'btn btn-secondary btn-sm' : 'btn btn-ghost btn-sm'}
+	                        onClick={() => geoipMut.mutate({ id: n.id, enabled: !n.is_geoip })}
+	                        disabled={n.is_active || geoipMut.isPending || !n.public_key || !['online', 'degraded'].includes(n.status)}
+	                        title={n.is_geoip ? 'Disable GeoIP routing through this node' : 'Route GeoIP traffic through this node'}
+	                      >GeoIP</button>
                       <button
                         className="btn btn-ghost btn-sm"
                         onClick={() => checkMut.mutate(n.id)}
@@ -521,22 +540,32 @@ function NodeAwg1Settings({ node, onSaved }: { node: Node; onSaved: (node: Node)
       {error && <div className="error-box" style={{ marginBottom: 12 }}>{error}</div>}
       <div className="form-row form-row-2">
         <div className="form-group">
-          <label className="form-label">Address</label>
-          <input className="form-input mono" value={form.client_address} onChange={f('client_address')} placeholder="10.20.0.2/32" />
+          <label className="form-label">Jump interface address</label>
+          <input className="form-input mono" value={form.client_address} onChange={f('client_address')} placeholder="10.30.1.2/24" />
         </div>
         <div className="form-group">
-          <label className="form-label">DNS</label>
-          <input className="form-input mono" value={form.client_dns} onChange={f('client_dns')} placeholder="1.1.1.1,8.8.8.8" />
+          <label className="form-label">Tunnel network</label>
+          <input className="form-input mono" value={node.tunnel_network ?? ''} disabled placeholder="derived from interface address" />
         </div>
       </div>
       <div className="form-row form-row-2">
         <div className="form-group">
+          <label className="form-label">DNS</label>
+          <input className="form-input mono" value={form.client_dns} onChange={f('client_dns')} placeholder="1.1.1.1,8.8.8.8" />
+        </div>
+        <div className="form-group">
           <label className="form-label">Allowed IPs</label>
           <input className="form-input mono" value={form.client_allowed_ips} onChange={f('client_allowed_ips')} placeholder="0.0.0.0/0" />
         </div>
+      </div>
+      <div className="form-row form-row-2">
         <div className="form-group">
           <label className="form-label">Persistent keepalive</label>
           <input className="form-input mono" value={form.client_keepalive} onChange={f('client_keepalive')} placeholder="25" />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Remote node address</label>
+          <input className="form-input mono" value={node.awg_address ?? ''} disabled placeholder="derived from interface address" />
         </div>
       </div>
       <div className="card-title" style={{ marginBottom: 10 }}>Obfuscation</div>
@@ -608,6 +637,7 @@ function DeployModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
     ssh_user: 'root',
     ssh_password: '',
     awg_port: '51821',
+    interface_address: '',
     priority: '100',
   })
   const [lines, setLines] = useState<DeployStep[]>([])
@@ -643,6 +673,7 @@ function DeployModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
         host: form.host,
         ssh_port: Number(form.ssh_port),
         awg_port: Number(form.awg_port),
+        interface_address: form.interface_address.trim(),
         priority: Number(form.priority),
       })
       const nodeId: number = nodeRes.data.id
@@ -656,17 +687,23 @@ function DeployModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
         ssh_user: form.ssh_user,
         ssh_password: form.ssh_password,
         ssh_port: Number(form.ssh_port),
+        interface_address: form.interface_address.trim(),
+        delete_on_failure: true,
       })
       const logId: number = deployRes.data.deploy_log_id
       addLine(`Deploy started, log #${logId}`, 'info')
 
       // 3. SSE stream
       let stepCount = 0
+      let hadError = false
       const cleanup = openSSE(
         `/api/nodes/deploy/${logId}/stream`,
         (raw) => {
           const data = raw as { message?: string; status?: string; finished?: boolean }
           const msg: string = data.message ?? ''
+          if (data.status === 'error' || msg.toLowerCase().includes('error')) {
+            hadError = true
+          }
           const type = msg.startsWith('✅') || msg.startsWith('OK') ? 'success'
             : msg.startsWith('❌') || msg.toLowerCase().includes('error') ? 'error'
             : msg.startsWith('[') || msg.startsWith('+') ? 'info'
@@ -680,10 +717,10 @@ function DeployModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
             cleanup()
             setProgress(100)
             setPhase('done')
-            addLine('Deployment complete', 'success')
+            addLine(hadError ? 'Deployment failed' : 'Deployment complete', hadError ? 'error' : 'success')
           }
         },
-        () => { setProgress(100); setPhase('done') }
+        () => { setProgress(100); setPhase('done'); addLine('Deployment stream interrupted', 'error') }
       )
       cleanupRef.current = cleanup
     } catch (e: unknown) {
@@ -738,15 +775,25 @@ function DeployModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
               <input className="form-input mono" value={form.priority} onChange={f('priority')} />
             </div>
           </div>
+          <div className="form-row form-row-2">
+            <div className="form-group">
+              <label className="form-label">Jump interface IP</label>
+              <input className="form-input mono" value={form.interface_address} onChange={f('interface_address')} placeholder="10.30.1.2/24" required />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Derived node IP</label>
+              <input className="form-input mono" value="first usable IP in this subnet" disabled />
+            </div>
+          </div>
           <div className="info-box" style={{ fontSize: 12 }}>
-            SSH credentials are not stored. AWG keys are generated automatically.
+            SSH credentials are not stored. The entered jump IP is stored as this node's local interface address; the remote AWG address and tunnel network are derived from the same subnet.
           </div>
           <div className="modal-actions">
             <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
             <button
               className="btn btn-primary"
               onClick={start}
-              disabled={!form.name || !form.host || !form.ssh_password}
+              disabled={!form.name || !form.host || !form.ssh_password || !form.interface_address}
             >
               Deploy
             </button>
@@ -1014,21 +1061,27 @@ function RedeployModal({ node, onClose, onDone }: { node: Node; onClose: () => v
       setProgress(15)
 
       let stepCount = 0
+      let hadError = false
       const cleanup = openSSE(
         `/api/nodes/deploy/${logId}/stream`,
         (raw) => {
           const data = raw as { message?: string; status?: string; finished?: boolean }
           const msg: string = data.message ?? ''
-          const type = msg.startsWith('✅') ? 'success' : msg.startsWith('❌') ? 'error' : 'default'
+          if (data.status === 'error' || msg.toLowerCase().includes('error')) {
+            hadError = true
+          }
+          const type = msg.startsWith('✅') ? 'success'
+            : msg.startsWith('❌') || msg.toLowerCase().includes('error') ? 'error'
+            : 'default'
           if (msg && msg !== '__done__') addLine(msg, type)
           stepCount++
           setProgress(Math.min(15 + stepCount * 12, 90))
           if (data.status === 'done' || data.finished || msg === '__done__') {
             cleanup(); setProgress(100); setPhase('done')
-            addLine('Redeployment complete', 'success')
+            addLine(hadError ? 'Redeployment failed' : 'Redeployment complete', hadError ? 'error' : 'success')
           }
         },
-        () => { setProgress(100); setPhase('done') }
+        () => { setProgress(100); setPhase('done'); addLine('Redeployment stream interrupted', 'error') }
       )
       cleanupRef2.current = cleanup
     } catch (e: unknown) {

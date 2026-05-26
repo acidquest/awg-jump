@@ -80,6 +80,24 @@ async def _create_test_db() -> None:
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
         ))
+        session.add(Interface(
+            name="awg2",
+            mode=InterfaceMode.client,
+            protocol=InterfaceProtocol.awg,
+            private_key="aGVsbG8gd29ybGQgaGVsbG8gd29ybGQgaGVsbG8hIiM=",
+            public_key="dGVzdHB1YmxpY2tleWZvcmF3ZzExMjM0NTY3ODk=",
+            address="10.20.0.2/32",
+            allowed_ips="0.0.0.0/0",
+            persistent_keepalive=25,
+            enabled=True,
+            obf_jc=5, obf_jmin=45, obf_jmax=85,
+            obf_s1=70, obf_s2=90, obf_s3=110, obf_s4=55,
+            obf_h1=111111111, obf_h2=222222222,
+            obf_h3=333333333, obf_h4=444444444,
+            obf_generated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        ))
         session.add(GeoipSource(
             name="Default local zone source",
             display_name="Default Local Zone",

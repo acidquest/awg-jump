@@ -97,8 +97,18 @@ async def get_status(
     # Routing
     try:
         invert_geoip = await _get_invert_geoip(session)
+        geoip_node = await session.scalar(
+            select(UpstreamNode).where(
+                UpstreamNode.is_geoip == True,  # noqa: E712
+                UpstreamNode.status.in_([NodeStatus.online, NodeStatus.degraded]),
+            )
+        )
         server_ifaces = await awg_svc.list_enabled_server_interface_names(session)
-        routing_status = routing_svc.get_status(server_ifaces=server_ifaces, invert_geoip=invert_geoip)
+        routing_status = routing_svc.get_status(
+            server_ifaces=server_ifaces,
+            invert_geoip=invert_geoip,
+            geoip_upstream_enabled=geoip_node is not None,
+        )
     except Exception as e:
         routing_status = {"error": str(e)}
 
@@ -226,18 +236,33 @@ async def restart_routing(
                 UpstreamNode.status == NodeStatus.online,
             )
         )
+        geoip_node = await session.scalar(
+            select(UpstreamNode).where(
+                UpstreamNode.is_geoip == True,  # noqa: E712
+                UpstreamNode.status.in_([NodeStatus.online, NodeStatus.degraded]),
+            )
+        )
         server_ifaces = await awg_svc.list_enabled_server_interface_names(session)
-        routing_svc.setup_policy_routing()
+        routing_svc.setup_policy_routing("awg2" if geoip_node else None)
         routing_svc.update_vpn_route("awg1" if active_node else None)
         routing_svc.update_upstream_host_route(
             active_node.awg_address if active_node and active_node.awg_address else None
         )
-        routing_svc.setup_iptables(server_ifaces=server_ifaces, invert_geoip=invert_geoip)
+        routing_svc.update_upstream_host_route(
+            geoip_node.awg_address if geoip_node and geoip_node.awg_address else None,
+            interface_name="awg2",
+        )
+        routing_svc.setup_iptables(
+            server_ifaces=server_ifaces,
+            invert_geoip=invert_geoip,
+            geoip_upstream_enabled=geoip_node is not None,
+        )
     except Exception as e:
         errors.append(f"setup: {e}")
 
     status = routing_svc.get_status(
         server_ifaces=server_ifaces if 'server_ifaces' in locals() else None,
         invert_geoip=invert_geoip if 'invert_geoip' in locals() else False,
+        geoip_upstream_enabled=geoip_node is not None if 'geoip_node' in locals() else False,
     )
     return {"status": "restarted" if not errors else "partial", "errors": errors, **status}

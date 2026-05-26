@@ -43,7 +43,8 @@ class UpstreamNode(Base):
     )
 
     # AWG параметры ноды
-    awg_address = Column(String(64), nullable=True)   # 10.20.0.x/32, заполняется при деплое
+    awg_address = Column(String(64), nullable=True)   # адрес awg0 на upstream-ноде, например 10.30.1.1/32
+    tunnel_network = Column(String(64), nullable=True) # CIDR сети туннеля этой ноды, например 10.30.1.0/24
     probe_ip = Column(String(64), nullable=True)
     public_key = Column(String(64), nullable=True)    # AWG pubkey, заполняется при деплое
     private_key = Column(String(64), nullable=True)   # AWG private key (хранится для redeploy)
@@ -72,6 +73,7 @@ class UpstreamNode(Base):
         default=NodeStatus.pending,
     )
     is_active = Column(Boolean, nullable=False, default=False)  # только одна нода активна
+    is_geoip = Column(Boolean, nullable=False, default=False)   # отдельная нода для GeoIP-трафика
     priority = Column(Integer, nullable=False, default=100)      # для failover порядка
 
     # Метки времени

@@ -2,7 +2,7 @@
 Policy routing manager — ip rule/route + iptables mangle/nat.
 
 Политика:
-  fwmark FWMARK_LOCAL → table ROUTING_TABLE_LOCAL → default via eth0
+  fwmark FWMARK_LOCAL → table ROUTING_TABLE_LOCAL → default via eth0 или awg2
   fwmark FWMARK_VPN → table ROUTING_TABLE_VPN → default dev awg1
 """
 import logging
@@ -18,7 +18,7 @@ _GEOIP_IPSET_NAME = "geoip_local"
 _VPN_ROUTE_METRIC_PRIMARY = "100"
 _VPN_ROUTE_METRIC_FALLBACK = "200"
 _DNS_OUTPUT_PROTOCOLS = ("udp", "tcp")
-_AWG1_TCP_MSS = "1260"
+_UPSTREAM_TCP_MSS = "1260"
 
 
 def _run(args: list[str]) -> tuple[int, str]:
@@ -61,13 +61,25 @@ def _ipt_add(table: str, chain: str, rule_args: list[str]) -> None:
 
 def _ipt_del(table: str, chain: str, rule_args: list[str]) -> None:
     """Удаляет правило iptables если оно есть."""
-    while _ipt_rule_exists(table, chain, rule_args):
+    for _ in range(16):
+        if not _ipt_rule_exists(table, chain, rule_args):
+            break
         _run(["iptables", "-t", table, "-D", chain] + rule_args)
+    else:
+        logger.warning("iptables delete loop limit reached for %s/%s %s", table, chain, rule_args)
 
 
-def _mark_rules(server_ifaces: list[str], invert_geoip: bool) -> dict[str, str | list[list[str]] | list[str]]:
-    geoip_mark = settings.fwmark_vpn if invert_geoip else settings.fwmark_local
-    other_mark = settings.fwmark_local if invert_geoip else settings.fwmark_vpn
+def _mark_rules(
+    server_ifaces: list[str],
+    invert_geoip: bool,
+    geoip_upstream_enabled: bool = False,
+) -> dict[str, str | list[list[str]] | list[str]]:
+    if geoip_upstream_enabled:
+        geoip_mark = settings.fwmark_local
+        other_mark = settings.fwmark_vpn
+    else:
+        geoip_mark = settings.fwmark_vpn if invert_geoip else settings.fwmark_local
+        other_mark = settings.fwmark_local if invert_geoip else settings.fwmark_vpn
 
     return {
         "geoip_mark": geoip_mark,
@@ -94,28 +106,30 @@ def _mark_rules(server_ifaces: list[str], invert_geoip: bool) -> dict[str, str |
 def _remove_all_policy_mark_rules() -> None:
     candidate_ifaces = ["awg0", "wg0"]
     for invert_geoip in (False, True):
-        rules = _mark_rules(candidate_ifaces, invert_geoip)
-        for rule in rules["prerouting_geoip"]:  # type: ignore[assignment]
-            _ipt_del("mangle", "PREROUTING", rule)
-        for rule in rules["prerouting_other"]:  # type: ignore[assignment]
-            _ipt_del("mangle", "PREROUTING", rule)
-        for proto in _DNS_OUTPUT_PROTOCOLS:
-            _ipt_del("mangle", "OUTPUT", [
-                "-p", proto,
-                "--dport", "53",
-                *rules["output_geoip"],  # type: ignore[list-item]
-            ])
-            _ipt_del("mangle", "OUTPUT", [
-                "-p", proto,
-                "--dport", "53",
-                *rules["output_other"],  # type: ignore[list-item]
-            ])
-    _ipt_del("mangle", "FORWARD", [
-        "-p", "tcp",
-        "--tcp-flags", "SYN,RST", "SYN",
-        "-o", "awg1",
-        "-j", "TCPMSS", "--set-mss", _AWG1_TCP_MSS,
-    ])
+        for geoip_upstream_enabled in (False, True):
+            rules = _mark_rules(candidate_ifaces, invert_geoip, geoip_upstream_enabled)
+            for rule in rules["prerouting_geoip"]:  # type: ignore[assignment]
+                _ipt_del("mangle", "PREROUTING", rule)
+            for rule in rules["prerouting_other"]:  # type: ignore[assignment]
+                _ipt_del("mangle", "PREROUTING", rule)
+            for proto in _DNS_OUTPUT_PROTOCOLS:
+                _ipt_del("mangle", "OUTPUT", [
+                    "-p", proto,
+                    "--dport", "53",
+                    *rules["output_geoip"],  # type: ignore[list-item]
+                ])
+                _ipt_del("mangle", "OUTPUT", [
+                    "-p", proto,
+                    "--dport", "53",
+                    *rules["output_other"],  # type: ignore[list-item]
+                ])
+    for iface in ("awg1", "awg2"):
+        _ipt_del("mangle", "FORWARD", [
+            "-p", "tcp",
+            "--tcp-flags", "SYN,RST", "SYN",
+            "-o", iface,
+            "-j", "TCPMSS", "--set-mss", _UPSTREAM_TCP_MSS,
+        ])
 
 
 def _ensure_route(table: int, route_args: list[str], *, description: str) -> None:
@@ -127,25 +141,28 @@ def _ensure_route(table: int, route_args: list[str], *, description: str) -> Non
 
 
 def _delete_route(table: int, route_args: list[str], *, description: str) -> None:
-    while True:
+    for _ in range(8):
         rc, out = _run(["ip", "route", "del"] + route_args + ["table", str(table)])
         if rc != 0:
             if out:
                 logger.info("%s: %s", description, out)
             break
+    else:
+        logger.warning("%s: route delete loop limit reached", description)
 
 
 def update_upstream_host_route(peer_address: Optional[str], interface_name: str = "awg1") -> None:
     """
     Обновляет host-route до tunnel IP активной upstream-ноды в main table.
-    Без этого пакеты к 10.20.0.x уходят в eth0, а не в awg1.
+    Без этого пакеты к tunnel IP upstream-ноды уходят в eth0, а не в awg1/awg2.
     """
-    subnet = settings.node_vpn_subnet
-    rc, out = _run(["ip", "-4", "route", "show", "table", "main", subnet])
+    rc, out = _run(["ip", "-4", "route", "show", "table", "main", "dev", interface_name])
     if rc == 0 and out:
         for line in out.splitlines():
             route = line.strip()
             if not route or "dev lo" in route:
+                continue
+            if f" dev {interface_name}" not in f" {route} ":
                 continue
             if peer_address and route.startswith(peer_address.split("/")[0]):
                 continue
@@ -170,7 +187,54 @@ def _ensure_geoip_ipset() -> None:
     logger.warning("Created missing ipset %s as empty set", _GEOIP_IPSET_NAME)
 
 
-def setup_policy_routing() -> None:
+def update_geoip_route(
+    interface_name: Optional[str],
+    fallback_gateway: Optional[str] = None,
+) -> None:
+    """
+    Обновляет маршруты в GeoIP/local-таблице.
+    Если interface_name задан — GeoIP-трафик идёт через awg2 с eth0 fallback.
+    Если interface_name=None — GeoIP-трафик идёт напрямую через eth0.
+    """
+    table_local = settings.routing_table_local
+    phys_iface = settings.physical_iface
+
+    if interface_name:
+        _ensure_route(
+            table_local,
+            ["default", "dev", interface_name, "metric", _VPN_ROUTE_METRIC_PRIMARY],
+            description=(
+                f"LOCAL table: primary default dev {interface_name} "
+                f"metric {_VPN_ROUTE_METRIC_PRIMARY} (table {table_local})"
+            ),
+        )
+    else:
+        _delete_route(
+            table_local,
+            ["default", "dev", "awg2", "metric", _VPN_ROUTE_METRIC_PRIMARY],
+            description="LOCAL table: removed primary default via awg2",
+        )
+
+    gw = fallback_gateway or _get_default_gateway(phys_iface)
+    if gw:
+        _delete_route(
+            table_local,
+            ["default", "via", gw, "dev", phys_iface],
+            description="LOCAL table: removed legacy default without metric",
+        )
+        _ensure_route(
+            table_local,
+            ["default", "via", gw, "dev", phys_iface, "metric", _VPN_ROUTE_METRIC_FALLBACK],
+            description=(
+                f"LOCAL table: fallback default via {gw} dev {phys_iface} "
+                f"metric {_VPN_ROUTE_METRIC_FALLBACK} (table {table_local})"
+            ),
+        )
+    else:
+        logger.warning("Cannot determine fallback gateway for LOCAL table on %s", phys_iface)
+
+
+def setup_policy_routing(geoip_interface_name: Optional[str] = None) -> None:
     """
     Создаёт ip rule и ip route для policy routing.
     Идемпотентно — проверяет существование перед добавлением.
@@ -194,17 +258,8 @@ def setup_policy_routing() -> None:
             raise RuntimeError(f"ip rule add VPN failed: {out}")
         logger.info("Added ip rule: fwmark %s → table %d", fwmark_vpn, table_vpn)
 
-    # ip route: default в каждой таблице
     gw = _get_default_gateway(phys_iface)
-    if gw:
-        _ensure_route(
-            table_local,
-            ["default", "via", gw, "dev", phys_iface],
-            description=f"LOCAL table: default via {gw} dev {phys_iface}",
-        )
-    else:
-        logger.warning("Cannot determine default gateway for %s", phys_iface)
-
+    update_geoip_route(geoip_interface_name, fallback_gateway=gw)
     update_vpn_route("awg1", fallback_gateway=gw)
 
 
@@ -250,14 +305,18 @@ def update_vpn_route(
         logger.warning("Cannot determine fallback gateway for VPN table on %s", phys_iface)
 
 
-def setup_iptables(server_ifaces: list[str] | None = None, invert_geoip: bool = False) -> None:
+def setup_iptables(
+    server_ifaces: list[str] | None = None,
+    invert_geoip: bool = False,
+    geoip_upstream_enabled: bool = False,
+) -> None:
     """
     Настраивает правила iptables для policy routing + NAT.
     Идемпотентно.
     """
     phys_iface = settings.physical_iface
     effective_server_ifaces = [iface for iface in (server_ifaces or ["awg0"]) if iface]
-    rules = _mark_rules(effective_server_ifaces, invert_geoip)
+    rules = _mark_rules(effective_server_ifaces, invert_geoip, geoip_upstream_enabled)
 
     _ensure_geoip_ipset()
     _remove_all_policy_mark_rules()
@@ -280,21 +339,23 @@ def setup_iptables(server_ifaces: list[str] | None = None, invert_geoip: bool = 
         _ipt_add("mangle", "OUTPUT", ["-p", proto, "--dport", "53", *rules["output_other"]])  # type: ignore[list-item]
     logger.info("iptables mangle OUTPUT rules configured (DNS only)")
 
-    _ipt_add(
-        "mangle",
-        "FORWARD",
-        [
-            "-p", "tcp",
-            "--tcp-flags", "SYN,RST", "SYN",
-            "-o", "awg1",
-            "-j", "TCPMSS", "--set-mss", _AWG1_TCP_MSS,
-        ],
-    )
-    logger.info("iptables mangle FORWARD TCPMSS rule configured for awg1")
+    for iface in ("awg1", "awg2"):
+        _ipt_add(
+            "mangle",
+            "FORWARD",
+            [
+                "-p", "tcp",
+                "--tcp-flags", "SYN,RST", "SYN",
+                "-o", iface,
+                "-j", "TCPMSS", "--set-mss", _UPSTREAM_TCP_MSS,
+            ],
+        )
+    logger.info("iptables mangle FORWARD TCPMSS rules configured for upstream interfaces")
 
     # nat POSTROUTING: MASQUERADE исходящего трафика
     _ipt_add("nat", "POSTROUTING", ["-o", phys_iface, "-j", "MASQUERADE"])
     _ipt_add("nat", "POSTROUTING", ["-o", "awg1", "-j", "MASQUERADE"])
+    _ipt_add("nat", "POSTROUTING", ["-o", "awg2", "-j", "MASQUERADE"])
     logger.info("iptables NAT MASQUERADE rules configured")
 
 
@@ -321,7 +382,11 @@ def teardown() -> None:
     logger.info("Routing teardown complete")
 
 
-def get_status(server_ifaces: list[str] | None = None, invert_geoip: bool = False) -> dict:
+def get_status(
+    server_ifaces: list[str] | None = None,
+    invert_geoip: bool = False,
+    geoip_upstream_enabled: bool = False,
+) -> dict:
     """Возвращает текущее состояние правил маршрутизации."""
     fwmark_local = settings.fwmark_local
     fwmark_vpn = settings.fwmark_vpn
@@ -329,7 +394,7 @@ def get_status(server_ifaces: list[str] | None = None, invert_geoip: bool = Fals
     table_vpn = settings.routing_table_vpn
     phys_iface = settings.physical_iface
     effective_server_ifaces = [iface for iface in (server_ifaces or ["awg0"]) if iface]
-    rules = _mark_rules(effective_server_ifaces, invert_geoip)
+    rules = _mark_rules(effective_server_ifaces, invert_geoip, geoip_upstream_enabled)
 
     _, rules_out = _run(["ip", "rule", "show"])
     _, route_local_out = _run(["ip", "route", "show", "table", str(table_local)])
@@ -353,11 +418,22 @@ def get_status(server_ifaces: list[str] | None = None, invert_geoip: bool = Fals
                 "-p", "tcp",
                 "--tcp-flags", "SYN,RST", "SYN",
                 "-o", "awg1",
-                "-j", "TCPMSS", "--set-mss", _AWG1_TCP_MSS,
+                "-j", "TCPMSS", "--set-mss", _UPSTREAM_TCP_MSS,
+            ],
+        ),
+        "forward_tcpmss_awg2": _ipt_rule_exists(
+            "mangle",
+            "FORWARD",
+            [
+                "-p", "tcp",
+                "--tcp-flags", "SYN,RST", "SYN",
+                "-o", "awg2",
+                "-j", "TCPMSS", "--set-mss", _UPSTREAM_TCP_MSS,
             ],
         ),
         "nat_eth0": _ipt_rule_exists("nat", "POSTROUTING", ["-o", phys_iface, "-j", "MASQUERADE"]),
         "nat_awg1": _ipt_rule_exists("nat", "POSTROUTING", ["-o", "awg1", "-j", "MASQUERADE"]),
+        "nat_awg2": _ipt_rule_exists("nat", "POSTROUTING", ["-o", "awg2", "-j", "MASQUERADE"]),
         "output_geoip": all(
             _ipt_rule_exists("mangle", "OUTPUT", [
                 "-p", proto,
@@ -374,8 +450,8 @@ def get_status(server_ifaces: list[str] | None = None, invert_geoip: bool = Fals
             ])
             for proto in _DNS_OUTPUT_PROTOCOLS
         ),
-        "geoip_destination": "vpn" if invert_geoip else "local",
-        "other_destination": "local" if invert_geoip else "vpn",
+        "geoip_destination": "geoip_node" if geoip_upstream_enabled else ("vpn" if invert_geoip else "local"),
+        "other_destination": "vpn" if geoip_upstream_enabled else ("local" if invert_geoip else "vpn"),
         "ip_rules": [line.strip() for line in rules_out.splitlines() if line.strip()],
         "ip_routes": {
             str(table_local): [line.strip() for line in route_local_out.splitlines() if line.strip()],

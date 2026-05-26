@@ -25,7 +25,7 @@ from backend.models.interface import Interface, InterfaceMode, InterfaceProtocol
 from backend.models.peer import Peer
 from backend.models.upstream_node import NodeStatus, UpstreamNode
 from backend.config import classic_wg_enabled, settings
-from backend.services.upstream_nodes import apply_node_to_awg1
+from backend.services.upstream_nodes import apply_node_to_awg1, apply_node_to_awg2
 
 
 # ── Singleton — PID таблица userspace amneziawg-go ───────────────────────
@@ -37,6 +37,7 @@ _wg_kernel_mode: bool | None = None
 _INTERFACE_MTU = {
     "awg0": "1380",
     "awg1": "1300",
+    "awg2": "1300",
     "wg0": "1420",
 }
 
@@ -45,6 +46,12 @@ def visible_interface_names() -> set[str]:
     names = {"awg0", "awg1"}
     if classic_wg_enabled():
         names.add("wg0")
+    return names
+
+
+def managed_interface_names() -> set[str]:
+    names = visible_interface_names()
+    names.add("awg2")
     return names
 
 
@@ -622,33 +629,38 @@ async def load_interface(iface: Interface, session: AsyncSession) -> None:
     )
     peers = list(result.scalars().all())
 
-    if iface.mode == InterfaceMode.client and iface.name == "awg1" and not peers:
-        active_node = await session.scalar(
+    if iface.mode == InterfaceMode.client and iface.name in {"awg1", "awg2"} and not peers:
+        role_filter = UpstreamNode.is_active == True if iface.name == "awg1" else UpstreamNode.is_geoip == True  # noqa: E712
+        node = await session.scalar(
             select(UpstreamNode).where(
-                UpstreamNode.is_active == True,  # noqa: E712
-                UpstreamNode.status == NodeStatus.online,
+                role_filter,
+                UpstreamNode.status.in_([NodeStatus.online, NodeStatus.degraded]),
                 UpstreamNode.public_key.isnot(None),
                 UpstreamNode.awg_address.isnot(None),
             )
         )
-        if active_node:
-            iface = await apply_node_to_awg1(session, active_node)
+        if node:
+            iface = await apply_node_to_awg1(session, node) if iface.name == "awg1" else await apply_node_to_awg2(session, node)
             peers = [
                 Peer(
                     interface_id=iface.id,
-                    name=f"upstream-node-{active_node.id}",
-                    public_key=active_node.public_key,
-                    preshared_key=active_node.preshared_key,
+                    name=f"upstream-node-{node.id}",
+                    public_key=node.public_key,
+                    preshared_key=node.preshared_key,
                     allowed_ips=iface.allowed_ips,
                     persistent_keepalive=iface.persistent_keepalive,
                     enabled=True,
                 )
             ]
             logger.info(
-                "[awg] Loaded active upstream node %d into awg1 config",
-                active_node.id,
+                "[awg] Loaded %s upstream node %d into %s config",
+                "active" if iface.name == "awg1" else "geoip",
+                node.id,
+                iface.name,
             )
             return
+        logger.info("[awg] Skipping %s startup — no selected upstream node", iface.name)
+        return
 
     await apply_interface(iface, peers)
 

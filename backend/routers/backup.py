@@ -49,9 +49,6 @@ def _env_snapshot() -> dict:
             "wg0_listen_port": _json_safe_setting("wg0_listen_port", None),
             "wg0_address": _json_safe_setting("wg0_address", "10.11.0.1/24"),
             "wg0_dns": _json_safe_setting("wg0_dns", "10.11.0.1"),
-            "awg1_address": _json_safe_setting("awg1_address", "10.20.0.2/32"),
-            "awg1_allowed_ips": _json_safe_setting("awg1_allowed_ips", "0.0.0.0/0"),
-            "awg1_persistent_keepalive": _json_safe_setting("awg1_persistent_keepalive", 25),
             "physical_iface": _json_safe_setting("physical_iface", "eth0"),
             "routing_table_local": _json_safe_setting("routing_table_local", 100),
             "routing_table_vpn": _json_safe_setting("routing_table_vpn", 200),
@@ -61,8 +58,6 @@ def _env_snapshot() -> dict:
                 "geoip_source", "http://www.ipdeny.com/ipblocks/data/countries/"
             ),
             "geoip_update_cron": _json_safe_setting("geoip_update_cron", "0 4 * * *"),
-            "node_awg_port": _json_safe_setting("node_awg_port", 51821),
-            "node_vpn_subnet": _json_safe_setting("node_vpn_subnet", "10.20.0.0/24"),
             "web_mode": _json_safe_setting("web_mode", "https"),
             "web_port": _json_safe_setting("web_port", 8080),
             "telemt_enabled": _json_safe_setting("telemt_enabled", ""),

@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import AsyncSessionLocal, get_db
+from backend.models.interface import Interface
 from backend.models.routing_settings import RoutingSettings
 from backend.models.upstream_node import DeployLog, DeployStatus, NodePeer, NodeStatus, ProvisioningMode, UpstreamNode
 from backend.routers.auth import get_current_user
@@ -30,8 +31,9 @@ from backend.services.node_deployer import (
 import backend.services.awg as awg_svc
 from backend.services.upstream_nodes import (
     apply_node_to_awg1,
+    apply_node_to_awg2,
+    assign_tunnel_from_interface_address,
     assign_client_settings_from_parsed,
-    get_awg1_or_raise,
     inherit_client_settings_from_interface,
 )
 
@@ -49,6 +51,7 @@ class NodeOut(BaseModel):
     awg_port: int
     provisioning_mode: str
     awg_address: Optional[str]
+    tunnel_network: Optional[str]
     probe_ip: Optional[str]
     public_key: Optional[str]
     client_address: Optional[str]
@@ -70,6 +73,7 @@ class NodeOut(BaseModel):
     udp_status: Optional[str] = None
     udp_detail: Optional[str] = None
     is_active: bool
+    is_geoip: bool
     priority: int
     last_seen: Optional[datetime]
     last_deploy: Optional[datetime]
@@ -120,6 +124,7 @@ class NodeCreate(BaseModel):
     ssh_port: int = 22
     awg_port: int = 51821
     awg_address: Optional[str] = None  # если None — выделяется автоматически при деплое
+    interface_address: Optional[str] = None
     probe_ip: Optional[str] = None
     priority: int = 100
     provisioning_mode: str = ProvisioningMode.managed.value
@@ -132,6 +137,7 @@ class NodeUpdate(BaseModel):
     ssh_port: Optional[int] = None
     awg_port: Optional[int] = None
     awg_address: Optional[str] = None
+    tunnel_network: Optional[str] = None
     probe_ip: Optional[str] = None
     priority: Optional[int] = None
     raw_conf: Optional[str] = None
@@ -157,6 +163,8 @@ class DeployRequest(BaseModel):
     ssh_user: str
     ssh_password: str
     ssh_port: int = 22
+    interface_address: Optional[str] = None
+    delete_on_failure: bool = False
 
 
 class RedeployRequest(BaseModel):
@@ -170,6 +178,10 @@ class DeleteRequest(BaseModel):
     ssh_user: Optional[str] = None
     ssh_password: Optional[str] = None
     ssh_port: int = 22
+
+
+class GeoipNodeUpdate(BaseModel):
+    enabled: bool
 
 
 class NodePeerCreate(BaseModel):
@@ -207,6 +219,7 @@ def _node_to_out(node: UpstreamNode) -> NodeOut:
         awg_port=node.awg_port,
         provisioning_mode=node.provisioning_mode.value if hasattr(node.provisioning_mode, "value") else node.provisioning_mode,
         awg_address=node.awg_address,
+        tunnel_network=node.tunnel_network,
         probe_ip=node.probe_ip,
         public_key=node.public_key,
         client_address=node.client_address,
@@ -228,6 +241,7 @@ def _node_to_out(node: UpstreamNode) -> NodeOut:
         udp_status=None,
         udp_detail=None,
         is_active=node.is_active,
+        is_geoip=node.is_geoip,
         priority=node.priority,
         last_seen=node.last_seen,
         last_deploy=node.last_deploy,
@@ -278,6 +292,47 @@ async def _get_or_create_routing_settings(session: AsyncSession) -> RoutingSetti
     return settings_row
 
 
+async def _get_geoip_node(session: AsyncSession) -> UpstreamNode | None:
+    return await session.scalar(
+        select(UpstreamNode).where(UpstreamNode.is_geoip == True)  # noqa: E712
+    )
+
+
+async def _apply_current_routing(session: AsyncSession) -> None:
+    from backend.services import awg as awg_svc
+    from backend.services import routing as routing_svc
+
+    settings_row = await _get_or_create_routing_settings(session)
+    active_node = await session.scalar(
+        select(UpstreamNode).where(
+            UpstreamNode.is_active == True,  # noqa: E712
+            UpstreamNode.status == NodeStatus.online,
+        )
+    )
+    geoip_node = await session.scalar(
+        select(UpstreamNode).where(
+            UpstreamNode.is_geoip == True,  # noqa: E712
+            UpstreamNode.status.in_([NodeStatus.online, NodeStatus.degraded]),
+        )
+    )
+    server_ifaces = await awg_svc.list_enabled_server_interface_names(session)
+    routing_svc.setup_policy_routing("awg2" if geoip_node else None)
+    routing_svc.update_vpn_route("awg1" if active_node else None)
+    routing_svc.update_upstream_host_route(
+        active_node.awg_address if active_node and active_node.awg_address else None,
+        interface_name="awg1",
+    )
+    routing_svc.update_upstream_host_route(
+        geoip_node.awg_address if geoip_node and geoip_node.awg_address else None,
+        interface_name="awg2",
+    )
+    routing_svc.setup_iptables(
+        server_ifaces=server_ifaces,
+        invert_geoip=settings_row.invert_geoip,
+        geoip_upstream_enabled=geoip_node is not None,
+    )
+
+
 def _node_peer_to_out(peer: NodePeer) -> NodePeerOut:
     return NodePeerOut(
         id=peer.id,
@@ -310,9 +365,23 @@ async def _create_deploy_log(node_id: int) -> int:
 
 # ── Фоновые задачи деплоя ─────────────────────────────────────────────────
 
-async def _run_deploy(node_id: int, log_id: int, ssh_user: str, ssh_password: str, ssh_port: int) -> None:
+async def _run_deploy(
+    node_id: int,
+    log_id: int,
+    ssh_user: str,
+    ssh_password: str,
+    ssh_port: int,
+    delete_on_failure: bool,
+) -> None:
     try:
-        await deployer.deploy(node_id, log_id, ssh_user, ssh_password, ssh_port)
+        await deployer.deploy(
+            node_id,
+            log_id,
+            ssh_user,
+            ssh_password,
+            ssh_port,
+            delete_on_failure=delete_on_failure,
+        )
     finally:
         # Очистить очередь через 5 минут (дать время клиенту дочитать)
         await asyncio.sleep(300)
@@ -339,6 +408,12 @@ async def list_nodes(
     )
     items: list[NodeOut] = []
     for node in result.scalars().all():
+        if (
+            node.provisioning_mode == ProvisioningMode.managed
+            and node.last_deploy is None
+            and node.status in (NodeStatus.pending, NodeStatus.deploying, NodeStatus.error)
+        ):
+            continue
         if not node.is_active:
             health = await deployer.check_health(node.id)
             await session.refresh(node)
@@ -380,7 +455,6 @@ async def create_node(
     session: AsyncSession = Depends(get_db),
     _user: str = Depends(get_current_user),
 ) -> NodeOut:
-    awg1 = await get_awg1_or_raise(session)
     try:
         provisioning_mode = ProvisioningMode(body.provisioning_mode)
     except ValueError as exc:
@@ -401,6 +475,7 @@ async def create_node(
         awg_port=parsed.endpoint_port if parsed else body.awg_port,
         provisioning_mode=provisioning_mode,
         awg_address=parsed.tunnel_address if parsed else body.awg_address,
+        tunnel_network=None,
         probe_ip=body.probe_ip,
         public_key=parsed.public_key if parsed else None,
         private_key=parsed.private_key if parsed else None,
@@ -415,7 +490,14 @@ async def create_node(
     if parsed:
         assign_client_settings_from_parsed(node, parsed)
     else:
-        inherit_client_settings_from_interface(node, awg1)
+        awg1 = await session.scalar(select(Interface).where(Interface.name == "awg1"))
+        if awg1:
+            inherit_client_settings_from_interface(node, awg1)
+    if not parsed and body.interface_address:
+        try:
+            await assign_tunnel_from_interface_address(session, node, body.interface_address)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     session.add(node)
     await session.flush()
     await session.refresh(node)
@@ -440,6 +522,26 @@ async def deploy_node(
         raise HTTPException(status_code=409, detail="Node is already being deployed")
     if node.provisioning_mode != ProvisioningMode.managed:
         raise HTTPException(status_code=400, detail="Manual nodes cannot be deployed via SSH")
+    if body.interface_address:
+        try:
+            await assign_tunnel_from_interface_address(session, node, body.interface_address)
+        except ValueError as exc:
+            if body.delete_on_failure and node.last_deploy is None:
+                await session.delete(node)
+                await session.flush()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        node.updated_at = datetime.now(timezone.utc)
+        session.add(node)
+        await session.flush()
+        await session.commit()
+    if not node.client_address or not node.awg_address:
+        if body.delete_on_failure and node.last_deploy is None:
+            await session.delete(node)
+            await session.flush()
+        raise HTTPException(
+            status_code=400,
+            detail="Interface address is required for managed node deploy",
+        )
 
     log_id = await _create_deploy_log(body.node_id)
     # Инициализировать очередь до старта задачи
@@ -452,6 +554,7 @@ async def deploy_node(
         body.ssh_user,
         body.ssh_password,
         body.ssh_port,
+        body.delete_on_failure,
     )
 
     return {"deploy_log_id": log_id, "node_id": body.node_id}
@@ -552,7 +655,16 @@ async def update_node(
         node.preshared_key = parsed.preshared_key
         node.raw_conf = parsed.raw_conf
         assign_client_settings_from_parsed(node, parsed)
-    for field, value in body.model_dump(exclude_none=True).items():
+    body_data = body.model_dump(exclude_none=True)
+    if body.client_address is not None:
+        try:
+            await assign_tunnel_from_interface_address(session, node, body.client_address)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        body_data.pop("client_address", None)
+        body_data.pop("awg_address", None)
+        body_data.pop("tunnel_network", None)
+    for field, value in body_data.items():
         if field == "raw_conf":
             continue
         setattr(node, field, value)
@@ -563,6 +675,9 @@ async def update_node(
     await session.flush()
     if node.is_active and node.public_key:
         await apply_node_to_awg1(session, node)
+    if node.is_geoip and node.public_key:
+        await apply_node_to_awg2(session, node)
+        await _apply_current_routing(session)
     return _node_to_out(node)
 
 
@@ -589,14 +704,24 @@ async def delete_node(
         except Exception as exc:
             logger.warning("[delete_node] Remote cleanup error for node %d: %s", node_id, exc)
     elif node.public_key:
-        # Убрать peer из awg1 без SSH
+        # Убрать peer из локальных upstream-интерфейсов без SSH
         from backend.services.awg import _run_cmd
         _run_cmd(["awg", "set", "awg1", "peer", node.public_key, "remove"])
+        _run_cmd(["awg", "set", "awg2", "peer", node.public_key, "remove"])
 
     if node.is_active:
         from backend.services.routing import update_upstream_host_route, update_vpn_route
         update_vpn_route(None)
         update_upstream_host_route(None)
+    if node.is_geoip:
+        from backend.services.awg import stop_interface
+        from backend.services.routing import update_geoip_route, update_upstream_host_route
+        try:
+            await stop_interface("awg2")
+        except Exception as exc:
+            logger.warning("[delete_node] Failed to stop awg2 for geoip node %d: %s", node_id, exc)
+        update_geoip_route(None)
+        update_upstream_host_route(None, interface_name="awg2")
 
     await session.delete(node)
     await session.flush()
@@ -619,7 +744,10 @@ async def reset_node(
             detail="Node has no AWG keypair — deploy first",
         )
 
-    await apply_node_to_awg1(session, node)
+    if node.is_geoip:
+        await apply_node_to_awg2(session, node)
+    else:
+        await apply_node_to_awg1(session, node)
     node.status = NodeStatus.online
     node.updated_at = datetime.now(timezone.utc)
     session.add(node)
@@ -633,6 +761,8 @@ async def reset_node(
         from backend.services.routing import update_upstream_host_route, update_vpn_route
         update_vpn_route("awg1")
         update_upstream_host_route(node.awg_address)
+    if node.is_geoip and node.awg_address:
+        await _apply_current_routing(session)
 
     return _node_to_out(node)
 
@@ -649,6 +779,11 @@ async def activate_node(
         raise HTTPException(
             status_code=400,
             detail="Node is not deployed yet",
+        )
+    if node.is_geoip:
+        raise HTTPException(
+            status_code=400,
+            detail="GeoIP node cannot be activated for regular VPN traffic",
         )
 
     # Деактивировать все остальные
@@ -670,6 +805,63 @@ async def activate_node(
         update_vpn_route("awg1")
         if node.awg_address:
             update_upstream_host_route(node.awg_address)
+
+    return _node_to_out(node)
+
+
+@router.post("/{node_id}/geoip", response_model=NodeOut)
+async def set_geoip_node(
+    node_id: int,
+    body: GeoipNodeUpdate,
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+) -> NodeOut:
+    """Включить или выключить ноду для GeoIP-трафика через awg2."""
+    node = await _get_node_or_404(node_id, session)
+
+    if body.enabled:
+        if node.is_active:
+            raise HTTPException(
+                status_code=400,
+                detail="Active node cannot be used for GeoIP traffic",
+            )
+        if node.status not in (NodeStatus.online, NodeStatus.degraded):
+            raise HTTPException(
+                status_code=400,
+                detail="Node must be deployed before enabling GeoIP traffic",
+            )
+        if not node.public_key:
+            raise HTTPException(
+                status_code=400,
+                detail="Node has no AWG keypair — deploy first",
+            )
+
+        current = await _get_geoip_node(session)
+        if current and current.id != node.id:
+            current.is_geoip = False
+            current.updated_at = datetime.now(timezone.utc)
+            session.add(current)
+
+        node.is_geoip = True
+        node.updated_at = datetime.now(timezone.utc)
+        session.add(node)
+        await session.flush()
+
+        await apply_node_to_awg2(session, node)
+        await _apply_current_routing(session)
+        return _node_to_out(node)
+
+    if node.is_geoip:
+        from backend.services.awg import stop_interface
+        node.is_geoip = False
+        node.updated_at = datetime.now(timezone.utc)
+        session.add(node)
+        await session.flush()
+        try:
+            await stop_interface("awg2")
+        except Exception as exc:
+            logger.warning("[geoip_node] Failed to stop awg2 for node %d: %s", node_id, exc)
+        await _apply_current_routing(session)
 
     return _node_to_out(node)
 
@@ -714,6 +906,7 @@ async def get_node_stats(
         "last_deploy": node.last_deploy,
         "provisioning_mode": node.provisioning_mode.value if hasattr(node.provisioning_mode, "value") else node.provisioning_mode,
         "client_address": node.client_address,
+        "tunnel_network": node.tunnel_network,
         "client_dns": node.client_dns,
         "client_allowed_ips": node.client_allowed_ips,
         "client_keepalive": node.client_keepalive,

@@ -88,6 +88,7 @@ export const deployNode = (data: Record<string, unknown>) => api.post('/nodes/de
 export const redeployNode = (id: number, data: Record<string, unknown>) =>
   api.post(`/nodes/${id}/redeploy`, data)
 export const activateNode = (id: number) => api.post(`/nodes/${id}/activate`)
+export const setNodeGeoip = (id: number, enabled: boolean) => api.post(`/nodes/${id}/geoip`, { enabled })
 export const resetNode = (id: number) => api.post(`/nodes/${id}/reset`)
 export const checkNode = (id: number) => api.post(`/nodes/${id}/check`)
 export const getNodeFailoverSettings = () => api.get('/nodes/failover')

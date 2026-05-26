@@ -10,6 +10,8 @@ import {
 } from '../api'
 import type { RoutingStatus } from '../types'
 
+type RoutingDestination = RoutingStatus['geoip_destination'] | RoutingStatus['other_destination']
+
 export default function Routing() {
   const qc = useQueryClient()
   const [error, setError] = useState('')
@@ -202,7 +204,7 @@ function DirectionCard({
   physicalIface,
 }: {
   title: string
-  destination?: 'local' | 'vpn'
+  destination?: RoutingDestination
   mark?: string
   physicalIface?: string
 }) {
@@ -219,21 +221,24 @@ function DirectionCard({
   )
 }
 
-function routeIfaceForDestination(destination?: 'local' | 'vpn', physicalIface?: string) {
+function routeIfaceForDestination(destination?: RoutingDestination, physicalIface?: string) {
   if (destination === 'local') return physicalIface ?? 'eth0'
   if (destination === 'vpn') return 'awg1'
+  if (destination === 'geoip_node') return 'awg2'
   return '—'
 }
 
-function routeTableForDestination(destination?: 'local' | 'vpn') {
+function routeTableForDestination(destination?: RoutingDestination) {
   if (destination === 'local') return 'table 100'
   if (destination === 'vpn') return 'table 200'
+  if (destination === 'geoip_node') return 'table 100'
   return 'table —'
 }
 
-function routeLabelForDestination(destination?: 'local' | 'vpn') {
+function routeLabelForDestination(destination?: RoutingDestination) {
   if (destination === 'local') return 'direct local route'
   if (destination === 'vpn') return 'upstream VPN'
+  if (destination === 'geoip_node') return 'GeoIP upstream node'
   return 'unknown'
 }
 
