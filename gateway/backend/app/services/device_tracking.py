@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import socket
 import subprocess
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ from app.services.routing import apply_local_passthrough, apply_routing_plan, bu
 from app.services.traffic_sources import source_selectors
 
 
+logger = logging.getLogger(__name__)
+
 DEVICE_TRACKING_INTERVAL_SECONDS = 30
 PING_TIMEOUT_SECONDS = 1
 FLOW_RETENTION_MULTIPLIER = 4
@@ -31,6 +34,7 @@ class FlowObservation:
     source_ip: str
     bytes_total: int
     route_target: str
+    has_byte_counters: bool = True
 
 
 @dataclass
@@ -38,6 +42,34 @@ class NeighborInfo:
     ip_address: str
     mac_address: str | None
     state: str | None
+
+
+@dataclass
+class DeviceCandidate:
+    source: str
+    ip_address: str
+    mac_address: str | None
+    route_target: str
+    flow_observation: FlowObservation | None = None
+    flow_state: TrackedDeviceFlowState | None = None
+    previous_bytes: int | None = None
+    has_fresh_traffic: bool = False
+    confirmed_present: bool = False
+
+
+@dataclass
+class DeviceTrackingCycleStats:
+    selectors: int = 0
+    neighbors: int = 0
+    raw_conntrack_observations: int = 0
+    conntrack_observations: int = 0
+    fresh_conntrack_observations: int = 0
+    candidates: int = 0
+    created: int = 0
+    updated: int = 0
+    active: int = 0
+    present: int = 0
+    absent: int = 0
 
 
 def _utcnow() -> datetime:
@@ -65,7 +97,23 @@ def _run(args: list[str]) -> tuple[int, str]:
     return proc.returncode, ((proc.stdout or "") + (proc.stderr or "")).strip()
 
 
-def _parse_conntrack_output(output: str, *, local_mark: str = "0x1", vpn_mark: str = "0x2") -> list[FlowObservation]:
+def _select_tracked_conntrack_ip(values: dict[str, list[str]], selectors: list[str] | None) -> str | None:
+    source_ips = values.get("src") or []
+    dest_ips = values.get("dst") or []
+    if selectors:
+        for candidate in [*source_ips, *dest_ips]:
+            if _ip_in_selectors(candidate, selectors):
+                return candidate
+    return source_ips[0] if source_ips else None
+
+
+def _parse_conntrack_output(
+    output: str,
+    *,
+    local_mark: str = "0x1",
+    vpn_mark: str = "0x2",
+    selectors: list[str] | None = None,
+) -> list[FlowObservation]:
     observations: list[FlowObservation] = []
     for line in output.splitlines():
         parts = line.split()
@@ -77,16 +125,16 @@ def _parse_conntrack_output(output: str, *, local_mark: str = "0x1", vpn_mark: s
                 continue
             key, value = token.split("=", 1)
             values.setdefault(key, []).append(value)
-        source_ip = (values.get("src") or [None])[0]
+        source_ip = _select_tracked_conntrack_ip(values, selectors)
         dest_ip = (values.get("dst") or [None])[0]
         if not source_ip or not dest_ip:
             continue
 
         bytes_total = 0
-        for candidate in values.get("bytes", []):
+        byte_values = values.get("bytes", [])
+        for candidate in byte_values:
             try:
-                bytes_total = int(candidate)
-                break
+                bytes_total += int(candidate)
             except ValueError:
                 continue
 
@@ -105,6 +153,7 @@ def _parse_conntrack_output(output: str, *, local_mark: str = "0x1", vpn_mark: s
                 source_ip=source_ip,
                 bytes_total=bytes_total,
                 route_target=route_target,
+                has_byte_counters=bool(byte_values),
             )
         )
     return observations
@@ -178,6 +227,13 @@ def _flow_has_fresh_traffic(previous_bytes: int | None, current_bytes: int) -> b
     if previous_bytes is None:
         return current_bytes > 0
     return current_bytes != previous_bytes
+
+
+def _flow_observation_is_active(flow_state: TrackedDeviceFlowState | None, observation: FlowObservation) -> bool:
+    if not observation.has_byte_counters:
+        return flow_state is None
+    previous_bytes = flow_state.last_bytes if flow_state is not None else None
+    return _flow_has_fresh_traffic(previous_bytes, observation.bytes_total)
 
 
 def _flow_delta(previous_bytes: int | None, current_bytes: int) -> int:
@@ -265,15 +321,17 @@ def _matches_search(device: TrackedDevice, search: str) -> bool:
 async def _load_neighbors() -> dict[str, NeighborInfo]:
     rc, out = _run(["ip", "neigh", "show"])
     if rc != 0:
+        logger.warning("[device-tracking] ip neigh failed rc=%s output=%s", rc, out)
         return {}
     return _parse_ip_neigh_output(out)
 
 
-async def _load_conntrack_observations() -> list[FlowObservation]:
+async def _load_conntrack_observations(selectors: list[str] | None = None) -> list[FlowObservation]:
     rc, out = _run(["conntrack", "-L", "-o", "extended"])
     if rc != 0:
+        logger.warning("[device-tracking] conntrack failed rc=%s output=%s", rc, out)
         return []
-    return _parse_conntrack_output(out, local_mark=settings.fwmark_local, vpn_mark=settings.fwmark_vpn)
+    return _parse_conntrack_output(out, local_mark=settings.fwmark_local, vpn_mark=settings.fwmark_vpn, selectors=selectors)
 
 
 def _dedupe_flow_observations(observations: list[FlowObservation]) -> list[FlowObservation]:
@@ -287,6 +345,23 @@ def _dedupe_flow_observations(observations: list[FlowObservation]) -> list[FlowO
         if existing.route_target == "unknown" and item.route_target != "unknown":
             existing.route_target = item.route_target
     return list(by_flow_key.values())
+
+
+def _log_cycle_stats(stats: DeviceTrackingCycleStats) -> None:
+    logger.info(
+        "[device-tracking] cycle selectors=%s neighbors=%s conntrack_raw=%s conntrack_filtered=%s conntrack_fresh=%s candidates=%s created=%s updated=%s active=%s present=%s absent=%s",
+        stats.selectors,
+        stats.neighbors,
+        stats.raw_conntrack_observations,
+        stats.conntrack_observations,
+        stats.fresh_conntrack_observations,
+        stats.candidates,
+        stats.created,
+        stats.updated,
+        stats.active,
+        stats.present,
+        stats.absent,
+    )
 
 
 async def _load_device_by_ip(session: AsyncSession, ip_address: str) -> TrackedDevice | None:
@@ -434,21 +509,24 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
 
     now = _utcnow()
     selectors = source_selectors(settings_row)
+    stats = DeviceTrackingCycleStats(selectors=len(selectors))
     neighbors = await _load_neighbors()
-    observations = _dedupe_flow_observations(
-        [item for item in await _load_conntrack_observations() if _ip_in_selectors(item.source_ip, selectors)]
-    )
+    stats.neighbors = len(neighbors)
+    raw_observations = await _load_conntrack_observations(selectors)
+    stats.raw_conntrack_observations = len(raw_observations)
+    observations = _dedupe_flow_observations([item for item in raw_observations if _ip_in_selectors(item.source_ip, selectors)])
+    stats.conntrack_observations = len(observations)
     pending_flow_states: dict[str, TrackedDeviceFlowState] = {}
-    observed_source_ips: set[str] = set()
+    candidates: list[DeviceCandidate] = []
+    candidate_ips: set[str] = set()
     device_route_overrides_dirty = False
 
     for item in observations:
-        observed_source_ips.add(item.source_ip)
         flow_state = pending_flow_states.get(item.flow_key)
         if flow_state is None:
             flow_state = await session.get(TrackedDeviceFlowState, item.flow_key)
         previous_bytes = flow_state.last_bytes if flow_state is not None else None
-        if not _flow_has_fresh_traffic(previous_bytes, item.bytes_total):
+        if not _flow_observation_is_active(flow_state, item):
             if flow_state is None:
                 flow_state = TrackedDeviceFlowState(
                     flow_key=item.flow_key,
@@ -468,30 +546,79 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
             continue
 
         neighbor = neighbors.get(item.source_ip)
-        existing_device = await _load_device_by_mac(session, _normalize_mac(neighbor.mac_address) if neighbor else None)
+        stats.fresh_conntrack_observations += 1
+        candidates.append(
+            DeviceCandidate(
+                source="conntrack",
+                ip_address=item.source_ip,
+                mac_address=neighbor.mac_address if neighbor else None,
+                route_target=item.route_target,
+                flow_observation=item,
+                flow_state=flow_state,
+                previous_bytes=previous_bytes,
+                has_fresh_traffic=True,
+                confirmed_present=True,
+            )
+        )
+        candidate_ips.add(item.source_ip)
+
+    for neighbor in neighbors.values():
+        if neighbor.ip_address in candidate_ips or not _ip_in_selectors(neighbor.ip_address, selectors):
+            continue
+        if not _confirm_neighbor_presence(neighbor):
+            continue
+        candidates.append(
+            DeviceCandidate(
+                source="neighbor",
+                ip_address=neighbor.ip_address,
+                mac_address=neighbor.mac_address,
+                route_target="unknown",
+                confirmed_present=True,
+            )
+        )
+        candidate_ips.add(neighbor.ip_address)
+
+    stats.candidates = len(candidates)
+    confirmed_present_ips = {candidate.ip_address for candidate in candidates if candidate.confirmed_present}
+
+    for candidate in candidates:
+        existing_device = await _load_device_by_mac(session, _normalize_mac(candidate.mac_address))
         if existing_device is None:
-            existing_device = await _load_device_by_ip(session, item.source_ip)
+            existing_device = await _load_device_by_ip(session, candidate.ip_address)
+        if existing_device is None:
+            stats.created += 1
+        else:
+            stats.updated += 1
         previous_ip = existing_device.current_ip if existing_device is not None else None
         device = await _resolve_device(
             session,
-            ip_address=item.source_ip,
-            mac_address=neighbor.mac_address if neighbor else None,
+            ip_address=candidate.ip_address,
+            mac_address=candidate.mac_address,
             now=now,
         )
         _coerce_device_defaults(device)
         if device.forced_route_target != "none" and previous_ip != device.current_ip:
             device_route_overrides_dirty = True
         if not device.hostname:
-            device.hostname = _resolve_hostname(item.source_ip)
-        device.last_traffic_at = now
-        device.last_present_at = now
-        device.is_active = True
+            device.hostname = _resolve_hostname(candidate.ip_address)
+        if candidate.has_fresh_traffic:
+            device.last_traffic_at = now
+            device.is_active = True
+            if candidate.route_target != "unknown":
+                device.last_route_target = candidate.route_target
+        else:
+            device.is_active = False
         device.is_present = True
-        if item.route_target != "unknown":
-            device.last_route_target = item.route_target
+        device.last_presence_check_at = now
+        device.last_present_at = now
         session.add(device)
 
-        delta = _flow_delta(previous_bytes, item.bytes_total)
+        if candidate.flow_observation is None:
+            continue
+
+        item = candidate.flow_observation
+        flow_state = candidate.flow_state
+        delta = _flow_delta(candidate.previous_bytes, item.bytes_total)
         if flow_state is None:
             flow_state = TrackedDeviceFlowState(
                 flow_key=item.flow_key,
@@ -502,7 +629,7 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
                 last_seen_at=now,
             )
         else:
-            flow_state.device_id = device.id
+            flow_state.device = device
             flow_state.source_ip = item.source_ip
             flow_state.route_target = item.route_target
             flow_state.last_bytes = item.bytes_total
@@ -512,33 +639,8 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
         session.add(flow_state)
         session.add(device)
 
-    for neighbor in neighbors.values():
-        if neighbor.ip_address in observed_source_ips or not _ip_in_selectors(neighbor.ip_address, selectors):
-            continue
-        if not _confirm_neighbor_presence(neighbor):
-            continue
-
-        normalized_mac = _normalize_mac(neighbor.mac_address)
-        existing_device = await _load_device_by_mac(session, normalized_mac)
-        if existing_device is None:
-            existing_device = await _load_device_by_ip(session, neighbor.ip_address)
-        previous_ip = existing_device.current_ip if existing_device is not None else None
-        device = await _resolve_device(
-            session,
-            ip_address=neighbor.ip_address,
-            mac_address=neighbor.mac_address,
-            now=now,
-        )
-        _coerce_device_defaults(device)
-        if device.forced_route_target != "none" and previous_ip != device.current_ip:
-            device_route_overrides_dirty = True
-        if not device.hostname:
-            device.hostname = _resolve_hostname(neighbor.ip_address)
-        device.is_active = False
-        device.is_present = True
-        device.last_presence_check_at = now
-        device.last_present_at = now
-        session.add(device)
+    if candidates:
+        await session.flush()
 
     cutoff = now - timedelta(seconds=max(settings_row.device_activity_timeout_seconds * FLOW_RETENTION_MULTIPLIER, 600))
     await session.execute(delete(TrackedDeviceFlowState).where(TrackedDeviceFlowState.last_seen_at < cutoff))
@@ -547,12 +649,18 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
     for device in devices:
         _coerce_device_defaults(device)
         neighbor = neighbors.get(device.current_ip) if device.current_ip else None
-        is_active, is_present, confirmed_present, mac_address = _evaluate_device_presence(
-            device,
-            neighbor=neighbor,
-            now=now,
-            activity_timeout_seconds=settings_row.device_activity_timeout_seconds,
-        )
+        if device.current_ip in confirmed_present_ips:
+            mac_address = neighbor.mac_address if neighbor else None
+            is_active = bool(device.is_active and device.last_traffic_at == now)
+            is_present = True
+            confirmed_present = True
+        else:
+            is_active, is_present, confirmed_present, mac_address = _evaluate_device_presence(
+                device,
+                neighbor=neighbor,
+                now=now,
+                activity_timeout_seconds=settings_row.device_activity_timeout_seconds,
+            )
         if mac_address and not device.mac_address:
             device.mac_address = mac_address
             device.identity_key = f"mac:{mac_address}"
@@ -565,6 +673,14 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
         elif not is_present:
             device.last_absent_at = now
         session.add(device)
+        if device.is_active:
+            stats.active += 1
+        elif device.is_present:
+            stats.present += 1
+        else:
+            stats.absent += 1
+
+    _log_cycle_stats(stats)
 
     if device_route_overrides_dirty:
         await commit_with_lock(session, metrics=True)

@@ -379,7 +379,7 @@ export const en = {
   allStatuses: 'All statuses',
   deviceStateActive: 'active',
   deviceStatePresent: 'present',
-  deviceStateInactive: 'inactive',
+  deviceStateInactive: 'offline',
   filtered: 'Filtered',
   manualSelection: 'Manual selection',
   recentTraffic: 'Recent traffic',

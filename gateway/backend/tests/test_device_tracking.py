@@ -1,9 +1,30 @@
 from datetime import datetime, timedelta, timezone
 from app.services import device_tracking
+from app.models import METRICS_DB_TABLES, TrackedDevice, TrackedDeviceFlowState
 from types import SimpleNamespace
 
+import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-def test_parse_conntrack_output_extracts_source_bytes_and_route() -> None:
+
+async def _create_metrics_session(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'metrics.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(lambda sync_conn: [table.create(sync_conn, checkfirst=True) for table in METRICS_DB_TABLES])
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    return engine, session_factory
+
+
+def _settings_row() -> SimpleNamespace:
+    return SimpleNamespace(
+        device_tracking_enabled=True,
+        device_activity_timeout_seconds=300,
+        allowed_client_cidrs=["192.168.1.0/24"],
+    )
+
+
+def test_parse_conntrack_output_extracts_source_total_bytes_and_route() -> None:
     output = (
         "tcp 6 431999 ESTABLISHED src=192.168.1.10 dst=1.1.1.1 sport=50000 dport=443 "
         "src=1.1.1.1 dst=192.168.1.10 sport=443 dport=50000 mark=0x2 use=1 bytes=1200 bytes=2200"
@@ -13,8 +34,78 @@ def test_parse_conntrack_output_extracts_source_bytes_and_route() -> None:
 
     assert len(parsed) == 1
     assert parsed[0].source_ip == "192.168.1.10"
-    assert parsed[0].bytes_total == 1200
+    assert parsed[0].bytes_total == 3400
     assert parsed[0].route_target == "vpn"
+
+
+def test_parse_conntrack_output_counts_reply_direction_growth() -> None:
+    previous = (
+        "tcp 6 431999 ESTABLISHED src=192.168.1.10 dst=1.1.1.1 sport=50000 dport=443 "
+        "src=1.1.1.1 dst=192.168.1.10 sport=443 dport=50000 mark=0x2 use=1 bytes=1200 bytes=2200"
+    )
+    current = (
+        "tcp 6 431999 ESTABLISHED src=192.168.1.10 dst=1.1.1.1 sport=50000 dport=443 "
+        "src=1.1.1.1 dst=192.168.1.10 sport=443 dport=50000 mark=0x2 use=1 bytes=1200 bytes=5200"
+    )
+
+    previous_parsed = device_tracking._parse_conntrack_output(previous)[0]
+    current_parsed = device_tracking._parse_conntrack_output(current)[0]
+
+    assert previous_parsed.flow_key == current_parsed.flow_key
+    assert device_tracking._flow_has_fresh_traffic(previous_parsed.bytes_total, current_parsed.bytes_total) is True
+    assert device_tracking._flow_delta(previous_parsed.bytes_total, current_parsed.bytes_total) == 3000
+
+
+def test_parse_conntrack_output_selects_tracked_ip_from_reply_destination() -> None:
+    output = (
+        "tcp 6 431999 ESTABLISHED src=1.1.1.1 dst=203.0.113.10 sport=443 dport=50000 "
+        "src=203.0.113.10 dst=192.168.1.10 sport=50000 dport=443 mark=0x2 use=1 bytes=1200 bytes=5200"
+    )
+
+    parsed = device_tracking._parse_conntrack_output(output, selectors=["192.168.1.0/24"])
+
+    assert len(parsed) == 1
+    assert parsed[0].source_ip == "192.168.1.10"
+    assert parsed[0].bytes_total == 6400
+
+
+def test_parse_conntrack_output_marks_missing_byte_counters() -> None:
+    output = (
+        "tcp 6 431999 ESTABLISHED src=192.168.1.10 dst=1.1.1.1 sport=50000 dport=443 "
+        "src=1.1.1.1 dst=192.168.1.10 sport=443 dport=50000 mark=0x2 use=1"
+    )
+
+    parsed = device_tracking._parse_conntrack_output(output)
+
+    assert len(parsed) == 1
+    assert parsed[0].source_ip == "192.168.1.10"
+    assert parsed[0].bytes_total == 0
+    assert parsed[0].has_byte_counters is False
+
+
+def test_new_flow_observation_without_byte_counters_is_active_once() -> None:
+    observation = device_tracking.FlowObservation(
+        flow_key="tcp|192.168.1.10|1.1.1.1|50000|443",
+        source_ip="192.168.1.10",
+        bytes_total=0,
+        route_target="vpn",
+        has_byte_counters=False,
+    )
+
+    assert device_tracking._flow_observation_is_active(None, observation) is True
+
+
+def test_existing_flow_observation_without_byte_counters_does_not_stay_active() -> None:
+    observation = device_tracking.FlowObservation(
+        flow_key="tcp|192.168.1.10|1.1.1.1|50000|443",
+        source_ip="192.168.1.10",
+        bytes_total=0,
+        route_target="vpn",
+        has_byte_counters=False,
+    )
+    flow_state = SimpleNamespace(last_bytes=0)
+
+    assert device_tracking._flow_observation_is_active(flow_state, observation) is False
 
 
 def test_parse_ip_neigh_output_extracts_mac_and_state() -> None:
@@ -229,3 +320,93 @@ def test_reachable_neighbor_without_traffic_is_present_but_not_active() -> None:
     assert is_present is True
     assert confirmed_present is True
     assert mac_address == "aa:bb"
+
+
+@pytest.mark.asyncio
+async def test_collect_device_inventory_creates_present_neighbor_only_device(monkeypatch, tmp_path) -> None:
+    engine, session_factory = await _create_metrics_session(tmp_path)
+
+    async def load_neighbors():
+        return {
+            "192.168.1.10": device_tracking.NeighborInfo(
+                ip_address="192.168.1.10",
+                mac_address="aa:bb:cc:dd:ee:ff",
+                state="REACHABLE",
+            )
+        }
+
+    async def load_conntrack_observations(selectors=None):
+        return []
+
+    monkeypatch.setattr(
+        device_tracking,
+        "_load_neighbors",
+        load_neighbors,
+    )
+    monkeypatch.setattr(device_tracking, "_load_conntrack_observations", load_conntrack_observations)
+    monkeypatch.setattr(device_tracking, "_resolve_hostname", lambda _ip: None)
+
+    try:
+        async with session_factory() as session:
+            await device_tracking.collect_device_inventory(session, _settings_row())
+            await session.flush()
+
+            device = await session.scalar(select(TrackedDevice).where(TrackedDevice.current_ip == "192.168.1.10"))
+
+            assert device is not None
+            assert device.mac_address == "aa:bb:cc:dd:ee:ff"
+            assert device.is_present is True
+            assert device.is_active is False
+            assert device.last_present_at is not None
+            assert device.last_presence_check_at is not None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_collect_device_inventory_creates_active_device_from_first_conntrack_observation(monkeypatch, tmp_path) -> None:
+    engine, session_factory = await _create_metrics_session(tmp_path)
+    observation = device_tracking.FlowObservation(
+        flow_key="tcp|192.168.1.20|1.1.1.1|50000|443",
+        source_ip="192.168.1.20",
+        bytes_total=1200,
+        route_target="vpn",
+    )
+
+    async def load_neighbors():
+        return {
+            "192.168.1.20": device_tracking.NeighborInfo(
+                ip_address="192.168.1.20",
+                mac_address="11:22:33:44:55:66",
+                state="STALE",
+            )
+        }
+
+    async def load_conntrack_observations(selectors=None):
+        return [observation]
+
+    monkeypatch.setattr(
+        device_tracking,
+        "_load_neighbors",
+        load_neighbors,
+    )
+    monkeypatch.setattr(device_tracking, "_load_conntrack_observations", load_conntrack_observations)
+    monkeypatch.setattr(device_tracking, "_resolve_hostname", lambda _ip: None)
+
+    try:
+        async with session_factory() as session:
+            await device_tracking.collect_device_inventory(session, _settings_row())
+            await session.flush()
+
+            device = await session.scalar(select(TrackedDevice).where(TrackedDevice.current_ip == "192.168.1.20"))
+            flow_state = await session.get(TrackedDeviceFlowState, observation.flow_key)
+
+            assert device is not None
+            assert device.is_present is True
+            assert device.is_active is True
+            assert device.last_route_target == "vpn"
+            assert device.total_bytes == 1200
+            assert flow_state is not None
+            assert flow_state.device_id == device.id
+    finally:
+        await engine.dispose()

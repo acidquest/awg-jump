@@ -379,7 +379,7 @@ export const ru = {
   allStatuses: 'Все статусы',
   deviceStateActive: 'активно',
   deviceStatePresent: 'в сети',
-  deviceStateInactive: 'неактивно',
+  deviceStateInactive: 'не в сети',
   filtered: 'После фильтра',
   manualSelection: 'Ручной выбор',
   recentTraffic: 'Недавний трафик',
