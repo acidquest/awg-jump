@@ -1,3 +1,6 @@
+from sqlalchemy.pool import AsyncAdaptedQueuePool
+
+from app.database import engine, metrics_engine
 from app.security import hash_password, is_ip_allowed, verify_password
 
 
@@ -17,3 +20,11 @@ def test_is_ip_allowed_allows_all_when_empty_and_rejects_invalid_ip() -> None:
     assert is_ip_allowed("198.51.100.5", []) is True
     assert is_ip_allowed(None, ["198.51.100.5/32"]) is False
     assert is_ip_allowed("not-an-ip", ["198.51.100.5/32"]) is False
+
+
+def test_sqlite_engines_use_bounded_async_pools() -> None:
+    for db_engine in (engine, metrics_engine):
+        pool = db_engine.sync_engine.pool
+        assert isinstance(pool, AsyncAdaptedQueuePool)
+        assert pool.size() == 2
+        assert pool._max_overflow == 0

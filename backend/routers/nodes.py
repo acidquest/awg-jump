@@ -12,14 +12,22 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import AsyncSessionLocal, get_db
 from backend.models.interface import Interface
 from backend.models.routing_settings import RoutingSettings
-from backend.models.upstream_node import DeployLog, DeployStatus, NodePeer, NodeStatus, ProvisioningMode, UpstreamNode
+from backend.models.upstream_node import (
+    DeployLog,
+    DeployStatus,
+    NodePeer,
+    NodeStatus,
+    ProvisioningMode,
+    UpstreamNode,
+    UpstreamNodeSwitchLog,
+)
 from backend.routers.auth import get_current_user
 from backend.services.conf_parser import parse_peer_conf, render_peer_conf
 from backend.services.node_deployer import (
@@ -96,6 +104,27 @@ class DeployLogOut(BaseModel):
     log_output: Optional[str]
 
     model_config = {"from_attributes": True}
+
+
+class UpstreamNodeSwitchLogOut(BaseModel):
+    id: int
+    from_node_id: Optional[int]
+    from_node_name: Optional[str]
+    to_node_id: Optional[int]
+    to_node_name: str
+    reason: str
+    switch_type: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class SwitchLogsPageOut(BaseModel):
+    items: list[UpstreamNodeSwitchLogOut]
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
 
 
 class NodeDetailOut(NodeOut):
@@ -262,6 +291,40 @@ def _log_to_out(log: DeployLog) -> DeployLogOut:
         finished_at=log.finished_at,
         status=log.status.value if hasattr(log.status, "value") else log.status,
         log_output=log.log_output,
+    )
+
+
+def _switch_log_to_out(log: UpstreamNodeSwitchLog) -> UpstreamNodeSwitchLogOut:
+    return UpstreamNodeSwitchLogOut(
+        id=log.id,
+        from_node_id=log.from_node_id,
+        from_node_name=log.from_node_name,
+        to_node_id=log.to_node_id,
+        to_node_name=log.to_node_name,
+        reason=log.reason,
+        switch_type=log.switch_type,
+        created_at=log.created_at,
+    )
+
+
+async def _record_node_switch(
+    session: AsyncSession,
+    *,
+    previous_node: UpstreamNode | None,
+    next_node: UpstreamNode,
+    switch_type: str,
+    reason: str,
+) -> None:
+    session.add(
+        UpstreamNodeSwitchLog(
+            from_node_id=previous_node.id if previous_node else None,
+            from_node_name=previous_node.name if previous_node else None,
+            to_node_id=next_node.id,
+            to_node_name=next_node.name,
+            reason=reason,
+            switch_type=switch_type,
+            created_at=datetime.now(timezone.utc),
+        )
     )
 
 
@@ -450,6 +513,32 @@ async def update_failover_settings(
     session.add(settings_row)
     await session.flush()
     return FailoverSettingsOut(enabled=settings_row.failover_enabled)
+
+
+@router.get("/switch-logs", response_model=SwitchLogsPageOut)
+async def list_switch_logs(
+    page: int = 1,
+    page_size: int = 10,
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+) -> SwitchLogsPageOut:
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 100)
+    total = await session.scalar(select(func.count()).select_from(UpstreamNodeSwitchLog)) or 0
+    result = await session.execute(
+        select(UpstreamNodeSwitchLog)
+        .order_by(UpstreamNodeSwitchLog.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    total_pages = max((total + page_size - 1) // page_size, 1)
+    return SwitchLogsPageOut(
+        items=[_switch_log_to_out(log) for log in result.scalars().all()],
+        page=page,
+        page_size=page_size,
+        total=total,
+        total_pages=total_pages,
+    )
 
 
 @router.post("", response_model=NodeOut, status_code=201)
@@ -788,18 +877,30 @@ async def activate_node(
             status_code=400,
             detail="GeoIP node cannot be activated for regular VPN traffic",
         )
+    if node.is_active:
+        return _node_to_out(node)
 
     # Деактивировать все остальные
     result = await session.execute(
         select(UpstreamNode).where(UpstreamNode.is_active == True)  # noqa: E712
     )
+    previous_node = None
     for active in result.scalars().all():
+        if active.id != node.id and previous_node is None:
+            previous_node = active
         active.is_active = False
         session.add(active)
 
     node.is_active = True
     node.updated_at = datetime.now(timezone.utc)
     session.add(node)
+    await _record_node_switch(
+        session,
+        previous_node=previous_node,
+        next_node=node,
+        switch_type="manual",
+        reason="Administrator switched manually",
+    )
     await session.flush()
 
     if node.public_key:

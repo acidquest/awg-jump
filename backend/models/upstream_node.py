@@ -117,6 +117,19 @@ class DeployLog(Base):
     node = relationship("UpstreamNode", back_populates="deploy_logs")
 
 
+class UpstreamNodeSwitchLog(Base):
+    __tablename__ = "upstream_node_switch_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    from_node_id = Column(Integer, ForeignKey("upstream_nodes.id", ondelete="SET NULL"), nullable=True)
+    from_node_name = Column(String(128), nullable=True)
+    to_node_id = Column(Integer, ForeignKey("upstream_nodes.id", ondelete="SET NULL"), nullable=True)
+    to_node_name = Column(String(128), nullable=False)
+    reason = Column(Text, nullable=False, default="")
+    switch_type = Column(String(32), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
 class NodePeer(Base):
     __tablename__ = "node_peers"
 

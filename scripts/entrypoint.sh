@@ -55,9 +55,11 @@ cd /app
 python3 - << 'PYEOF'
 import os
 import sqlite3
+from pathlib import Path
 
 db_path = os.environ.get("DB_PATH", "/data/config.db")
 legacy_revisions = {"0002", "0003", "0004", "0006", "0007"}
+versions_dir = Path("backend/alembic/versions")
 
 if os.path.exists(db_path):
     try:
@@ -69,7 +71,8 @@ if os.path.exists(db_path):
         if cur.fetchone():
             cur.execute("SELECT version_num FROM alembic_version LIMIT 1")
             row = cur.fetchone()
-            if row and row[0] in legacy_revisions:
+            current_revision_exists = bool(row and list(versions_dir.glob(f"{row[0]}_*.py")))
+            if row and row[0] in legacy_revisions and not current_revision_exists:
                 print(
                     "[entrypoint] Normalizing legacy alembic revision "
                     f"{row[0]} -> 0001 for baseline compatibility..."

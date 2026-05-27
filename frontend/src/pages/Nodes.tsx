@@ -4,9 +4,9 @@ import {
   getNodes, createNode, deployNode, redeployNode,
   activateNode, resetNode, checkNode, deleteNode, getNodeStats, updateNode,
   createNodePeer, deleteNodePeer, getNodePeerConfig, updateNodePeer,
-  getNodeFailoverSettings, updateNodeFailoverSettings, setNodeGeoip,
+  getNodeFailoverSettings, updateNodeFailoverSettings, setNodeGeoip, getNodeSwitchLogs,
 } from '../api'
-import { FailoverSettings, Node, NodePeer, NodeStats, DeployLog } from '../types'
+import { FailoverSettings, Node, NodePeer, NodeStats, DeployLog, NodeSwitchLogsPage } from '../types'
 import StatusBadge from '../components/StatusBadge'
 import Modal from '../components/Modal'
 import { openSSE } from '../sse'
@@ -45,6 +45,8 @@ export default function Nodes() {
   const [logModal, setLogModal] = useState<DeployLog | null>(null)
   const [peerModalNode, setPeerModalNode] = useState<Node | null>(null)
   const [failoverError, setFailoverError] = useState('')
+  const [switchLogPage, setSwitchLogPage] = useState(1)
+  const switchLogPageSize = 10
 
   const { data: nodes = [], isLoading } = useQuery<Node[]>({
     queryKey: ['nodes'],
@@ -65,9 +67,24 @@ export default function Nodes() {
     refetchInterval: 30_000,
   })
 
+  const { data: switchLogs } = useQuery<NodeSwitchLogsPage>({
+    queryKey: ['node-switch-logs', switchLogPage, switchLogPageSize],
+    queryFn: () => getNodeSwitchLogs(switchLogPage, switchLogPageSize).then((r) => r.data),
+    refetchInterval: 30_000,
+  })
+
+  useEffect(() => {
+    if (switchLogs && switchLogPage > switchLogs.total_pages) {
+      setSwitchLogPage(switchLogs.total_pages)
+    }
+  }, [switchLogPage, switchLogs])
+
   const activateMut = useMutation({
     mutationFn: (id: number) => activateNode(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['nodes'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['nodes'] })
+      qc.invalidateQueries({ queryKey: ['node-switch-logs'] })
+    },
   })
 
   const geoipMut = useMutation({
@@ -262,6 +279,64 @@ export default function Nodes() {
               ))}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-header">
+          <div className="card-title">Entry node switch log</div>
+          <div className="text-muted text-sm">
+            {switchLogs ? `${switchLogs.total} total` : 'Loading'}
+          </div>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Switch date and time</th>
+                <th>From node</th>
+                <th>To node</th>
+                <th>Reason</th>
+                <th>Switch type</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!switchLogs || switchLogs.items.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="text-muted" style={{ textAlign: 'center', padding: 24 }}>
+                    No node switches yet
+                  </td>
+                </tr>
+              ) : switchLogs.items.map((log) => (
+                <tr key={log.id}>
+                  <td className="text-mono">{fmtDate(log.created_at)}</td>
+                  <td>{log.from_node_name || '—'}</td>
+                  <td>{log.to_node_name}</td>
+                  <td>{log.reason || '—'}</td>
+                  <td>{log.switch_type === 'failover' ? 'failover' : 'administrator switched manually'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="pagination">
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={() => setSwitchLogPage((page) => Math.max(page - 1, 1))}
+            disabled={!switchLogs || switchLogPage <= 1}
+          >
+            Previous
+          </button>
+          <span className="text-muted text-sm">
+            Page {switchLogs?.page ?? switchLogPage} of {switchLogs?.total_pages ?? 1}
+          </span>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={() => setSwitchLogPage((page) => page + 1)}
+            disabled={!switchLogs || switchLogPage >= switchLogs.total_pages}
+          >
+            Next
+          </button>
         </div>
       </div>
 

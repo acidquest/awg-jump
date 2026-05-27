@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 
 from backend.config import settings
 from backend.database import Base, get_db
+import backend.models  # noqa: F401 - register all SQLAlchemy models before create_all
 from backend.models.interface import Interface, InterfaceMode, InterfaceProtocol
 from backend.models.geoip import GeoipSource
 from backend.models.geoip_exclusion import GeoipExclusion  # noqa: F401

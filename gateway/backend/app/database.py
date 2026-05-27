@@ -5,6 +5,7 @@ from fastapi import Request
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import AsyncAdaptedQueuePool
 
 from app.config import settings
 from app.services.maintenance import wait_until_ready
@@ -19,6 +20,10 @@ def _create_engine(database_url: str):
         database_url,
         echo=False,
         connect_args={"check_same_thread": False},
+        poolclass=AsyncAdaptedQueuePool,
+        pool_size=max(settings.db_pool_size, 1),
+        max_overflow=0,
+        pool_timeout=max(settings.db_pool_timeout_seconds, 1),
     )
 
 

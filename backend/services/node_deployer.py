@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.config import settings
 from backend.database import AsyncSessionLocal
 from backend.models.interface import Interface
-from backend.models.upstream_node import DeployLog, DeployStatus, NodePeer, NodeStatus, UpstreamNode
+from backend.models.upstream_node import DeployLog, DeployStatus, NodePeer, NodeStatus, UpstreamNode, UpstreamNodeSwitchLog
 from backend.services.awg import _run_cmd, generate_keypair
 from backend.services.upstream_nodes import (
     apply_node_to_awg1,
@@ -1028,6 +1028,17 @@ class NodeDeployer:
             next_node.is_active = True
             next_node.updated_at = datetime.now(timezone.utc)
             session.add(next_node)
+            session.add(
+                UpstreamNodeSwitchLog(
+                    from_node_id=failed.id,
+                    from_node_name=failed.name,
+                    to_node_id=next_node.id,
+                    to_node_name=next_node.name,
+                    reason=f"Failover from {failed.name}",
+                    switch_type="failover",
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
             await session.commit()
 
             new_host = next_node.host

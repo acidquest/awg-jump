@@ -315,6 +315,14 @@ tr:last-child td { border-bottom: none; }
 
 tr:hover td { background: var(--bg-2); }
 
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-top: 12px;
+}
+
 /* Forms */
 .form-group {
   margin-bottom: 14px;

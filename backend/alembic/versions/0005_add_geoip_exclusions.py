@@ -17,6 +17,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    existing_tables = set(inspector.get_table_names())
+    if "geoip_exclusions" in existing_tables:
+        return
+
     op.create_table(
         "geoip_exclusions",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),

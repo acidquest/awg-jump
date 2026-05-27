@@ -106,6 +106,25 @@ export interface DeployLog {
   log_output: string | null
 }
 
+export interface NodeSwitchLog {
+  id: number
+  from_node_id: number | null
+  from_node_name: string | null
+  to_node_id: number | null
+  to_node_name: string
+  reason: string
+  switch_type: 'manual' | 'failover' | string
+  created_at: string
+}
+
+export interface NodeSwitchLogsPage {
+  items: NodeSwitchLog[]
+  page: number
+  page_size: number
+  total: number
+  total_pages: number
+}
+
 export interface NodeDetail extends Node {
   last_deploy_log: DeployLog | null
   raw_conf: string | null
