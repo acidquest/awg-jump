@@ -67,7 +67,7 @@ RUN curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CL
 # ============================================================
 FROM rust:1-bookworm AS telemt-builder
 
-ARG TELEMT_VERSION=3.4.12
+ARG TELEMT_VERSION=3.4.13
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -120,7 +120,7 @@ COPY nginx/ /app/nginx/
 COPY scripts/ /app/scripts/
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 
-RUN chmod +x /usr/local/bin/amneziawg-go /usr/local/bin/telemt /app/scripts/*.sh \
+RUN chmod +x /usr/local/bin/amneziawg-go /usr/local/bin/telemt /app/scripts/*.sh /app/nginx/generate-cert.sh \
     && mkdir -p /var/log/supervisor /var/run/amneziawg \
     # Отключаем системный dnsmasq — управляем вручную через dns_manager.py
     && rm -f /etc/dnsmasq.conf /etc/dnsmasq.d/* \

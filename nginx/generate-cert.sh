@@ -3,7 +3,7 @@
 # Запускается один раз при первом старте контейнера.
 # Если сертификат уже существует — пропускаем генерацию.
 
-CERT_DIR=/etc/nginx/certs
+CERT_DIR="${CERT_DIR:-/etc/nginx/certs}"
 
 if [ -f "$CERT_DIR/server.crt" ]; then
     echo "[generate-cert] Certificate already exists, skipping generation."

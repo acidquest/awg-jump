@@ -372,14 +372,31 @@ def _sanitize_config_for_log(config_str: str) -> str:
     )
 
 
-def _run_cmd(args: list[str], input_data: Optional[bytes] = None) -> tuple[int, str]:
+def _run_cmd(
+    args: list[str],
+    input_data: Optional[bytes] = None,
+    timeout: float = 15.0,
+) -> tuple[int, str]:
     """Запускает команду, возвращает (returncode, combined_output)."""
-    result = subprocess.run(
-        args,
-        input=input_data,
-        capture_output=True,
-        text=(input_data is None),
-    )
+    try:
+        result = subprocess.run(
+            args,
+            input=input_data,
+            capture_output=True,
+            text=(input_data is None),
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        out = exc.stdout or b""
+        err = exc.stderr or b""
+        if isinstance(out, bytes):
+            out = out.decode(errors="replace")
+        if isinstance(err, bytes):
+            err = err.decode(errors="replace")
+        return 124, (
+            f"command timed out after {timeout:g}s: {' '.join(args)}\n"
+            f"{out}{err}"
+        ).strip()
     if isinstance(result.stdout, bytes):
         out = result.stdout.decode(errors="replace")
         err = result.stderr.decode(errors="replace")
@@ -531,7 +548,10 @@ async def sync_peers(iface: Interface, peers: list[Peer]) -> None:
         os.chmod(conf_path, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(config_str)
-        rc, out = _run_cmd([_tool_bin(protocol), "syncconf", ifname, conf_path])
+        rc, out = await asyncio.to_thread(
+            _run_cmd,
+            [_tool_bin(protocol), "syncconf", ifname, conf_path],
+        )
         if rc != 0:
             raise RuntimeError(f"{protocol.value} syncconf failed: {out}")
     finally:

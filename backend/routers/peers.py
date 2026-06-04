@@ -1,4 +1,5 @@
 import ipaddress
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -11,7 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.config import settings
-from backend.database import AsyncSessionLocal, get_db
+from backend.database import get_db
+from backend.http_headers import attachment_content_disposition
 from backend.models.interface import Interface, InterfaceMode, InterfaceProtocol
 from backend.models.peer import Peer
 from backend.routers.auth import get_current_user
@@ -20,20 +22,14 @@ import backend.services.awg as awg_svc
 
 router = APIRouter(prefix="/api/peers", tags=["peers"])
 _STATUS_REPORT_MIN_INTERVAL_SECONDS = 300
+logger = logging.getLogger(__name__)
 
 
 async def get_authenticated_db(
     _user: str = Depends(get_current_user),
-):
-    session = AsyncSessionLocal()
-    try:
-        yield session
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        raise
-    finally:
-        await session.close()
+    session: AsyncSession = Depends(get_db),
+) -> AsyncSession:
+    return session
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────
@@ -276,7 +272,13 @@ async def _sync_interface(interface_id: int, session: AsyncSession) -> None:
         select(Peer).where(Peer.interface_id == interface_id, Peer.enabled == True)  # noqa: E712
     )
     peers = list(result2.scalars().all())
-    await awg_svc.sync_peers(iface, peers)
+    try:
+        await awg_svc.sync_peers(iface, peers)
+    except Exception:
+        logger.exception(
+            "Failed to hot-sync peers for interface %s after peer DB change",
+            iface.name,
+        )
 
 
 # ── Routes ────────────────────────────────────────────────────────────────
@@ -600,7 +602,11 @@ async def get_peer_config(
     return Response(
         content=config_str,
         media_type="text/plain",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": attachment_content_disposition(
+                filename, f"peer-{peer.id}.conf"
+            )
+        },
     )
 
 

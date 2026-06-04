@@ -1,4 +1,5 @@
 from datetime import datetime
+from urllib.parse import quote
 
 import pytest
 from httpx import AsyncClient
@@ -181,7 +182,7 @@ async def test_peer_config(
         "/api/peers",
         json={
             "interface_id": iface.id,
-            "name": "config-peer",
+            "name": "пир-тест",
             "tunnel_address": "10.10.0.10/32",
             "allowed_ips": "0.0.0.0/0",
         },
@@ -196,6 +197,12 @@ async def test_peer_config(
     )
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/plain")
+    expected_filename = quote("пир-тест.conf", safe="")
+    assert (
+        resp.headers["content-disposition"]
+        == f'attachment; filename="peer-{peer_id}.conf"; '
+        f"filename*=UTF-8''{expected_filename}"
+    )
     content = resp.text
     assert "[Interface]" in content
     assert "[Peer]" in content

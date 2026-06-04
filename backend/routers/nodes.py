@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import AsyncSessionLocal, get_db
+from backend.http_headers import attachment_content_disposition
 from backend.models.interface import Interface
 from backend.models.routing_settings import RoutingSettings
 from backend.models.upstream_node import (
@@ -1155,7 +1156,11 @@ async def export_node_peer_config(
     return Response(
         content=config,
         media_type="text/plain",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": attachment_content_disposition(
+                filename, f"node-peer-{peer.id}.conf"
+            )
+        },
     )
 
 
