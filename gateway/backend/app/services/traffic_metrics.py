@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -194,7 +195,7 @@ async def collect_traffic_metrics(
     gateway_settings: GatewaySettings | None = None,
 ) -> TrafficUsageSnapshot:
     now = datetime.now(timezone.utc)
-    raw_snapshot = read_interface_counter_snapshot(gateway_settings)
+    raw_snapshot = await asyncio.to_thread(read_interface_counter_snapshot, gateway_settings)
     state = await session.get(TrafficMetricState, 1)
 
     if state is None:

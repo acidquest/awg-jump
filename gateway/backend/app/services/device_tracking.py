@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import socket
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -59,6 +61,7 @@ class DeviceCandidate:
 
 @dataclass
 class DeviceTrackingCycleStats:
+    duration_seconds: float = 0.0
     selectors: int = 0
     neighbors: int = 0
     raw_conntrack_observations: int = 0
@@ -319,7 +322,7 @@ def _matches_search(device: TrackedDevice, search: str) -> bool:
 
 
 async def _load_neighbors() -> dict[str, NeighborInfo]:
-    rc, out = _run(["ip", "neigh", "show"])
+    rc, out = await asyncio.to_thread(_run, ["ip", "neigh", "show"])
     if rc != 0:
         logger.warning("[device-tracking] ip neigh failed rc=%s output=%s", rc, out)
         return {}
@@ -327,7 +330,7 @@ async def _load_neighbors() -> dict[str, NeighborInfo]:
 
 
 async def _load_conntrack_observations(selectors: list[str] | None = None) -> list[FlowObservation]:
-    rc, out = _run(["conntrack", "-L", "-o", "extended"])
+    rc, out = await asyncio.to_thread(_run, ["conntrack", "-L", "-o", "extended"])
     if rc != 0:
         logger.warning("[device-tracking] conntrack failed rc=%s output=%s", rc, out)
         return []
@@ -349,7 +352,8 @@ def _dedupe_flow_observations(observations: list[FlowObservation]) -> list[FlowO
 
 def _log_cycle_stats(stats: DeviceTrackingCycleStats) -> None:
     logger.info(
-        "[device-tracking] cycle selectors=%s neighbors=%s conntrack_raw=%s conntrack_filtered=%s conntrack_fresh=%s candidates=%s created=%s updated=%s active=%s present=%s absent=%s",
+        "[device-tracking] cycle duration_seconds=%.3f selectors=%s neighbors=%s conntrack_raw=%s conntrack_filtered=%s conntrack_fresh=%s candidates=%s created=%s updated=%s active=%s present=%s absent=%s",
+        stats.duration_seconds,
         stats.selectors,
         stats.neighbors,
         stats.raw_conntrack_observations,
@@ -507,6 +511,7 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
     if settings_row is None or not settings_row.device_tracking_enabled:
         return
 
+    started_at = time.monotonic()
     now = _utcnow()
     selectors = source_selectors(settings_row)
     stats = DeviceTrackingCycleStats(selectors=len(selectors))
@@ -565,7 +570,7 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
     for neighbor in neighbors.values():
         if neighbor.ip_address in candidate_ips or not _ip_in_selectors(neighbor.ip_address, selectors):
             continue
-        if not _confirm_neighbor_presence(neighbor):
+        if not await asyncio.to_thread(_confirm_neighbor_presence, neighbor):
             continue
         candidates.append(
             DeviceCandidate(
@@ -600,7 +605,7 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
         if device.forced_route_target != "none" and previous_ip != device.current_ip:
             device_route_overrides_dirty = True
         if not device.hostname:
-            device.hostname = _resolve_hostname(candidate.ip_address)
+            device.hostname = await asyncio.to_thread(_resolve_hostname, candidate.ip_address)
         if candidate.has_fresh_traffic:
             device.last_traffic_at = now
             device.is_active = True
@@ -655,8 +660,8 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
             is_present = True
             confirmed_present = True
         else:
-            is_active, is_present, confirmed_present, mac_address = _evaluate_device_presence(
-                device,
+            is_active, is_present, confirmed_present, mac_address = await asyncio.to_thread(
+                _evaluate_device_presence, device,
                 neighbor=neighbor,
                 now=now,
                 activity_timeout_seconds=settings_row.device_activity_timeout_seconds,
@@ -680,6 +685,7 @@ async def collect_device_inventory(session: AsyncSession, settings_row: GatewayS
         else:
             stats.absent += 1
 
+    stats.duration_seconds = time.monotonic() - started_at
     _log_cycle_stats(stats)
 
     if device_route_overrides_dirty:

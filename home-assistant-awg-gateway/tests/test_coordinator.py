@@ -6,7 +6,12 @@ from unittest.mock import patch
 
 import pytest
 
-from custom_components.awg_gateway.api import AwgGatewayCannotConnectError
+from custom_components.awg_gateway.api import (
+    AwgGatewayCannotConnectError,
+    AwgGatewayApiDisabledError,
+    AwgGatewayInvalidAuthError,
+    AwgGatewayUnexpectedResponseError,
+)
 from custom_components.awg_gateway.coordinator import (
     DEVICE_POLL_OFFSET_SECONDS,
     AwgGatewayDevicesUpdateCoordinator,
@@ -86,10 +91,13 @@ async def test_status_coordinator_preserves_monotonic_traffic():
 
 
 @pytest.mark.asyncio
-async def test_devices_coordinator_returns_cached_devices_as_inactive_on_failure():
+@pytest.mark.parametrize("error", [AwgGatewayCannotConnectError, AwgGatewayApiDisabledError,
+                                  AwgGatewayInvalidAuthError, AwgGatewayUnexpectedResponseError])
+@pytest.mark.parametrize("present", [True, False])
+async def test_devices_coordinator_preserves_presence_until_confirmed_by_api(error, present):
     client = AsyncMock()
     client.async_get_devices.return_value = {
-        "devices": [{"identity_key": "mac:aa", "is_present": True, "is_active": True, "presence_state": "active"}]
+        "devices": [{"identity_key": "mac:aa", "is_present": present, "is_active": present, "presence_state": "active" if present else "inactive"}]
     }
 
     with patch("homeassistant.helpers.frame.report_usage"):
@@ -103,15 +111,27 @@ async def test_devices_coordinator_returns_cached_devices_as_inactive_on_failure
     first = await coordinator._async_update_data()
     coordinator.data = first
 
-    client.async_get_devices.side_effect = AwgGatewayCannotConnectError()
+    client.async_get_devices.side_effect = error()
 
     second = await coordinator._async_update_data()
 
-    assert second.devices[0]["identity_key"] == "mac:aa"
-    assert second.devices[0]["is_present"] is False
-    assert second.devices[0]["is_active"] is False
-    assert second.devices[0]["presence_state"] == "inactive"
+    assert second.devices == first.devices
     assert second.devices_payload["stale_due_to_error"] is True
+    assert "stale_due_to_error" not in first.devices_payload
+
+    coordinator.data = second
+    third = await coordinator._async_update_data()
+    assert third.devices == first.devices
+    assert third.devices_payload["stale_due_to_error"] is True
+
+    client.async_get_devices.side_effect = None
+    client.async_get_devices.return_value = {
+        "devices": [{"identity_key": "mac:aa", "is_present": not present,
+                     "is_active": False, "presence_state": "present" if not present else "inactive"}]
+    }
+    recovered = await coordinator._async_update_data()
+    assert recovered.devices[0]["is_present"] is not present
+    assert not recovered.devices_payload.get("stale_due_to_error", False)
 
 
 @pytest.mark.asyncio
@@ -150,3 +170,15 @@ def test_devices_poll_is_offset_from_status_poll():
 
     assert status_coordinator.update_interval == timedelta(seconds=30)
     assert devices_coordinator.update_interval == timedelta(seconds=30 + DEVICE_POLL_OFFSET_SECONDS)
+
+
+@pytest.mark.asyncio
+async def test_devices_coordinator_raises_without_cached_data():
+    client = AsyncMock()
+    client.async_get_devices.side_effect = AwgGatewayCannotConnectError()
+    with patch("homeassistant.helpers.frame.report_usage"):
+        coordinator = AwgGatewayDevicesUpdateCoordinator(
+            object(), client, "entry-1", {"scan_interval_seconds": 30, "device_scope": "marked"},
+        )
+    with pytest.raises(UpdateFailed):
+        await coordinator._async_update_data()

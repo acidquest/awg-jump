@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 import time
 
@@ -40,18 +41,18 @@ async def status(
     metrics_db: AsyncSession = Depends(get_metrics_db),
     user: AdminUser = Depends(get_current_user),
 ) -> dict:
-    kernel_available, kernel_message = get_kernel_support_status()
+    kernel_available, kernel_message = await asyncio.to_thread(get_kernel_support_status)
     gateway_settings = await db.get(GatewaySettings, 1)
     routing_policy = await db.get(RoutingPolicy, 1)
     prefix_summary = build_prefix_summary(routing_policy, gateway_settings)
-    live_status, live_error = resolve_live_tunnel_status(gateway_settings)
+    live_status, live_error = await asyncio.to_thread(resolve_live_tunnel_status, gateway_settings)
     active_node = await db.get(EntryNode, gateway_settings.active_entry_node_id) if gateway_settings.active_entry_node_id else None
     probe: dict | None = None
     node_state = get_node_runtime_state(active_node.id if active_node is not None else None)
     latest_latency_ms: float | None = node_state.latency_ms if active_node is not None else None
     if active_node is not None:
         if should_refresh_node_latency(active_node.id, ttl_seconds=20):
-            probe = probe_node_latency_details(active_node, prefer_tunnel=True)
+            probe = await asyncio.to_thread(probe_node_latency_details, active_node, prefer_tunnel=True)
             latency_ms = probe["latency_ms"]
             latest_latency_ms = latency_ms if isinstance(latency_ms, float) else None
             update_node_runtime_state(

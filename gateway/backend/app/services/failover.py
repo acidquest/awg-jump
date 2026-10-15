@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -186,7 +187,7 @@ async def start_tunnel_with_retries(
         result = await start_tunnel(db, node, settings_row)
         if result.get("status") != TunnelStatus.running.value:
             continue
-        probe = probe_node_latency_details(node, prefer_tunnel=True)
+        probe = await asyncio.to_thread(probe_node_latency_details, node, prefer_tunnel=True)
         latency_ms = probe["latency_ms"]
         update_node_runtime_state(
             node.id,
@@ -278,7 +279,7 @@ async def evaluate_failover_health(db: AsyncSession, settings_row: GatewaySettin
 
     live_running = get_tunnel_runtime_state().status == TunnelStatus.running.value
     if live_running:
-        probe = probe_node_latency_details(active_node, prefer_tunnel=True)
+        probe = await asyncio.to_thread(probe_node_latency_details, active_node, prefer_tunnel=True)
         latency_ms = probe["latency_ms"]
         unhealthy_reason = None if latency_ms is not None else "Active tunnel probe failed"
     else:

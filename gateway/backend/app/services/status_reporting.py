@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
 
 import httpx
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import EntryNode, GatewaySettings
 from app.services.runtime import resolve_live_tunnel_status, resolve_tunnel_probe_target
@@ -77,20 +77,18 @@ async def _post_status(url: str) -> bool:
     return False
 
 
-async def maybe_report_gateway_status(session: AsyncSession) -> None:
+async def maybe_report_gateway_status(settings_row: GatewaySettings | None, node: EntryNode | None) -> None:
     global _last_report_at, _last_report_key, _last_success_url
 
-    settings_row = await session.get(GatewaySettings, 1)
     if settings_row is None or not settings_row.gateway_enabled or settings_row.active_entry_node_id is None:
         reset_status_report_state()
         return
 
-    live_status, _live_error = resolve_live_tunnel_status(settings_row)
+    live_status, _live_error = await asyncio.to_thread(resolve_live_tunnel_status, settings_row)
     if live_status != "running":
         reset_status_report_state()
         return
 
-    node = await session.get(EntryNode, settings_row.active_entry_node_id)
     if node is None:
         reset_status_report_state()
         return

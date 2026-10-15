@@ -323,6 +323,8 @@ async def _external_ip_loop(stop_event: asyncio.Event) -> None:
         async def action(session: AsyncSession) -> None:
             try:
                 settings_row = await session.get(GatewaySettings, 1)
+                # Release the small DB pool before waiting on external services.
+                await session.close()
                 await refresh_external_ip_info(settings_row, force=True)
             except Exception:
                 await session.rollback()
@@ -341,7 +343,14 @@ async def _status_report_loop(stop_event: asyncio.Event) -> None:
     while not stop_event.is_set():
         async def action(session: AsyncSession) -> None:
             try:
-                await maybe_report_gateway_status(session)
+                settings_row = await session.get(GatewaySettings, 1)
+                node = (
+                    await session.get(EntryNode, settings_row.active_entry_node_id)
+                    if settings_row and settings_row.active_entry_node_id else None
+                )
+                # Release the small DB pool before waiting on external services.
+                await session.close()
+                await maybe_report_gateway_status(settings_row, node)
             except Exception:
                 await session.rollback()
                 raise
@@ -361,7 +370,7 @@ async def _failover_loop(stop_event: asyncio.Event) -> None:
             try:
                 settings_row = await session.get(GatewaySettings, 1)
                 if settings_row is not None:
-                    live_status, live_error = resolve_live_tunnel_status(settings_row)
+                    live_status, live_error = await asyncio.to_thread(resolve_live_tunnel_status, settings_row)
                     if live_status != "running":
                         reset_active_node_uptime(settings_row)
                     await evaluate_failover_health(session, settings_row)

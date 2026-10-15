@@ -126,6 +126,7 @@ class AwgGatewayDeviceTracker(CoordinatorEntity[AwgGatewayDevicesUpdateCoordinat
         if device is None:
             return None
         return {
+            "stale_due_to_error": bool(self.coordinator.data.devices_payload.get("stale_due_to_error", False)),
             "current_ip": device.get("current_ip"),
             "hostname": device.get("hostname"),
             "manual_alias": device.get("manual_alias"),

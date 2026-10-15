@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import subprocess
@@ -188,13 +189,13 @@ async def refresh_external_ip_info(
     if not refresh_due(settings_row, force=force):
         return serialize_external_ip_info(settings_row, routing_policy)
 
-    live_status, _live_error = resolve_live_tunnel_status(settings_row)
+    live_status, _live_error = await asyncio.to_thread(resolve_live_tunnel_status, settings_row)
 
     local_url = normalize_service_url(settings_row.external_ip_local_service_url)
     vpn_url = normalize_service_url(settings_row.external_ip_vpn_service_url)
 
     try:
-        local_value = _curl_external_ip(local_url)
+        local_value = await asyncio.to_thread(_curl_external_ip, local_url)
         _store_probe_result(settings_row, target="local", value=local_value, error=None)
     except Exception as exc:
         logger.warning("[external-ip] local probe failed: %s", exc)
@@ -202,7 +203,7 @@ async def refresh_external_ip_info(
 
     if live_status == "running":
         try:
-            vpn_value = _curl_external_ip(vpn_url)
+            vpn_value = await asyncio.to_thread(_curl_external_ip, vpn_url)
             _store_probe_result(settings_row, target="vpn", value=vpn_value, error=None)
         except Exception as exc:
             logger.warning("[external-ip] vpn probe failed: %s", exc)

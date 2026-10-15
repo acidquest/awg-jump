@@ -164,7 +164,7 @@ def _to_payload(
     }
 
 
-def _refresh_latency_for_active_tunnel(node: EntryNode) -> None:
+async def _refresh_latency_for_active_tunnel(node: EntryNode) -> None:
     if not node.is_active:
         update_node_runtime_state(
             node.id,
@@ -176,7 +176,7 @@ def _refresh_latency_for_active_tunnel(node: EntryNode) -> None:
             last_error=None,
         )
         return
-    probe = probe_node_latency_details(node, prefer_tunnel=True)
+    probe = await asyncio.to_thread(probe_node_latency_details, node, prefer_tunnel=True)
     latency_ms = probe["latency_ms"]
     measured_at = datetime.now(timezone.utc)
     probe_target = resolve_tunnel_probe_target(node)
@@ -204,7 +204,7 @@ async def list_nodes(
         node.is_active = node.id == active_node_id
         if node.is_active:
             if should_refresh_node_latency(node.id, ttl_seconds=20):
-                _refresh_latency_for_active_tunnel(node)
+                await _refresh_latency_for_active_tunnel(node)
             node_state = get_node_runtime_state(node.id)
             payloads.append(
                 _to_payload(
@@ -216,8 +216,8 @@ async def list_nodes(
                 )
             )
             continue
-        udp_status, udp_detail = probe_udp_endpoint(node)
-        probe = probe_node_latency_details(node)
+        udp_status, udp_detail = await asyncio.to_thread(probe_udp_endpoint, node)
+        probe = await asyncio.to_thread(probe_node_latency_details, node)
         payloads.append(
             _to_payload(
                 node,
@@ -592,7 +592,7 @@ async def probe_node(
     node = await db.get(EntryNode, node_id)
     if node is None:
         raise HTTPException(status_code=404, detail="Entry node not found")
-    _refresh_latency_for_active_tunnel(node)
+    await _refresh_latency_for_active_tunnel(node)
     node_state = get_node_runtime_state(node.id)
     return {
         "node_id": node.id,

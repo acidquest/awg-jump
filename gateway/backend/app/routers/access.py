@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 import time
 
@@ -33,13 +34,13 @@ class EnabledPayload(BaseModel):
 
 async def _load_runtime_state(db: AsyncSession, settings_row: GatewaySettings) -> tuple[RoutingPolicy, EntryNode | None, dict, dict | None]:
     policy = await db.get(RoutingPolicy, 1)
-    live_status, live_error = resolve_live_tunnel_status(settings_row)
+    live_status, live_error = await asyncio.to_thread(resolve_live_tunnel_status, settings_row)
 
     active_node = await db.get(EntryNode, settings_row.active_entry_node_id) if settings_row.active_entry_node_id else None
     probe: dict | None = None
     if active_node is not None:
         if should_refresh_node_latency(active_node.id, ttl_seconds=20):
-            probe = probe_node_latency_details(active_node, prefer_tunnel=True)
+            probe = await asyncio.to_thread(probe_node_latency_details, active_node, prefer_tunnel=True)
             latency_ms = probe["latency_ms"] if isinstance(probe["latency_ms"], float) else None
             update_node_runtime_state(
                 active_node.id,

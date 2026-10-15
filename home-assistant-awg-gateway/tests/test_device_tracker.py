@@ -61,3 +61,20 @@ def test_device_tracker_is_unavailable_when_last_refresh_failed():
     coordinator.last_update_success = False
 
     assert tracker.available is False
+
+
+def test_device_tracker_exposes_stale_data_without_changing_presence():
+    tracker, coordinator = _build_tracker([
+        {"identity_key": "mac:aa", "is_present": True, "presence_state": "active"}
+    ])
+    assert tracker.extra_state_attributes["stale_due_to_error"] is False
+    coordinator.data.devices_payload["stale_due_to_error"] = True
+    assert tracker.state == "home"
+    assert tracker.available is True
+    assert tracker.extra_state_attributes["stale_due_to_error"] is True
+    coordinator.data = AwgGatewayDevicesData(
+        devices=[{"identity_key": "mac:aa", "is_present": False, "presence_state": "inactive"}],
+        devices_payload={},
+    )
+    assert tracker.state == "not_home"
+    assert tracker.extra_state_attributes["stale_due_to_error"] is False
