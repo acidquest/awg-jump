@@ -32,7 +32,7 @@ async def test_failover_settings_roundtrip(client, auth_headers) -> None:
 
 
 @pytest.mark.asyncio
-async def test_node_health_check_does_not_failover_when_disabled(monkeypatch) -> None:
+async def test_node_health_check_retries_same_node_when_failover_disabled(monkeypatch) -> None:
     async with TestSessionLocal() as session:
         settings_row = await session.get(RoutingSettings, 1)
         assert settings_row is not None
@@ -58,14 +58,19 @@ async def test_node_health_check_does_not_failover_when_disabled(monkeypatch) ->
     async def fake_check_health(_node_id: int) -> dict:
         return {"node_id": _node_id, "alive": False, "latency_ms": None}
 
-    async def fake_failover(_failed_node_id: int) -> bool:
-        raise AssertionError("failover must stay disabled")
+    retried = []
+    async def fake_failover(_failed_node_id: int, *, rotate: bool = True) -> bool:
+        assert rotate is False
+        retried.append(_failed_node_id)
+        return True
 
     monkeypatch.setattr("backend.services.node_deployer.deployer.check_health", fake_check_health)
     monkeypatch.setattr("backend.services.node_deployer.deployer.failover", fake_failover)
 
+    monkeypatch.setattr("backend.database.AsyncSessionLocal", TestSessionLocal)
     _health_fail_counts[node_id] = 2
     await _node_health_check()
 
     assert _health_fail_counts[node_id] == 0
+    assert node_id in retried
 

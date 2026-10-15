@@ -151,3 +151,22 @@ class NodePeer(Base):
     )
 
     node = relationship("UpstreamNode", back_populates="shared_peers")
+
+
+class NodeConnectionIncident(Base):
+    __tablename__ = "node_connection_incidents"
+    id = Column(Integer, primary_key=True)
+    node_id = Column(Integer, ForeignKey("upstream_nodes.id", ondelete="SET NULL"))
+    node_name = Column(String(128), nullable=False)
+    started_at = Column(DateTime, nullable=False, index=True)
+    ended_at = Column(DateTime, nullable=True)
+
+
+class NodeConnectionAttempt(Base):
+    __tablename__ = "node_connection_attempts"
+    id = Column(Integer, primary_key=True)
+    node_id = Column(Integer, ForeignKey("upstream_nodes.id", ondelete="SET NULL"))
+    node_name = Column(String(128), nullable=False)
+    created_at = Column(DateTime, nullable=False, index=True)
+    applied = Column(Boolean, nullable=False, default=False)
+    error = Column(Text, nullable=True)

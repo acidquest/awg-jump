@@ -2,6 +2,12 @@
 
 Минималистичный upstream-образ для AmneziaWG. Нода умеет работать как через userspace `amneziawg-go`, так и через kernel module `amneziawg`. Предпочтительный вариант для VPS-хоста ноды — kernel mode: он стабильнее и лучше подходит для длительной эксплуатации.
 
+Для воспроизводимого SSH-деплоя userspace-компоненты образа закреплены на
+`amneziawg-go v0.2.19` и `amneziawg-tools v1.0.20260618-2`. Новые релизы
+AmneziaWG 3.x не попадут в выходную ноду автоматически. При намеренном
+обновлении версии можно переопределить Docker build arguments
+`AMNEZIAWG_GO_VERSION` и `AMNEZIAWG_TOOLS_VERSION`.
+
 ## Рекомендуемый режим: kernel module на хосте
 
 Если на хостовой машине доступна установка kernel module, рекомендуется использовать именно её. Контейнер `awg-node` автоматически переключится в kernel mode, если `ip link add ... type amneziawg` доступен на хосте.

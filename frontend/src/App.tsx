@@ -11,7 +11,6 @@ import GeoIP from './pages/GeoIP'
 import Backup from './pages/Backup'
 import DNS from './pages/DNS'
 import Settings from './pages/Settings'
-import Telemt from './pages/Telemt'
 
 const qc = new QueryClient({
   defaultOptions: {
@@ -49,7 +48,6 @@ export default function App() {
                     <Route path="/dns" element={<DNS />} />
                     <Route path="/backup" element={<Backup />} />
                     <Route path="/settings" element={<Settings />} />
-                    <Route path="/telemt" element={<Telemt />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>
                 </Layout>

@@ -60,8 +60,6 @@ def _env_snapshot() -> dict:
             "geoip_update_cron": _json_safe_setting("geoip_update_cron", "0 4 * * *"),
             "web_mode": _json_safe_setting("web_mode", "https"),
             "web_port": _json_safe_setting("web_port", 8080),
-            "telemt_enabled": _json_safe_setting("telemt_enabled", ""),
-            "telemt_port": _json_safe_setting("telemt_port", 443),
             "tls_cert_path": _json_safe_setting("tls_cert_path", "/data/certs/server.crt"),
             "tls_key_path": _json_safe_setting("tls_key_path", "/data/certs/server.key"),
         },

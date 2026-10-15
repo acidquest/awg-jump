@@ -115,8 +115,8 @@ async def _sync_peer_stats() -> None:
 
 async def _node_health_check() -> None:
     """
-    Проверяет доступность нод со статусом online/degraded.
-    При превышении NODE_FAILOVER_THRESHOLD неудач → failover.
+    Проверяет в том числе offline-ноды. Активный туннель восстанавливается
+    без ограничения числа попыток; failover управляет только выбором ноды.
     """
     from sqlalchemy import select
     from backend.database import AsyncSessionLocal
@@ -135,22 +135,30 @@ async def _node_health_check() -> None:
                     UpstreamNode.status.in_([
                         NodeStatus.online,
                         NodeStatus.degraded,
+                        NodeStatus.offline,
                     ]),
                     UpstreamNode.public_key.isnot(None),
                 )
             )
             nodes = result.scalars().all()
-            node_list = [(n.id, n.name) for n in nodes]
+            node_list = [(n.id, n.name, n.is_active) for n in nodes]
 
-        for node_id, node_name in node_list:
+        for node_id, node_name, was_active in node_list:
             try:
-                health = await deployer.check_health(node_id)
-                if health["alive"]:
+                try:
+                    health = await deployer.check_health(node_id)
+                except Exception:
+                    logger.exception("[node_health] Probe failed for node %d", node_id)
+                    health = {"alive": False, "established": False}
+                if was_active:
+                    from backend.services.node_connections import observe_connection
+                    async with AsyncSessionLocal() as session:
+                        current = await session.get(UpstreamNode, node_id)
+                        if current and current.is_active and (not health["alive"] or health.get("established", health["alive"])):
+                            await observe_connection(session, current, health["alive"])
+                if health["alive"] or not was_active:
                     _health_fail_counts[node_id] = 0
                 else:
-                    if not failover_enabled:
-                        _health_fail_counts[node_id] = 0
-                        continue
                     _health_fail_counts[node_id] = _health_fail_counts.get(node_id, 0) + 1
                     count = _health_fail_counts[node_id]
                     logger.warning(
@@ -168,7 +176,7 @@ async def _node_health_check() -> None:
                                 "[node_health] Threshold reached for active node %d, initiating failover",
                                 node_id,
                             )
-                            switched = await deployer.failover(node_id)
+                            switched = await deployer.failover(node_id, rotate=failover_enabled)
                             if switched:
                                 _health_fail_counts[node_id] = 0
             except Exception as exc:

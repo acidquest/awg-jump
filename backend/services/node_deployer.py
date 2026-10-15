@@ -881,7 +881,7 @@ class NodeDeployer:
             public_key = node.public_key
             last_deploy = node.last_deploy
 
-        result: dict = {"node_id": node_id, "alive": False, "latency_ms": None}
+        result: dict = {"node_id": node_id, "alive": False, "latency_ms": None, "established": False}
 
         # Grace period: сразу после деплоя туннель ещё не установлен
         _GRACE_PERIOD_SEC = 300  # 5 минут
@@ -912,6 +912,7 @@ class NodeDeployer:
                     tx = int(parts[6]) if parts[6].isdigit() else 0
                     age = (now_ts - handshake) if handshake > 0 else 9999
 
+                    result["established"] = age < 180
                     result["alive"] = age < 180 or in_grace
                     result["handshake_age_sec"] = age
                     result["rx_bytes"] = rx
@@ -983,85 +984,54 @@ class NodeDeployer:
 
     # ── Failover ──────────────────────────────────────────────────────────
 
-    async def failover(self, failed_node_id: int) -> bool:
-        """
-        Переключает awg1 на следующую онлайн-ноду по приоритету.
-        Возвращает True если переключение выполнено.
-        """
-        logger.warning("[failover] Initiating failover from node %d", failed_node_id)
-
+    async def failover(self, failed_node_id: int, *, rotate: bool = True) -> bool:
+        """Retry indefinitely; select the next configured node in a circular order."""
+        from backend.models.upstream_node import NodeConnectionAttempt
+        from backend.services.node_connections import utcnow
         async with AsyncSessionLocal() as session:
-            next_node = await session.scalar(
-                select(UpstreamNode)
-                .where(
-                    UpstreamNode.status == NodeStatus.online,
-                    UpstreamNode.id != failed_node_id,
-                    UpstreamNode.is_geoip == False,  # noqa: E712
-                )
-                .order_by(UpstreamNode.priority, UpstreamNode.id)
-                .limit(1)
-            )
-
-            if next_node is None:
-                logger.error("[failover] No online nodes available")
-                # Деактивировать упавшую ноду
-                failed = await _get_node(failed_node_id, session)
-                failed.is_active = False
-                failed.status = NodeStatus.offline
-                failed.updated_at = datetime.now(timezone.utc)
-                session.add(failed)
-                await session.commit()
-                from backend.services.routing import update_vpn_route
-                update_vpn_route(None)
-                from backend.services.routing import update_upstream_host_route
-                update_upstream_host_route(None)
-                return False
-
-            # Деактивировать упавшую
             failed = await _get_node(failed_node_id, session)
-            failed.is_active = False
-            failed.status = NodeStatus.degraded
-            failed.updated_at = datetime.now(timezone.utc)
-            session.add(failed)
-
-            # Активировать новую
-            next_node.is_active = True
-            next_node.updated_at = datetime.now(timezone.utc)
-            session.add(next_node)
-            session.add(
-                UpstreamNodeSwitchLog(
-                    from_node_id=failed.id,
-                    from_node_name=failed.name,
-                    to_node_id=next_node.id,
-                    to_node_name=next_node.name,
-                    reason=f"Failover from {failed.name}",
-                    switch_type="failover",
-                    created_at=datetime.now(timezone.utc),
-                )
-            )
+            if not failed.is_active:
+                return False
+            candidates = (await session.scalars(select(UpstreamNode).where(
+                UpstreamNode.public_key.isnot(None),
+                UpstreamNode.is_geoip == False,  # noqa: E712
+                UpstreamNode.status.in_([NodeStatus.online, NodeStatus.degraded, NodeStatus.offline]),
+            ).order_by(UpstreamNode.priority, UpstreamNode.id))).all()
+            target = failed
+            if rotate and candidates:
+                ids = [n.id for n in candidates]
+                index = ids.index(failed.id) if failed.id in ids else -1
+                target = candidates[(index + 1) % len(candidates)]
+            if target.id != failed.id:
+                failed.is_active = False
+                target.is_active = True
+                session.add(UpstreamNodeSwitchLog(
+                    from_node_id=failed.id, from_node_name=failed.name,
+                    to_node_id=target.id, to_node_name=target.name,
+                    reason=f"Reconnect after loss of {failed.name}",
+                    switch_type="failover", created_at=utcnow()))
+            target.status = NodeStatus.degraded
+            attempt = NodeConnectionAttempt(node_id=target.id, node_name=target.name, created_at=utcnow(), applied=False)
+            session.add(attempt)
+            # Persist the selected target even if applying the tunnel fails.
             await session.commit()
-
-            new_host = next_node.host
-            new_port = next_node.awg_port
-            new_pubkey = next_node.public_key
-            new_address = next_node.awg_address
-            new_id = next_node.id
-
-        logger.info(
-            "[failover] Switching to node %d (%s:%d)", new_id, new_host, new_port
-        )
-
-        async with AsyncSessionLocal() as session:
-            next_node = await _get_node(new_id, session)
-            await apply_node_to_awg1(session, next_node)
+            attempt_id = attempt.id
+            target_id = target.id
+            try:
+                await apply_node_to_awg1(session, target)
+                from backend.services.routing import update_upstream_host_route, update_vpn_route
+                update_vpn_route("awg1")
+                update_upstream_host_route(target.awg_address)
+                attempt.applied = True
+            except Exception as exc:
+                await session.rollback()
+                attempt = await session.get(NodeConnectionAttempt, attempt_id)
+                attempt.error = str(exc)
+                logger.exception("[reconnect] Failed to apply upstream node %d", target_id)
             await session.commit()
-
-        from backend.services.routing import update_upstream_host_route, update_vpn_route
-        update_vpn_route("awg1")
-        update_upstream_host_route(new_address)
-
-        _health_fail_counts[failed_node_id] = 0
-        return True
+            _health_fail_counts[failed_node_id] = 0
+            _health_fail_counts[target_id] = 0
+            return attempt.applied
 
     # ── Remove ────────────────────────────────────────────────────────────
 

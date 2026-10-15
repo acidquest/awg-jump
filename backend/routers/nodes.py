@@ -9,7 +9,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -48,6 +48,18 @@ from backend.services.upstream_nodes import (
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 logger = logging.getLogger(__name__)
+
+@router.get("/connection-statistics")
+async def get_connection_statistics(
+    days: int = Query(1, ge=1, le=31),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    session: AsyncSession = Depends(get_db),
+    _user: str = Depends(get_current_user),
+):
+    from backend.services.node_connections import connection_statistics
+    return await connection_statistics(session, days, page, page_size)
+
 
 
 # ── Схемы ─────────────────────────────────────────────────────────────────

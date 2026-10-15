@@ -122,7 +122,7 @@ async def test_apply_node_to_awg1_updates_interface_address_and_obfuscation(db_s
         captured["iface"] = iface
         captured["peers"] = peers
 
-    monkeypatch.setattr("backend.services.upstream_nodes.awg_svc.apply_interface", fake_apply_interface)
+    monkeypatch.setattr("backend.services.awg.apply_interface", fake_apply_interface)
 
     await apply_node_to_awg1(db_session, node)
 
@@ -187,6 +187,7 @@ async def test_check_health_for_active_node_uses_awg_dump_without_latency_probe(
         lambda args: (0, "node-public-key\tpsk\t203.0.113.10:51821\t0.0.0.0/0\t1\t100\t200\t25\n"),
     )
 
+    monkeypatch.setattr("backend.services.node_deployer.time.time", lambda: 100)
     result = await deployer.check_health(node_id)
 
     assert result["alive"] is True
@@ -232,6 +233,7 @@ async def test_check_health_for_geoip_node_reads_awg2_counters(monkeypatch) -> N
     monkeypatch.setattr("backend.services.node_deployer.AsyncSessionLocal", TestSessionLocal)
     monkeypatch.setattr("backend.services.node_deployer._run_cmd", fake_run_cmd)
 
+    monkeypatch.setattr("backend.services.node_deployer.time.time", lambda: 100)
     result = await deployer.check_health(node_id)
 
     assert seen_args == [["awg", "show", "awg2", "dump"]]
@@ -273,6 +275,7 @@ async def test_check_health_for_inactive_node_uses_udp_only(monkeypatch) -> None
     monkeypatch.setattr("backend.services.node_deployer.AsyncSessionLocal", TestSessionLocal)
     monkeypatch.setattr("backend.services.node_deployer._probe_udp_port", lambda host, port: (True, "no ICMP error received"))
 
+    monkeypatch.setattr("backend.services.node_deployer.time.time", lambda: 100)
     result = await deployer.check_health(node_id)
 
     assert result["alive"] is True

@@ -1,3 +1,4 @@
+import NodeConnectionStatistics from '../components/NodeConnectionStatistics'
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -149,7 +150,7 @@ export default function Nodes() {
           <div>
             <div className="card-title">Failover Mode</div>
             <div className="text-muted text-sm" style={{ marginTop: 6 }}>
-              Health checks continue to update node status. Automatic switching of the active node happens only when failover is enabled.
+              Reconnect attempts continue until the tunnel recovers. When enabled, nodes are tried in priority order, looping back to the first; when disabled, only the selected node is retried.
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -169,6 +170,8 @@ export default function Nodes() {
         </div>
         {failoverError ? <div className="error-box">{failoverError}</div> : null}
       </div>
+
+      <NodeConnectionStatistics />
 
       {/* Nodes table */}
       <div className="section">

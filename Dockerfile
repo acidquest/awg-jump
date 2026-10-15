@@ -5,11 +5,16 @@
 # ============================================================
 FROM golang:1.24-alpine AS awg-builder
 
+ARG AMNEZIAWG_GO_VERSION=v0.2.19
+
 RUN apk add --no-cache ca-certificates git make
 
 WORKDIR /build
-RUN git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-go.git .
-RUN mkdir -p /out \
+RUN git clone --depth 1 --branch "${AMNEZIAWG_GO_VERSION}" \
+    https://github.com/amnezia-vpn/amneziawg-go.git .
+RUN version="$(git describe --tags --exact-match)" \
+    && printf 'package main\n\nconst Version = "%s"\n' "${version}" > version.go \
+    && mkdir -p /out \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/amneziawg-go .
 
 # ============================================================
@@ -18,12 +23,15 @@ RUN mkdir -p /out \
 # ============================================================
 FROM debian:bookworm-slim AS awg-tools-builder
 
+ARG AMNEZIAWG_TOOLS_VERSION=v1.0.20260618-2
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git build-essential pkg-config libmnl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-RUN git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-tools.git .
+RUN git clone --depth 1 --branch "${AMNEZIAWG_TOOLS_VERSION}" \
+    https://github.com/amnezia-vpn/amneziawg-tools.git .
 RUN make -C src -j$(nproc) && make -C src install DESTDIR=/out PREFIX=/usr
 
 # ============================================================
@@ -63,24 +71,6 @@ RUN curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CL
     && chmod +x /usr/local/bin/cloudflared
 
 # ============================================================
-# Stage 4 — сборка TeleMT
-# ============================================================
-FROM rust:1-bookworm AS telemt-builder
-
-ARG TELEMT_VERSION=3.4.13
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    git \
-    pkg-config \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /build
-RUN git clone --depth 1 --branch "${TELEMT_VERSION}" https://github.com/telemt/telemt.git .
-RUN cargo build --release
-
-# ============================================================
 # Stage 5 — финальный образ
 # ============================================================
 FROM python:3.12-slim-bookworm AS final
@@ -110,7 +100,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=awg-builder /out/amneziawg-go /usr/local/bin/amneziawg-go
 COPY --from=awg-tools-builder /out/usr/bin/awg /usr/local/bin/awg
 COPY --from=cloudflared-builder /usr/local/bin/cloudflared /usr/local/bin/cloudflared
-COPY --from=telemt-builder /build/target/release/telemt /usr/local/bin/telemt
 COPY --from=python-builder /opt/venv /opt/venv
 COPY --from=frontend-builder /frontend/dist /app/static
 
@@ -120,7 +109,7 @@ COPY nginx/ /app/nginx/
 COPY scripts/ /app/scripts/
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 
-RUN chmod +x /usr/local/bin/amneziawg-go /usr/local/bin/telemt /app/scripts/*.sh /app/nginx/generate-cert.sh \
+RUN chmod +x /usr/local/bin/amneziawg-go /app/scripts/*.sh /app/nginx/generate-cert.sh \
     && mkdir -p /var/log/supervisor /var/run/amneziawg \
     # Отключаем системный dnsmasq — управляем вручную через dns_manager.py
     && rm -f /etc/dnsmasq.conf /etc/dnsmasq.d/* \
@@ -128,7 +117,6 @@ RUN chmod +x /usr/local/bin/amneziawg-go /usr/local/bin/telemt /app/scripts/*.sh
 
 WORKDIR /app
 
-EXPOSE 443/tcp
 EXPOSE 51820/udp
 EXPOSE 8080/tcp
 

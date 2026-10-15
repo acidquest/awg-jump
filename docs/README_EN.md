@@ -573,11 +573,15 @@ SSH credentials (login/password) are **never stored** anywhere.
 
 ### Failover
 
-APScheduler checks every `NODE_HEALTH_CHECK_INTERVAL` seconds:
+APScheduler checks nodes every `NODE_HEALTH_CHECK_INTERVAL` seconds.
 
-- If the active node's `last_handshake > 3 min` → status `degraded`, counter +1.
-- When `counter >= NODE_FAILOVER_THRESHOLD` → auto-switch to the next node by `priority`.
-- Switching: `wg set awg1 peer <pubkey> endpoint <new_host:port>` — no interface restart.
+- A missing or stale handshake (older than 3 minutes) marks a node `degraded`.
+- After `NODE_FAILOVER_THRESHOLD` failed checks, the tunnel configuration is reapplied. Retries continue without a limit.
+- With one node or Failover disabled, the selected node is retried and remains Active during an outage.
+- With Failover enabled, configured nodes are tried circularly in `(priority, id)` order, including temporarily offline nodes. GeoIP nodes and unconfigured nodes are excluded.
+- After each attempt the failure counter resets, allowing time for a handshake. Applying configuration successfully does not by itself confirm connectivity.
+- Nodes → Connection problems shows outages and downtime over the last 24 hours / 30 days, per-node attempts, configuration errors, and paginated outage history. SQLite history survives restarts.
+- Disconnect and recovery times are observed at health checks; events before this update are not reconstructed. Downtime crossing a period boundary is clipped to that period.
 
 ---
 
