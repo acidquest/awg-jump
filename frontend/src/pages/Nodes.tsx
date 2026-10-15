@@ -171,8 +171,6 @@ export default function Nodes() {
         {failoverError ? <div className="error-box">{failoverError}</div> : null}
       </div>
 
-      <NodeConnectionStatistics />
-
       {/* Nodes table */}
       <div className="section">
         <div className="table-wrap">
@@ -284,6 +282,8 @@ export default function Nodes() {
           </table>
         </div>
       </div>
+
+      <NodeConnectionStatistics />
 
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="card-header">
